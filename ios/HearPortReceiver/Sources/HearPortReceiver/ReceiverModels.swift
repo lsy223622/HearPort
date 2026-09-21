@@ -93,7 +93,9 @@ public final class ReceiverSessionState {
 
     public func acceptAudio(_ packet: AudioDatagram) -> AudioDisposition {
         if phase == .pendingStream {
-            return .pendingAudioDiscarded
+            return packet.streamID == pendingStreamID
+                ? .pendingAudioDiscarded
+                : .oldStreamDiscarded
         }
         if (phase == .active || phase == .silentRebuffer),
            activeStreamID == packet.streamID {
