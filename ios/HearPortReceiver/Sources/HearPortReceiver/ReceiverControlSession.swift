@@ -409,7 +409,7 @@ public final class ReceiverControlSession {
                 ]
             )
             onError?(message)
-        case .connectRequest, .sessionReady, .pairSpakeB, .pairConfirmB,
+        case .connectRequest, .pairSpakeB, .pairConfirmB,
              .authResponse, .startStreamAck:
             throw PairingSecurityError.providerFailure(-4)
         }

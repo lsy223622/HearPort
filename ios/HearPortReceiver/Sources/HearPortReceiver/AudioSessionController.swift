@@ -124,12 +124,28 @@ public final class PlatformAudioSessionController {
         try audioSession.setCategory(.playback, mode: .default, options: [])
         try audioSession.setActive(true)
         let route = audioSession.currentRoute
-        guard let output = route.outputs.first, output.numberOfChannels == 2 else {
+        guard let output = route.outputs.first else {
             diagnostics.log(
                 .error,
                 category: .audio,
                 message: "audio_route_rejected",
                 fields: ["event": "audio_route_rejected", "reason": "stereo_output_required"]
+            )
+            throw NSError(domain: "HearPortAudio", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey:
+                                        "HearPort v1 requires a stereo output route"])
+        }
+        let channelCount = output.channels?.count ?? 0
+        guard channelCount == 2 else {
+            diagnostics.log(
+                .error,
+                category: .audio,
+                message: "audio_route_rejected",
+                fields: [
+                    "event": "audio_route_rejected",
+                    "reason": "stereo_output_required",
+                    "channels": "\(channelCount)"
+                ]
             )
             throw NSError(domain: "HearPortAudio", code: 1,
                           userInfo: [NSLocalizedDescriptionKey:
@@ -141,7 +157,7 @@ public final class PlatformAudioSessionController {
             message: "audio_session_activated",
             fields: [
                 "event": "audio_session_activated",
-                "channels": "\(output.numberOfChannels)",
+                "channels": "\(channelCount)",
                 "sample_rate": "\(audioSession.sampleRate)"
             ]
         )
@@ -183,13 +199,28 @@ public final class PlatformAudioOutputController {
         )
         try audioSession.setCategory(.playback, mode: .default, options: [])
         try audioSession.setActive(true)
-        guard let output = audioSession.currentRoute.outputs.first,
-              output.numberOfChannels == 2 else {
+        guard let output = audioSession.currentRoute.outputs.first else {
             receiver.diagnostics.log(
                 .error,
                 category: .audio,
                 message: "audio_route_rejected",
                 fields: ["event": "audio_route_rejected", "reason": "stereo_output_required"]
+            )
+            throw NSError(domain: "HearPortAudio", code: 2,
+                          userInfo: [NSLocalizedDescriptionKey:
+                                        "HearPort v1 requires a stereo output route"])
+        }
+        let channelCount = output.channels?.count ?? 0
+        guard channelCount == 2 else {
+            receiver.diagnostics.log(
+                .error,
+                category: .audio,
+                message: "audio_route_rejected",
+                fields: [
+                    "event": "audio_route_rejected",
+                    "reason": "stereo_output_required",
+                    "channels": "\(channelCount)"
+                ]
             )
             throw NSError(domain: "HearPortAudio", code: 2,
                           userInfo: [NSLocalizedDescriptionKey:
@@ -209,7 +240,7 @@ public final class PlatformAudioOutputController {
                           userInfo: [NSLocalizedDescriptionKey:
                                         "HearPort v1 requires a two-channel output format"])
         }
-        let source = AVAudioSourceNode(format: format) { [weak self] _, frameCount,
+        let source = AVAudioSourceNode(format: format) { [weak self] _, _, frameCount,
                                                                audioBufferList in
             guard let self else { return noErr }
             self.render(frameCount: Int(frameCount), audioBufferList: audioBufferList)
@@ -228,7 +259,7 @@ public final class PlatformAudioOutputController {
             fields: [
                 "event": "audio_output_started",
                 "sample_rate": "\(outputSampleRate)",
-                "channels": "\(format.channelCount)"
+                "channels": "\(channelCount)"
             ]
         )
     }
