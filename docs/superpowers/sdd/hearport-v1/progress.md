@@ -18,7 +18,7 @@
 
 ## Task status
 
-- Task 1: in progress
+- Task 1: complete (commit 184f717; tests: `python -m unittest tests.reference.test_protocol_constants -v` -> 2/2 passed)
 - Task 2: not started
 - Task 3: not started
 - Task 4: not started
