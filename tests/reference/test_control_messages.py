@@ -31,11 +31,22 @@ class ControlMessageTests(unittest.TestCase):
         )
         self.assertEqual(decode_control_envelope(encode_control_envelope(message)), message)
 
-    def test_decoder_rejects_unknown_duplicate_or_malformed_fields(self):
-        with self.assertRaises(ControlMessageError):
-            decode_control_envelope(bytes.fromhex("12020801"))
-        with self.assertRaises(ControlMessageError):
-            decode_control_envelope(bytes.fromhex("0a0408020802"))
+    def test_decoder_ignores_unknown_and_uses_last_scalar_value(self):
+        unknown = bytes.fromhex("10010a020802")
+        self.assertEqual(
+            decode_control_envelope(unknown),
+            ControlEnvelope(MessageType.CONNECT_REQUEST, auth_mode=AuthMode.PAIR),
+        )
+        duplicate = bytes.fromhex("0a0408010802")
+        self.assertEqual(
+            decode_control_envelope(duplicate),
+            ControlEnvelope(MessageType.CONNECT_REQUEST, auth_mode=AuthMode.PAIR),
+        )
+        wrong_wire_after_valid = bytes.fromhex("0a020802090000000000000000")
+        self.assertEqual(
+            decode_control_envelope(wrong_wire_after_valid),
+            ControlEnvelope(MessageType.CONNECT_REQUEST, auth_mode=AuthMode.PAIR),
+        )
         with self.assertRaises(ControlMessageError):
             decode_control_envelope(bytes.fromhex("f201020800"))
 

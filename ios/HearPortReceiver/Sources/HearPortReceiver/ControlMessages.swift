@@ -5,7 +5,6 @@ public enum ControlMessageError: Error, Equatable {
     case malformedVarint
     case malformedField
     case unknownField(UInt32)
-    case duplicateField(UInt32)
     case invalidMessage
     case invalidUTF8
     case tooLarge
@@ -130,25 +129,38 @@ public struct ControlEnvelope: Equatable, Sendable {
             throw ControlMessageError.emptyEnvelope
         }
         var reader = ProtoReader(data)
-        let outer = try reader.readField()
-        guard reader.isAtEnd, case let .bytes(body) = outer.value else {
-            throw ControlMessageError.malformedField
+        var selected: (field: UInt32, body: Data)?
+        var lastUnknownField: UInt32?
+        while !reader.isAtEnd {
+            let outer = try reader.readField()
+            guard case let .bytes(body) = outer.value else {
+                continue
+            }
+            switch outer.field {
+            case 1, 2, 3, 10, 11, 12, 13, 14, 20, 21, 30, 31:
+                selected = (outer.field, body)
+            default:
+                lastUnknownField = outer.field
+            }
+        }
+        guard let selected else {
+            throw ControlMessageError.unknownField(lastUnknownField ?? 0)
         }
         let message: ControlMessage
-        switch outer.field {
-        case 1: message = try parseConnect(body)
-        case 2: message = try parseEmpty(body, .sessionReady)
-        case 3: message = try parseError(body)
-        case 10: message = try parseSingleBytes(body, expectedLength: 65, make: ControlMessage.pairSpakeA)
-        case 11: message = try parseSingleBytes(body, expectedLength: 65, make: ControlMessage.pairSpakeB)
-        case 12: message = try parseSingleBytes(body, expectedLength: 32, make: ControlMessage.pairConfirmA)
-        case 13: message = try parseSingleBytes(body, expectedLength: 32, make: ControlMessage.pairConfirmB)
-        case 14: message = try parseCredential(body, make: ControlMessage.pairCredential)
-        case 20: message = try parseSingleBytes(body, expectedLength: 32, make: ControlMessage.authChallenge)
-        case 21: message = try parseCredential(body, make: ControlMessage.authResponse)
-        case 30: message = try parseStream(body, make: ControlMessage.startStream)
-        case 31: message = try parseStream(body, make: ControlMessage.startStreamAck)
-        default: throw ControlMessageError.unknownField(outer.field)
+        switch selected.field {
+        case 1: message = try parseConnect(selected.body)
+        case 2: message = try parseEmpty(selected.body, .sessionReady)
+        case 3: message = try parseError(selected.body)
+        case 10: message = try parseSingleBytes(selected.body, expectedLength: 65, make: ControlMessage.pairSpakeA)
+        case 11: message = try parseSingleBytes(selected.body, expectedLength: 65, make: ControlMessage.pairSpakeB)
+        case 12: message = try parseSingleBytes(selected.body, expectedLength: 32, make: ControlMessage.pairConfirmA)
+        case 13: message = try parseSingleBytes(selected.body, expectedLength: 32, make: ControlMessage.pairConfirmB)
+        case 14: message = try parseCredential(selected.body, make: ControlMessage.pairCredential)
+        case 20: message = try parseSingleBytes(selected.body, expectedLength: 32, make: ControlMessage.authChallenge)
+        case 21: message = try parseCredential(selected.body, make: ControlMessage.authResponse)
+        case 30: message = try parseStream(selected.body, make: ControlMessage.startStream)
+        case 31: message = try parseStream(selected.body, make: ControlMessage.startStreamAck)
+        default: throw ControlMessageError.unknownField(selected.field)
         }
         return ControlEnvelope(message)
     }
@@ -164,8 +176,8 @@ public struct ControlEnvelope: Equatable, Sendable {
         var fields: [UInt32: ProtoField] = [:]
         while !reader.isAtEnd {
             let field = try reader.readField()
-            guard fields[field.field] == nil else {
-                throw ControlMessageError.duplicateField(field.field)
+            if case .ignored = field.value {
+                continue
             }
             fields[field.field] = field.value
         }
@@ -190,14 +202,11 @@ public struct ControlEnvelope: Equatable, Sendable {
                 (mode != .remembered && peerID.isEmpty) else {
             throw ControlMessageError.invalidMessage
         }
-        guard fields.keys.allSatisfy({ $0 == 1 || $0 == 2 }) else {
-            throw ControlMessageError.invalidMessage
-        }
         return .connectRequest(authMode: mode, peerID: peerID)
     }
 
     private static func parseEmpty(_ data: Data, _ message: ControlMessage) throws -> ControlMessage {
-        guard data.isEmpty else { throw ControlMessageError.invalidMessage }
+        _ = try parseFields(data)
         return message
     }
 
@@ -218,9 +227,6 @@ public struct ControlEnvelope: Equatable, Sendable {
         } else {
             throw ControlMessageError.invalidMessage
         }
-        guard fields.keys.allSatisfy({ $0 == 1 || $0 == 2 }) else {
-            throw ControlMessageError.invalidMessage
-        }
         return .error(code: code, message: message)
     }
 
@@ -230,7 +236,7 @@ public struct ControlEnvelope: Equatable, Sendable {
         make: (Data) -> ControlMessage
     ) throws -> ControlMessage {
         let fields = try parseFields(data)
-        guard fields.count == 1, case let .bytes(value)? = fields[1],
+        guard case let .bytes(value)? = fields[1],
               value.count == expectedLength else {
             throw ControlMessageError.invalidMessage
         }
@@ -242,8 +248,7 @@ public struct ControlEnvelope: Equatable, Sendable {
         make: (Data, Data) -> ControlMessage
     ) throws -> ControlMessage {
         let fields = try parseFields(data)
-        guard fields.count == 2,
-              case let .bytes(first)? = fields[1],
+        guard case let .bytes(first)? = fields[1],
               case let .bytes(second)? = fields[2] else {
             throw ControlMessageError.invalidMessage
         }
@@ -255,7 +260,7 @@ public struct ControlEnvelope: Equatable, Sendable {
         make: (UInt32) -> ControlMessage
     ) throws -> ControlMessage {
         let fields = try parseFields(data)
-        guard fields.count == 1, case let .varint(streamID)? = fields[1],
+        guard case let .varint(streamID)? = fields[1],
               streamID != 0 else {
             throw ControlMessageError.invalidMessage
         }
@@ -266,6 +271,7 @@ public struct ControlEnvelope: Equatable, Sendable {
 private enum ProtoField {
     case varint(UInt32)
     case bytes(Data)
+    case ignored
 }
 
 private struct ProtoWriter {
@@ -322,6 +328,10 @@ private struct ProtoReader {
         switch wire {
         case 0:
             return (field, .varint(try readVarint()))
+        case 1:
+            guard offset + 8 <= bytes.count else { throw ControlMessageError.malformedField }
+            offset += 8
+            return (field, .ignored)
         case 2:
             let length = Int(try readVarint())
             guard length <= ControlFraming.maxPayloadBytes,
@@ -331,6 +341,43 @@ private struct ProtoReader {
             let value = Data(bytes[offset..<(offset + length)])
             offset += length
             return (field, .bytes(value))
+        case 3:
+            try skipField(wire)
+            return (field, .ignored)
+        case 5:
+            guard offset + 4 <= bytes.count else { throw ControlMessageError.malformedField }
+            offset += 4
+            return (field, .ignored)
+        default:
+            throw ControlMessageError.malformedField
+        }
+    }
+
+    private mutating func skipField(_ wire: UInt8) throws {
+        switch wire {
+        case 0:
+            _ = try readVarint()
+        case 1:
+            guard offset + 8 <= bytes.count else { throw ControlMessageError.malformedField }
+            offset += 8
+        case 2:
+            let length = Int(try readVarint())
+            guard length <= ControlFraming.maxPayloadBytes,
+                  offset + length <= bytes.count else {
+                throw ControlMessageError.malformedField
+            }
+            offset += length
+        case 3:
+            while true {
+                let tag = try readVarint()
+                guard tag != 0 else { throw ControlMessageError.malformedField }
+                let nestedWire = UInt8(tag & 0x07)
+                if nestedWire == 4 { return }
+                try skipField(nestedWire)
+            }
+        case 5:
+            guard offset + 4 <= bytes.count else { throw ControlMessageError.malformedField }
+            offset += 4
         default:
             throw ControlMessageError.malformedField
         }

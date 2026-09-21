@@ -171,9 +171,41 @@ def _read_varint(data: bytes, offset: int) -> tuple[int, int]:
     raise ControlMessageError("unterminated varint")
 
 
+def _skip_field(data: bytes, offset: int, wire: int) -> int:
+    if wire == 0:
+        _, offset = _read_varint(data, offset)
+        return offset
+    if wire == 1:
+        end = offset + 8
+        if end > len(data):
+            raise ControlMessageError("truncated fixed64 field")
+        return end
+    if wire == 2:
+        length, offset = _read_varint(data, offset)
+        end = offset + length
+        if end > len(data) or length > MAX_MESSAGE:
+            raise ControlMessageError("truncated bytes field")
+        return end
+    if wire == 3:
+        while True:
+            nested_tag, offset = _read_varint(data, offset)
+            if nested_tag == 0 or (nested_tag >> 3) == 0:
+                raise ControlMessageError("zero protobuf tag")
+            nested_wire = nested_tag & 7
+            if nested_wire == 4:
+                return offset
+            offset = _skip_field(data, offset, nested_wire)
+    if wire == 5:
+        end = offset + 4
+        if end > len(data):
+            raise ControlMessageError("truncated fixed32 field")
+        return end
+    raise ControlMessageError("unsupported protobuf wire type")
+
+
 def _read_field(data: bytes, offset: int) -> tuple[int, int, bytes, int]:
     tag, offset = _read_varint(data, offset)
-    if tag == 0:
+    if tag == 0 or (tag >> 3) == 0:
         raise ControlMessageError("zero protobuf tag")
     field, wire = tag >> 3, tag & 7
     if wire == 0:
@@ -185,6 +217,18 @@ def _read_field(data: bytes, offset: int) -> tuple[int, int, bytes, int]:
         if end > len(data) or length > MAX_MESSAGE:
             raise ControlMessageError("truncated bytes field")
         return field, wire, data[offset:end], end
+    if wire == 1:
+        end = offset + 8
+        if end > len(data):
+            raise ControlMessageError("truncated fixed64 field")
+        return field, wire, data[offset:end], end
+    if wire == 5:
+        end = offset + 4
+        if end > len(data):
+            raise ControlMessageError("truncated fixed32 field")
+        return field, wire, data[offset:end], end
+    if wire == 3:
+        return field, wire, b"", _skip_field(data, offset, wire)
     raise ControlMessageError("unsupported protobuf wire type")
 
 
@@ -193,13 +237,10 @@ def _parse_body(message_type: MessageType, body: bytes) -> ControlEnvelope:
     offset = 0
     while offset < len(body):
         field, wire, value, offset = _read_field(body, offset)
-        if field in fields:
-            raise ControlMessageError("duplicate protobuf field")
-        fields[field] = (wire, value)
+        if wire in (0, 2):
+            fields[field] = (wire, value)
 
     if message_type == MessageType.SESSION_READY:
-        if fields:
-            raise ControlMessageError("SessionReady must be empty")
         message = ControlEnvelope(message_type)
     elif message_type == MessageType.CONNECT_REQUEST:
         if 1 not in fields or fields[1][0] != 0:
@@ -231,15 +272,16 @@ def _parse_body(message_type: MessageType, body: bytes) -> ControlEnvelope:
         MessageType.PAIR_CONFIRM_B,
         MessageType.AUTH_CHALLENGE,
     }:
-        if set(fields) != {1} or fields[1][0] != 2:
+        if 1 not in fields or fields[1][0] != 2:
             raise ControlMessageError("invalid single-bytes message")
         message = ControlEnvelope(message_type, bytes1=fields[1][1])
     elif message_type in {MessageType.PAIR_CREDENTIAL, MessageType.AUTH_RESPONSE}:
-        if set(fields) != {1, 2} or any(wire != 2 for wire, _ in fields.values()):
+        if (1 not in fields or 2 not in fields or fields[1][0] != 2 or
+                fields[2][0] != 2):
             raise ControlMessageError("invalid two-bytes message")
         message = ControlEnvelope(message_type, bytes1=fields[1][1], bytes2=fields[2][1])
     elif message_type in {MessageType.START_STREAM, MessageType.START_STREAM_ACK}:
-        if set(fields) != {1} or fields[1][0] != 0:
+        if 1 not in fields or fields[1][0] != 0:
             raise ControlMessageError("invalid stream message")
         message = ControlEnvelope(message_type, stream_id=int.from_bytes(fields[1][1], "little"))
     else:
@@ -251,11 +293,16 @@ def _parse_body(message_type: MessageType, body: bytes) -> ControlEnvelope:
 def decode_control_envelope(data: bytes) -> ControlEnvelope:
     if not data or len(data) > MAX_MESSAGE:
         raise ControlMessageError("invalid envelope length")
-    field, wire, body, offset = _read_field(data, 0)
-    if offset != len(data) or wire != 2:
-        raise ControlMessageError("envelope must contain exactly one message")
-    try:
-        message_type = next(kind for kind, number in _ENVELOPE_FIELDS.items() if number == field)
-    except StopIteration as exc:
-        raise ControlMessageError("unknown envelope field") from exc
-    return _parse_body(message_type, body)
+    selected: tuple[MessageType, bytes] | None = None
+    offset = 0
+    while offset < len(data):
+        field, wire, body, offset = _read_field(data, offset)
+        if wire != 2:
+            continue
+        for message_type, number in _ENVELOPE_FIELDS.items():
+            if number == field:
+                selected = (message_type, body)
+                break
+    if selected is None:
+        raise ControlMessageError("unknown envelope field")
+    return _parse_body(*selected)

@@ -35,6 +35,32 @@ int main() {
   assert(std::to_integer<unsigned int>(ack_bytes[4]) == 0x07);
   assert(hearport::wire::DecodeControlEnvelope(ack_bytes)->stream_id == 7);
 
+  const auto with_unknown = std::vector<std::byte>{
+      std::byte{0x10}, std::byte{0x01}, connect_bytes[0], connect_bytes[1],
+      connect_bytes[2], connect_bytes[3]};
+  const auto decoded_with_unknown =
+      hearport::wire::DecodeControlEnvelope(with_unknown);
+  assert(decoded_with_unknown.has_value());
+  assert(decoded_with_unknown->auth_mode == AuthMode::pair);
+
+  const auto duplicate_scalar = std::vector<std::byte>{
+      std::byte{0x0a}, std::byte{0x04}, std::byte{0x08}, std::byte{0x01},
+      std::byte{0x08}, std::byte{0x02}};
+  const auto decoded_duplicate =
+      hearport::wire::DecodeControlEnvelope(duplicate_scalar);
+  assert(decoded_duplicate.has_value());
+  assert(decoded_duplicate->auth_mode == AuthMode::pair);
+
+  const auto wrong_wire_after_valid = std::vector<std::byte>{
+      std::byte{0x0a}, std::byte{0x02}, std::byte{0x08}, std::byte{0x02},
+      std::byte{0x09}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00},
+      std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00},
+      std::byte{0x00}};
+  const auto decoded_wrong_wire =
+      hearport::wire::DecodeControlEnvelope(wrong_wire_after_valid);
+  assert(decoded_wrong_wire.has_value());
+  assert(decoded_wrong_wire->auth_mode == AuthMode::pair);
+
   auto malformed = ack_bytes;
   malformed.push_back(std::byte{0});
   assert(!hearport::wire::DecodeControlEnvelope(malformed).has_value());

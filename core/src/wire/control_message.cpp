@@ -79,7 +79,39 @@ class Reader {
     }
     field = tag >> 3;
     wire_type = static_cast<std::uint8_t>(tag & 0x07u);
-    return wire_type == 0 || wire_type == 2;
+    return wire_type <= 5;
+  }
+
+  bool Skip(std::uint8_t wire_type) noexcept {
+    switch (wire_type) {
+      case 0: {
+        std::uint32_t value = 0;
+        return ReadVarint(value);
+      }
+      case 1:
+        if (bytes_.size() - offset_ < 8) return false;
+        offset_ += 8;
+        return true;
+      case 2: {
+        std::vector<std::byte> ignored;
+        return ReadBytes(ignored);
+      }
+      case 3:
+        for (;;) {
+          if (AtEnd()) return false;
+          std::uint32_t field = 0;
+          std::uint8_t nested_wire_type = 0;
+          if (!ReadTag(field, nested_wire_type)) return false;
+          if (nested_wire_type == 4) return true;
+          if (!Skip(nested_wire_type)) return false;
+        }
+      case 5:
+        if (bytes_.size() - offset_ < 4) return false;
+        offset_ += 4;
+        return true;
+      default:
+        return false;
+    }
   }
 
   bool ReadBytes(std::vector<std::byte>& value) noexcept {
@@ -167,20 +199,19 @@ bool ParseConnect(std::span<const std::byte> bytes,
                   ControlEnvelope& envelope) noexcept {
   Reader reader(bytes);
   bool auth_seen = false;
-  bool peer_seen = false;
   while (!reader.AtEnd()) {
     std::uint32_t field = 0;
     std::uint8_t wire_type = 0;
     if (!reader.ReadTag(field, wire_type)) return false;
-    if (field == 1 && wire_type == 0 && !auth_seen) {
+    if (field == 1 && wire_type == 0) {
       std::uint32_t value = 0;
-      if (!reader.ReadVarint(value) || value > 3) return false;
-      envelope.auth_mode = static_cast<AuthMode>(value);
+      if (!reader.ReadVarint(value)) return false;
+      envelope.auth_mode = value <= 3 ? static_cast<AuthMode>(value)
+                                      : AuthMode::unspecified;
       auth_seen = true;
-    } else if (field == 2 && wire_type == 2 && !peer_seen) {
+    } else if (field == 2 && wire_type == 2) {
       if (!reader.ReadBytes(envelope.bytes1)) return false;
-      peer_seen = true;
-    } else {
+    } else if (!reader.Skip(wire_type)) {
       return false;
     }
   }
@@ -196,15 +227,16 @@ bool ParseError(std::span<const std::byte> bytes,
     std::uint32_t field = 0;
     std::uint8_t wire_type = 0;
     if (!reader.ReadTag(field, wire_type)) return false;
-    if (field == 1 && wire_type == 0 && !code_seen) {
+    if (field == 1 && wire_type == 0) {
       std::uint32_t value = 0;
-      if (!reader.ReadVarint(value) || value > 7) return false;
-      envelope.error_code = static_cast<ErrorCode>(value);
+      if (!reader.ReadVarint(value)) return false;
+      envelope.error_code = value <= 7 ? static_cast<ErrorCode>(value)
+                                       : ErrorCode::unspecified;
       code_seen = true;
-    } else if (field == 2 && wire_type == 2 && !message_seen) {
+    } else if (field == 2 && wire_type == 2) {
       if (!reader.ReadString(envelope.error_message)) return false;
       message_seen = true;
-    } else {
+    } else if (!reader.Skip(wire_type)) {
       return false;
     }
   }
@@ -214,13 +246,19 @@ bool ParseError(std::span<const std::byte> bytes,
 bool ParseBytes1(std::span<const std::byte> bytes,
                  ControlEnvelope& envelope) noexcept {
   Reader reader(bytes);
-  std::uint32_t field = 0;
-  std::uint8_t wire_type = 0;
-  if (!reader.ReadTag(field, wire_type) || field != 1 || wire_type != 2 ||
-      !reader.ReadBytes(envelope.bytes1) || !reader.AtEnd()) {
-    return false;
+  bool value_seen = false;
+  while (!reader.AtEnd()) {
+    std::uint32_t field = 0;
+    std::uint8_t wire_type = 0;
+    if (!reader.ReadTag(field, wire_type)) return false;
+    if (field == 1 && wire_type == 2) {
+      if (!reader.ReadBytes(envelope.bytes1)) return false;
+      value_seen = true;
+    } else if (!reader.Skip(wire_type)) {
+      return false;
+    }
   }
-  return true;
+  return value_seen;
 }
 
 bool ParseCredential(std::span<const std::byte> bytes,
@@ -231,14 +269,14 @@ bool ParseCredential(std::span<const std::byte> bytes,
   while (!reader.AtEnd()) {
     std::uint32_t field = 0;
     std::uint8_t wire_type = 0;
-    if (!reader.ReadTag(field, wire_type) || wire_type != 2) return false;
-    if (field == 1 && !first_seen) {
+    if (!reader.ReadTag(field, wire_type)) return false;
+    if (field == 1 && wire_type == 2) {
       if (!reader.ReadBytes(envelope.bytes1)) return false;
       first_seen = true;
-    } else if (field == 2 && !second_seen) {
+    } else if (field == 2 && wire_type == 2) {
       if (!reader.ReadBytes(envelope.bytes2)) return false;
       second_seen = true;
-    } else {
+    } else if (!reader.Skip(wire_type)) {
       return false;
     }
   }
@@ -248,15 +286,19 @@ bool ParseCredential(std::span<const std::byte> bytes,
 bool ParseStream(std::span<const std::byte> bytes,
                  ControlEnvelope& envelope) noexcept {
   Reader reader(bytes);
-  std::uint32_t field = 0;
-  std::uint8_t wire_type = 0;
-  std::uint32_t value = 0;
-  if (!reader.ReadTag(field, wire_type) || field != 1 || wire_type != 0 ||
-      !reader.ReadVarint(value) || !reader.AtEnd()) {
-    return false;
+  bool value_seen = false;
+  while (!reader.AtEnd()) {
+    std::uint32_t field = 0;
+    std::uint8_t wire_type = 0;
+    if (!reader.ReadTag(field, wire_type)) return false;
+    if (field == 1 && wire_type == 0) {
+      if (!reader.ReadVarint(envelope.stream_id)) return false;
+      value_seen = true;
+    } else if (!reader.Skip(wire_type)) {
+      return false;
+    }
   }
-  envelope.stream_id = value;
-  return true;
+  return value_seen;
 }
 
 }  // namespace
@@ -332,67 +374,90 @@ std::optional<ControlEnvelope> DecodeControlEnvelope(
     std::span<const std::byte> payload) noexcept {
   if (payload.empty() || payload.size() > kMaxPayload) return std::nullopt;
   Reader reader(payload);
-  std::uint32_t field = 0;
-  std::uint8_t wire_type = 0;
-  std::vector<std::byte> submessage;
-  if (!reader.ReadTag(field, wire_type) || wire_type != 2 ||
-      !reader.ReadBytes(submessage) || !reader.AtEnd()) {
-    return std::nullopt;
+  std::uint32_t selected_field = 0;
+  std::vector<std::byte> selected_submessage;
+  bool found = false;
+  while (!reader.AtEnd()) {
+    std::uint32_t field = 0;
+    std::uint8_t wire_type = 0;
+    if (!reader.ReadTag(field, wire_type)) return std::nullopt;
+    const bool known_field =
+        field == 1 || field == 2 || field == 3 || field == 10 ||
+        field == 11 || field == 12 || field == 13 || field == 14 ||
+        field == 20 || field == 21 || field == 30 || field == 31;
+    if (!known_field || wire_type != 2) {
+      if (!reader.Skip(wire_type)) return std::nullopt;
+      continue;
+    }
+    if (!reader.ReadBytes(selected_submessage)) return std::nullopt;
+    selected_field = field;
+    found = true;
   }
 
+  if (!found) return std::nullopt;
   ControlEnvelope envelope;
   bool parsed = false;
-  switch (field) {
+  switch (selected_field) {
     case 1:
       envelope.type = ControlMessageType::connect_request;
-      parsed = ParseConnect(submessage, envelope);
+      parsed = ParseConnect(selected_submessage, envelope);
       break;
     case 2:
       envelope.type = ControlMessageType::session_ready;
-      parsed = submessage.empty();
+      {
+        Reader nested(selected_submessage);
+        parsed = true;
+        while (!nested.AtEnd()) {
+          std::uint32_t nested_field = 0;
+          std::uint8_t nested_wire_type = 0;
+          if (!nested.ReadTag(nested_field, nested_wire_type) ||
+              !nested.Skip(nested_wire_type)) {
+            parsed = false;
+            break;
+          }
+        }
+      }
       break;
     case 3:
       envelope.type = ControlMessageType::error;
-      parsed = ParseError(submessage, envelope);
+      parsed = ParseError(selected_submessage, envelope);
       break;
     case 10:
       envelope.type = ControlMessageType::pair_spake_a;
-      parsed = ParseBytes1(submessage, envelope);
+      parsed = ParseBytes1(selected_submessage, envelope);
       break;
     case 11:
       envelope.type = ControlMessageType::pair_spake_b;
-      parsed = ParseBytes1(submessage, envelope);
+      parsed = ParseBytes1(selected_submessage, envelope);
       break;
     case 12:
       envelope.type = ControlMessageType::pair_confirm_a;
-      parsed = ParseBytes1(submessage, envelope);
+      parsed = ParseBytes1(selected_submessage, envelope);
       break;
     case 13:
       envelope.type = ControlMessageType::pair_confirm_b;
-      parsed = ParseBytes1(submessage, envelope);
+      parsed = ParseBytes1(selected_submessage, envelope);
       break;
     case 14:
       envelope.type = ControlMessageType::pair_credential;
-      parsed = ParseCredential(submessage, envelope);
+      parsed = ParseCredential(selected_submessage, envelope);
       break;
     case 20:
       envelope.type = ControlMessageType::auth_challenge;
-      parsed = ParseBytes1(submessage, envelope);
+      parsed = ParseBytes1(selected_submessage, envelope);
       break;
     case 21:
       envelope.type = ControlMessageType::auth_response;
-      parsed = ParseCredential(submessage, envelope);
+      parsed = ParseCredential(selected_submessage, envelope);
       break;
     case 30:
       envelope.type = ControlMessageType::start_stream;
-      parsed = ParseStream(submessage, envelope);
+      parsed = ParseStream(selected_submessage, envelope);
       break;
     case 31:
       envelope.type = ControlMessageType::start_stream_ack;
-      parsed = ParseStream(submessage, envelope);
+      parsed = ParseStream(selected_submessage, envelope);
       break;
-    default:
-      return std::nullopt;
   }
   return parsed && ValidateEnvelope(envelope)
              ? std::optional{std::move(envelope)}

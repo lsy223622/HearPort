@@ -13,9 +13,28 @@ final class ReceiverCoreTests: XCTestCase {
         XCTAssertEqual(try ControlEnvelope.decode(ack.encoded()), ack)
     }
 
-    func testControlEnvelopeRejectsUnknownAndDuplicateFields() {
-        XCTAssertThrowsError(try ControlEnvelope.decode(Data([0x12, 0x02, 0x08, 0x01])))
-        XCTAssertThrowsError(try ControlEnvelope.decode(Data([0x0a, 0x04, 0x08, 0x02, 0x08, 0x02])))
+    func testControlEnvelopeIgnoresUnknownAndUsesLastScalarValue() throws {
+        let withUnknown = Data([0x10, 0x01, 0x0a, 0x02, 0x08, 0x02])
+        XCTAssertEqual(
+            try ControlEnvelope.decode(withUnknown),
+            ControlEnvelope(.connectRequest(authMode: .pair, peerID: Data()))
+        )
+
+        let duplicate = Data([0x0a, 0x04, 0x08, 0x01, 0x08, 0x02])
+        XCTAssertEqual(
+            try ControlEnvelope.decode(duplicate),
+            ControlEnvelope(.connectRequest(authMode: .pair, peerID: Data()))
+        )
+
+        let wrongWireAfterValid = Data([0x0a, 0x02, 0x08, 0x02,
+                                        0x09, 0x00, 0x00, 0x00, 0x00,
+                                        0x00, 0x00, 0x00, 0x00])
+        XCTAssertEqual(
+            try ControlEnvelope.decode(wrongWireAfterValid),
+            ControlEnvelope(.connectRequest(authMode: .pair, peerID: Data()))
+        )
+
+        XCTAssertThrowsError(try ControlEnvelope.decode(Data([0xfa, 0x01, 0x02, 0x08, 0x00])))
     }
 
     func testControlFramingUsesBigEndianAndHandlesFragmentation() throws {
