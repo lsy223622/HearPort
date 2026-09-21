@@ -54,6 +54,17 @@ final class DiagnosticsTests: XCTestCase {
         XCTAssertEqual(diagnostics.snapshot().activeBytes, 0)
     }
 
+    func testExportIncludesSafeEnvironmentSummary() throws {
+        let diagnostics = try makeDiagnostics()
+
+        let exported = try String(contentsOf: diagnostics.export(), encoding: .utf8)
+
+        XCTAssertTrue(exported.contains("Environment:"))
+        XCTAssertTrue(exported.contains("platform="))
+        XCTAssertTrue(exported.contains("os_version="))
+        XCTAssertTrue(exported.contains("app_version="))
+    }
+
     func testReceiverDiagnosticsCaptureSafeAudioAndLifecycleMetadata() throws {
         let diagnostics = try makeDiagnostics()
         diagnostics.level = .debug
