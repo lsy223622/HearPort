@@ -257,4 +257,6 @@ public struct HearPortApp: View {
         ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
     }
 }
+
+public typealias HearPortReceiverView = HearPortApp
 #endif

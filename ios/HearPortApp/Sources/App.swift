@@ -5,7 +5,7 @@ import HearPortReceiver
 struct HearPortApp: App {
     var body: some Scene {
         WindowGroup {
-            HearPortReceiver.HearPortApp()
+            HearPortReceiverView()
         }
     }
 }
