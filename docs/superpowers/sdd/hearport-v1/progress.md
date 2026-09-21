@@ -23,6 +23,6 @@
 - Task 3: complete (commit f66b7fd; tests: focused realtime -> 9/9 passed, full reference suite -> 16/16 passed; native CTest not run because the C++ toolchain remains unavailable)
 - Task 4: complete (commit 68da40d; tests: focused session -> 4/4 passed, full reference suite -> 20/20 passed; native CTest not run because the C++ toolchain remains unavailable)
 - Task 5: complete (commit c16aa77; tests: focused Windows audio -> 4/4 passed, full reference suite -> 24/24 passed, `git diff --check` passed; native CMake/CTest not run because the Windows C++ toolchain and MsQuic are unavailable in this environment)
-- Task 6: not started
+- Task 6: complete (commit 662c4aa; tests: full Python reference suite -> 24/24 passed, staged `git diff --check` passed; `swift test --package-path ios/HearPortReceiver` could not run because `swift` is absent on this Windows host; iPad simulator/device validation remains pending on macOS/Xcode)
 - Task 7: not started
 - Task 8: not started
