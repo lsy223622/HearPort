@@ -157,19 +157,26 @@ public final class HearPortDiagnostics: @unchecked Sendable {
             "Log level: \(configuredLevel.label.lowercased())",
             "Retained entries: \(tail.count)",
             "",
-            "--- retained log files ---"
+            "Environment:"
         ]
+        output.append(contentsOf: Self.environmentSummary())
+        output.append(contentsOf: [
+            "",
+            "--- retained log files ---"
+        ])
 
+        var retainedFileCount = 0
         for url in Array(rotatedURLsLocked().reversed()) + [activeURL] {
             guard let data = try? Data(contentsOf: url),
                   let text = String(data: data, encoding: .utf8) else {
                 continue
             }
+            retainedFileCount += 1
             output.append("\n--- \(url.lastPathComponent) ---")
             output.append(text.trimmingCharacters(in: .newlines))
         }
 
-        if output.count == 6 {
+        if retainedFileCount == 0 {
             output.append("\n--- in-memory tail ---")
             output.append(contentsOf: tail)
         }
@@ -192,6 +199,30 @@ public final class HearPortDiagnostics: @unchecked Sendable {
                                             in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
         return base.appendingPathComponent("HearPort/Logs", isDirectory: true)
+    }
+
+    private static func environmentSummary() -> [String] {
+        let version = ProcessInfo.processInfo.operatingSystemVersion
+        let osVersion = "\(version.majorVersion).\(version.minorVersion).\(version.patchVersion)"
+        let appVersion = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String)
+            ?? "unknown"
+        return [
+            "platform=\(platformName)",
+            "os_version=\(osVersion)",
+            "app_version=\(appVersion)"
+        ]
+    }
+
+    private static var platformName: String {
+        #if os(iOS)
+        return "iOS"
+        #elseif os(macOS)
+        return "macOS"
+        #elseif os(Windows)
+        return "Windows"
+        #else
+        return "unknown"
+        #endif
     }
 
     private func loadTail() {
