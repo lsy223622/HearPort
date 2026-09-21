@@ -327,7 +327,6 @@ public final class HearPortQuicTransport {
     private let diagnostics: HearPortDiagnostics
     private var group: NWConnectionGroup?
     private var controlStream: NWConnection?
-    private var datagramFlow: NWConnection?
     private var controlReady = false
     private var datagramReady = false
 
@@ -368,6 +367,7 @@ public final class HearPortQuicTransport {
             port: NWEndpoint.Port(rawValue: port)!
         )
         let quicOptions = NWProtocolQUIC.Options(alpn: [Self.alpn])
+        quicOptions.maxDatagramFrameSize = AudioDatagram.byteCount
         sec_protocol_options_set_tls_resumption_enabled(
             quicOptions.securityProtocolOptions,
             false
@@ -435,9 +435,35 @@ public final class HearPortQuicTransport {
             guard let self else { return }
             switch newState {
             case .ready:
-                self.openFlows(endpoint: endpoint,
-                               connectionGroup: connectionGroup)
-            case .failed:
+                self.datagramReady = true
+                self.diagnostics.log(
+                    .info,
+                    category: .transport,
+                    message: "datagram_group_ready",
+                    fields: ["event": "datagram_group_ready"]
+                )
+                self.openControlStream(endpoint: endpoint,
+                                       connectionGroup: connectionGroup)
+            case let .waiting(error):
+                self.diagnostics.log(
+                    .warning,
+                    category: .transport,
+                    message: "transport_waiting",
+                    fields: [
+                        "event": "transport_waiting",
+                        "error": "\(error)"
+                    ]
+                )
+            case let .failed(error):
+                self.diagnostics.log(
+                    .error,
+                    category: .transport,
+                    message: "transport_failed",
+                    fields: [
+                        "event": "transport_failed",
+                        "error": "\(error)"
+                    ]
+                )
                 self.updateState(.failed)
             case .cancelled:
                 self.updateState(.closed)
@@ -447,6 +473,25 @@ public final class HearPortQuicTransport {
         }
         connectionGroup.newConnectionHandler = { connection in
             connection.cancel()
+        }
+        connectionGroup.setReceiveHandler(
+            maximumMessageSize: AudioDatagram.byteCount,
+            rejectOversizedMessages: true
+        ) { [weak self] _, data, isComplete in
+            guard let self else { return }
+            if let data {
+                self.diagnostics.log(
+                    .debug,
+                    category: .audio,
+                    message: "datagram_read",
+                    fields: [
+                        "event": "datagram_read",
+                        "bytes": "\(data.count)",
+                        "is_complete": "\(isComplete)"
+                    ]
+                )
+                self.onAudioDatagram?(data)
+            }
         }
         connectionGroup.start(queue: queue)
     }
@@ -477,10 +522,8 @@ public final class HearPortQuicTransport {
 
     public func cancel() {
         controlStream?.cancel()
-        datagramFlow?.cancel()
         group?.cancel()
         controlStream = nil
-        datagramFlow = nil
         group = nil
         controlReady = false
         datagramReady = false
@@ -493,20 +536,15 @@ public final class HearPortQuicTransport {
         updateState(.closed)
     }
 
-    private func openFlows(endpoint: NWEndpoint,
-                           connectionGroup: NWConnectionGroup) {
+    private func openControlStream(endpoint: NWEndpoint,
+                                   connectionGroup: NWConnectionGroup) {
         let controlOptions = NWProtocolQUIC.Options()
         controlOptions.direction = .bidirectional
         controlOptions.isDatagram = false
-        let datagramOptions = NWProtocolQUIC.Options()
-        datagramOptions.direction = .bidirectional
-        datagramOptions.isDatagram = true
-        datagramOptions.maxDatagramFrameSize = AudioDatagram.byteCount
 
-        guard let control = connectionGroup.extract(connectionTo: endpoint,
-                                                     using: controlOptions),
-              let datagram = connectionGroup.extract(connectionTo: endpoint,
-                                                      using: datagramOptions) else {
+        guard let control = NWConnection(from: connectionGroup,
+                                         to: endpoint,
+                                         using: controlOptions) else {
             diagnostics.log(
                 .error,
                 category: .transport,
@@ -517,7 +555,6 @@ public final class HearPortQuicTransport {
             return
         }
         controlStream = control
-        datagramFlow = datagram
         control.stateUpdateHandler = { [weak self] state in
             guard let self else { return }
             switch state {
@@ -530,36 +567,25 @@ public final class HearPortQuicTransport {
                     fields: ["event": "control_flow_ready"]
                 )
                 self.updateReadyIfPossible()
-            case .failed:
+            case let .waiting(error):
+                self.diagnostics.log(
+                    .warning,
+                    category: .transport,
+                    message: "control_flow_waiting",
+                    fields: [
+                        "event": "control_flow_waiting",
+                        "error": "\(error)"
+                    ]
+                )
+            case let .failed(error):
                 self.diagnostics.log(
                     .error,
                     category: .transport,
                     message: "control_flow_failed",
-                    fields: ["event": "control_flow_failed"]
-                )
-                self.updateState(.failed)
-            default:
-                break
-            }
-        }
-        datagram.stateUpdateHandler = { [weak self] state in
-            guard let self else { return }
-            switch state {
-            case .ready:
-                self.datagramReady = true
-                self.diagnostics.log(
-                    .info,
-                    category: .transport,
-                    message: "datagram_flow_ready",
-                    fields: ["event": "datagram_flow_ready"]
-                )
-                self.updateReadyIfPossible()
-            case .failed:
-                self.diagnostics.log(
-                    .error,
-                    category: .transport,
-                    message: "datagram_flow_failed",
-                    fields: ["event": "datagram_flow_failed"]
+                    fields: [
+                        "event": "control_flow_failed",
+                        "error": "\(error)"
+                    ]
                 )
                 self.updateState(.failed)
             default:
@@ -567,9 +593,7 @@ public final class HearPortQuicTransport {
             }
         }
         control.start(queue: queue)
-        datagram.start(queue: queue)
         receiveControl(on: control)
-        receiveDatagrams(on: datagram)
     }
 
     private func updateReadyIfPossible() {
@@ -600,30 +624,6 @@ public final class HearPortQuicTransport {
             }
             guard error == nil, !isComplete else { return }
             self?.receiveControl(on: stream)
-        }
-    }
-
-    private func receiveDatagrams(on flow: NWConnection) {
-        flow.receiveMessage { [weak self] data, _, _, error in
-            if let data {
-                self?.diagnostics.log(
-                    .debug,
-                    category: .audio,
-                    message: "datagram_read",
-                    fields: ["event": "datagram_read", "bytes": "\(data.count)"]
-                )
-                self?.onAudioDatagram?(data)
-            }
-            if let error {
-                self?.diagnostics.log(
-                    .warning,
-                    category: .transport,
-                    message: "datagram_read_failed",
-                    fields: ["event": "datagram_read_failed", "error": "\(error)"]
-                )
-            }
-            guard error == nil else { return }
-            self?.receiveDatagrams(on: flow)
         }
     }
 

@@ -50,7 +50,7 @@ class MsQuicServer final : public QuicServer {
     options_ = options;
     callbacks_ = std::move(callbacks);
 
-    if (QUIC_FAILED(MsQuicOpenVersion(QUIC_API_VERSION_2, &api_))) {
+    if (QUIC_FAILED(MsQuicOpen2(&api_))) {
       api_ = nullptr;
       return false;
     }
