@@ -14,6 +14,7 @@ REQUIRED_ROWS = {
     "windows-quic",
     "ios-quic",
     "ios-audio",
+    "ios-app-archive",
     "security-pairing",
     "security-remembered",
     "diagnostics",
