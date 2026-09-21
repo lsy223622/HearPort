@@ -4,10 +4,12 @@ on:
   push:
     paths:
       - "ios/HearPortReceiver/**"
+      - "ios/HearPortApp/**"
       - ".github/workflows/ios-receiver.yml"
   pull_request:
     paths:
       - "ios/HearPortReceiver/**"
+      - "ios/HearPortApp/**"
       - ".github/workflows/ios-receiver.yml"
   workflow_dispatch:
 
@@ -21,3 +23,61 @@ jobs:
       - name: Run Swift package tests
         working-directory: ios/HearPortReceiver
         run: swift test
+
+  ios-unsigned-ipa:
+    needs: swift-package
+    runs-on: macos-14
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: ios/HearPortApp
+        run: xcodegen generate
+
+      - name: Archive unsigned iOS app
+        run: >-
+          xcodebuild
+          -project ios/HearPortApp/HearPort.xcodeproj
+          -scheme HearPort
+          -configuration Release
+          -destination 'generic/platform=iOS'
+          -archivePath "$RUNNER_TEMP/HearPort.xcarchive"
+          -derivedDataPath "$RUNNER_TEMP/HearPortDerivedData"
+          CODE_SIGNING_ALLOWED=NO
+          CODE_SIGNING_REQUIRED=NO
+          archive
+
+      - name: Validate archive and create unsigned IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          app_path="$RUNNER_TEMP/HearPort.xcarchive/Products/Applications/HearPort.app"
+          test -d "$app_path"
+          bundle_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app_path/Info.plist")
+          test "$bundle_id" = "com.lsy223622.HearPort"
+          mkdir -p "$RUNNER_TEMP/Payload"
+          cp -R "$app_path" "$RUNNER_TEMP/Payload/HearPort.app"
+          ditto -c -k --sequesterRsrc --keepParent \
+            "$RUNNER_TEMP/Payload" "$RUNNER_TEMP/HearPort-unsigned.ipa"
+          unzip -l "$RUNNER_TEMP/HearPort-unsigned.ipa" | \
+            grep -F "Payload/HearPort.app/Info.plist"
+          {
+            echo "bundle_identifier=$bundle_id"
+            echo "archive_path=$RUNNER_TEMP/HearPort.xcarchive"
+            echo "ipa_sha256=$(shasum -a 256 "$RUNNER_TEMP/HearPort-unsigned.ipa" | awk '{print $1}')"
+            xcodebuild -version
+            xcodegen --version
+          } > "$RUNNER_TEMP/HearPort-archive-metadata.txt"
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: HearPort-unsigned-ipa
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/HearPort-unsigned.ipa
+            ${{ runner.temp }}/HearPort-archive-metadata.txt
