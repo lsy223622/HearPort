@@ -1,0 +1,36 @@
+name: HearPort
+
+options:
+  deploymentTarget:
+    iOS: "16.0"
+
+packages:
+  HearPortReceiver:
+    path: ../HearPortReceiver
+
+targets:
+  HearPort:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+    dependencies:
+      - package: HearPortReceiver
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.lsy223622.HearPort
+        PRODUCT_NAME: HearPort
+        MARKETING_VERSION: 0.1.0
+        CURRENT_PROJECT_VERSION: 1
+        SWIFT_VERSION: 5.9
+        IPHONEOS_DEPLOYMENT_TARGET: 16.0
+        TARGETED_DEVICE_FAMILY: "1,2"
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: Resources/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Resources/HearPort.entitlements
+
+schemes:
+  HearPort:
+    build:
+      targets:
+        HearPort: all
