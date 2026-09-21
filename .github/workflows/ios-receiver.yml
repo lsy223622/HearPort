@@ -1,0 +1,23 @@
+name: iOS receiver package tests
+
+on:
+  push:
+    paths:
+      - "ios/HearPortReceiver/**"
+      - ".github/workflows/ios-receiver.yml"
+  pull_request:
+    paths:
+      - "ios/HearPortReceiver/**"
+      - ".github/workflows/ios-receiver.yml"
+  workflow_dispatch:
+
+jobs:
+  swift-package:
+    runs-on: macos-14
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Run Swift package tests
+        working-directory: ios/HearPortReceiver
+        run: swift test

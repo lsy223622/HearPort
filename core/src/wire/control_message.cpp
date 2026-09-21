@@ -1,4 +1,5 @@
 #include "hearport/wire/control_message.h"
+#include "hearport/wire/control_framing.h"
 
 #include <algorithm>
 #include <limits>

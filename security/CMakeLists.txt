@@ -29,6 +29,12 @@ if(HEARPORT_CARGO_EXECUTABLE)
     hearport_spake2_provider
     PROPERTIES IMPORTED_LOCATION "${HEARPORT_SPAKE2_PROVIDER_LIBRARY}"
                INTERFACE_INCLUDE_DIRECTORIES "${HEARPORT_SPAKE2_PROVIDER_INCLUDE_DIR}")
+  if(WIN32)
+    set_property(
+      TARGET hearport_spake2_provider
+      APPEND
+      PROPERTY INTERFACE_LINK_LIBRARIES "ws2_32;userenv;ntdll")
+  endif()
   add_dependencies(hearport_spake2_provider hearport_spake2_provider_build)
   set(HEARPORT_HAS_SPAKE2_PROVIDER ON)
 endif()

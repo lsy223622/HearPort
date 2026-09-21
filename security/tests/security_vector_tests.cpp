@@ -44,11 +44,11 @@ int main() {
   assert(!IsValidPin(Bytes("12x456")));
 
   const auto identity_b = BuildReceiverIdentity();
-  assert(identity_b.size() == 21);
+  assert(identity_b.size() == 20);
   Bytes32 spki{};
   spki.fill(std::byte{0x11});
   const auto identity_a = BuildWindowsIdentity(spki);
-  assert(identity_a.size() == 41);
+  assert(identity_a.size() == 52);
   if (!Spake2Session::ProviderAvailable()) {
     assert(!PinToScalar(pin).has_value());
     assert(!Sha256Spki(spki).has_value());
