@@ -54,6 +54,50 @@ final class DiagnosticsTests: XCTestCase {
         XCTAssertEqual(diagnostics.snapshot().activeBytes, 0)
     }
 
+    func testReceiverDiagnosticsCaptureSafeAudioAndLifecycleMetadata() throws {
+        let diagnostics = try makeDiagnostics()
+        diagnostics.level = .debug
+        let receiver = HearPortReceiver(
+            startupPackets: 1,
+            renderCapacityFrames: AudioDatagram.framesPerPacket,
+            diagnostics: diagnostics
+        )
+
+        XCTAssertTrue(receiver.session.receiveConnect(authMode: .oneTime, peerID: Data()))
+        XCTAssertTrue(receiver.markAuthenticated())
+        XCTAssertTrue(receiver.beginStream(7))
+        XCTAssertTrue(receiver.acknowledgeStartStream(7))
+        let packet = try AudioDatagram(
+            streamID: 7,
+            sequence: 0,
+            pcm: Data(repeating: 0xa5, count: AudioDatagram.pcmByteCount)
+        )
+        XCTAssertEqual(receiver.receiveDatagram(packet.encoded), .accepted)
+        _ = receiver.renderFrames(AudioDatagram.framesPerPacket)
+        receiver.handleAudioLifecycle(.routeChanged)
+
+        let exported = try String(contentsOf: diagnostics.export(), encoding: .utf8)
+        XCTAssertTrue(exported.contains("[realtime]"))
+        XCTAssertTrue(exported.contains("[audio]"))
+        XCTAssertTrue(exported.contains("event=datagram_received"))
+        XCTAssertTrue(exported.contains("stream_id=7"))
+        XCTAssertTrue(exported.contains("sequence=0"))
+        XCTAssertTrue(exported.contains("pcm_bytes=960"))
+        XCTAssertTrue(exported.contains("event=route_changed"))
+        XCTAssertFalse(exported.contains("a5a5a5"))
+    }
+
+    func testControlMessagesExposeStableSafeDiagnosticNames() {
+        XCTAssertEqual(
+            ControlEnvelope(.startStreamAck(7)).message.diagnosticName,
+            "start_stream_ack"
+        )
+        XCTAssertEqual(
+            ControlEnvelope(.error(code: .authFailed, message: "secret")).message.diagnosticName,
+            "error"
+        )
+    }
+
     private func makeDiagnostics(
         maxFileBytes: Int = 4_096,
         maxRotatedFiles: Int = 3
