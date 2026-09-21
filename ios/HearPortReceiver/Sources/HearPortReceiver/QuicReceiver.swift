@@ -322,6 +322,7 @@ public final class HearPortQuicTransport {
     public var onControlData: DataHandler?
     public var onAudioDatagram: DataHandler?
     public var onStateChange: StateHandler?
+    public var onControlStreamCreated: (() -> Void)?
 
     private let queue = DispatchQueue(label: "com.hearport.quic")
     private let diagnostics: HearPortDiagnostics
@@ -586,6 +587,13 @@ public final class HearPortQuicTransport {
         }
         control.start(queue: queue)
         receiveControl(on: control)
+        diagnostics.log(
+            .debug,
+            category: .control,
+            message: "control_stream_created",
+            fields: ["event": "control_stream_created"]
+        )
+        onControlStreamCreated?()
     }
 
     private func updateReadyIfPossible() {

@@ -40,6 +40,9 @@ public final class ReceiverControlSession {
         self.transport.onControlData = { [weak self] data in
             self?.receiveControlBytes(data)
         }
+        self.transport.onControlStreamCreated = { [weak self] in
+            self?.sendConnectIfPossible()
+        }
         self.transport.onStateChange = { [weak self] state in
             guard let self else { return }
             self.diagnostics.log(
