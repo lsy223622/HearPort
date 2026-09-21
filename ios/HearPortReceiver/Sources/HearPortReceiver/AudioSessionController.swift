@@ -194,8 +194,7 @@ public final class PlatformAudioOutputController {
             queue: nil
         ) { [weak self] notification in
             guard let self,
-                  let rawType = notification.userInfo?
-                    [AVAudioSessionInterruptionTypeKey] as? UInt,
+                  let rawType = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
                   let type = AVAudioSession.InterruptionType(rawValue: rawType) else {
                 return
             }
