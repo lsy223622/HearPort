@@ -1,0 +1,106 @@
+import Foundation
+
+public enum JitterInsertResult: Equatable, Sendable {
+    case inserted
+    case duplicate
+    case late
+    case wrongStream
+}
+
+public enum JitterMode: Equatable, Sendable {
+    case startup
+    case running
+    case silentRebuffer
+}
+
+public struct JitterStats: Equatable, Sendable {
+    public fileprivate(set) var insertedPackets = 0
+    public fileprivate(set) var duplicatePackets = 0
+    public fileprivate(set) var latePackets = 0
+    public fileprivate(set) var wrongStreamPackets = 0
+    public fileprivate(set) var lostPackets = 0
+}
+
+public struct JitterBuffer {
+    public private(set) var streamID: UInt32
+    public private(set) var mode: JitterMode = .startup
+    public private(set) var stats = JitterStats()
+
+    private let startupPackets: Int
+    private var packets: [UInt32: AudioDatagram] = [:]
+    private var nextSequence: UInt32?
+
+    public init(streamID: UInt32, startupPackets: Int = 4) {
+        precondition(streamID != 0)
+        precondition(startupPackets > 0)
+        self.streamID = streamID
+        self.startupPackets = startupPackets
+    }
+
+    public var fillPackets: Int { packets.count }
+    public var expectedSequence: UInt32? { nextSequence }
+
+    public mutating func reset(streamID: UInt32) {
+        precondition(streamID != 0)
+        self.streamID = streamID
+        mode = .startup
+        packets.removeAll(keepingCapacity: true)
+        nextSequence = nil
+        stats = JitterStats()
+    }
+
+    public mutating func insert(_ packet: AudioDatagram) -> JitterInsertResult {
+        guard packet.streamID == streamID else {
+            stats.wrongStreamPackets += 1
+            return .wrongStream
+        }
+        if let expected = nextSequence, SequenceNumber.isBefore(packet.sequence, expected) {
+            stats.latePackets += 1
+            return .late
+        }
+        if packets[packet.sequence] != nil {
+            stats.duplicatePackets += 1
+            return .duplicate
+        }
+        if nextSequence == nil {
+            nextSequence = packet.sequence
+        }
+        packets[packet.sequence] = packet
+        stats.insertedPackets += 1
+        return .inserted
+    }
+
+    @discardableResult
+    public mutating func startIfReady() -> Bool {
+        guard mode != .running, let expected = nextSequence,
+              packets.count >= startupPackets else { return false }
+        var sequence = expected
+        for _ in 0..<startupPackets {
+            guard packets[sequence] != nil else { return false }
+            sequence = SequenceNumber.next(sequence)
+        }
+        mode = .running
+        return true
+    }
+
+    public mutating func consumeNext() -> AudioDatagram? {
+        guard mode == .running, let expected = nextSequence else { return nil }
+        guard let packet = packets.removeValue(forKey: expected) else { return nil }
+        nextSequence = SequenceNumber.next(expected)
+        return packet
+    }
+
+    public mutating func concealMissing() -> Data? {
+        guard mode == .running, let expected = nextSequence else { return nil }
+        packets.removeValue(forKey: expected)
+        nextSequence = SequenceNumber.next(expected)
+        stats.lostPackets += 1
+        return Data(repeating: 0, count: AudioDatagram.pcmByteCount)
+    }
+
+    public mutating func enterSilentRebuffer() {
+        packets.removeAll(keepingCapacity: true)
+        nextSequence = nil
+        mode = .silentRebuffer
+    }
+}
