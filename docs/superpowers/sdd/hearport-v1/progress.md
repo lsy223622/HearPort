@@ -19,7 +19,7 @@
 ## Task status
 
 - Task 1: complete (commit 184f717; tests: `python -m unittest tests.reference.test_protocol_constants -v` -> 2/2 passed)
-- Task 2: not started
+- Task 2: complete (commit 67626ee; tests: `python -m unittest tests.reference.test_wire_codec tests.reference.test_protocol_constants -v` -> 7/7 passed; native CMake/CTest not run because `cmake`, `cl`, `clang++`, and `g++` are absent from PATH)
 - Task 3: not started
 - Task 4: not started
 - Task 5: not started
