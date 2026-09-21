@@ -5,6 +5,7 @@ import XCTest
 final class DiagnosticsTests: XCTestCase {
     func testLogRedactsSensitiveFieldsAndKeepsSafeMetadata() throws {
         let diagnostics = try makeDiagnostics()
+        diagnostics.level = .debug
         diagnostics.log(
             .debug,
             category: .pairing,
