@@ -1,0 +1,14 @@
+{
+  "valid_connect_pair": {
+    "auth_mode": "AUTH_MODE_PAIR",
+    "peer_id_hex": ""
+  },
+  "valid_connect_remembered_peer_id_bytes": 16,
+  "invalid_error_code": "ERROR_CODE_UNSPECIFIED",
+  "stream_lifecycle": {
+    "stream_id": 7,
+    "audio_before_ack": "discard",
+    "audio_after_ack": "accept",
+    "old_stream_after_restart": "discard"
+  }
+}
