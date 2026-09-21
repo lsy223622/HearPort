@@ -1,1 +1,9 @@
 /plans
+/build/
+/out/
+/.vs/
+/.swiftpm/
+*.user
+*.suo
+__pycache__/
+*.pyc

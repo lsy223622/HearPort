@@ -1,0 +1,16 @@
+{
+  "protocol_version": 1,
+  "alpn": "hearport/1",
+  "default_udp_port": 52137,
+  "quic_datagram_required": true,
+  "zero_rtt_application_data": false,
+  "sample_rate_hz": 48000,
+  "channels": 2,
+  "sample_format": "float32le",
+  "bytes_per_sample": 4,
+  "frames_per_audio_datagram": 120,
+  "pcm_bytes_per_audio_datagram": 960,
+  "audio_application_datagram_bytes": 968,
+  "control_message_max_bytes": 65536,
+  "audio_header_bytes": 8
+}
