@@ -1,10 +1,12 @@
 import re
 import unittest
 from pathlib import Path
+import plistlib
 
 
 ROOT = Path(__file__).resolve().parents[2]
 MATRIX = ROOT / "docs" / "validation-matrix.md"
+APP_INFO_PLIST = ROOT / "ios" / "HearPortApp" / "Resources" / "Info.plist"
 ALLOWED_EVIDENCE = {"automated", "native-build", "real-device", "network-soak", "not-available"}
 REQUIRED_ROWS = {
     "protocol-control",
@@ -29,6 +31,14 @@ REQUIRED_ROWS = {
 
 
 class ValidationMatrixTests(unittest.TestCase):
+    def test_ios_app_plist_declares_standard_executable_metadata(self):
+        info = plistlib.loads(APP_INFO_PLIST.read_bytes())
+
+        self.assertEqual("$(EXECUTABLE_NAME)", info["CFBundleExecutable"])
+        self.assertEqual("APPL", info["CFBundlePackageType"])
+        self.assertEqual("6.0", info["CFBundleInfoDictionaryVersion"])
+        self.assertTrue(info["LSRequiresIPhoneOS"])
+
     def test_matrix_covers_requirements_with_explicit_evidence_class(self):
         text = MATRIX.read_text(encoding="utf-8")
         rows = {}

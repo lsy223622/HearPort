@@ -59,6 +59,10 @@ jobs:
           test -d "$app_path"
           bundle_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app_path/Info.plist")
           test "$bundle_id" = "com.lsy223622.HearPort"
+          executable=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app_path/Info.plist")
+          test "$executable" = "HearPort"
+          package_type=$(/usr/libexec/PlistBuddy -c 'Print :CFBundlePackageType' "$app_path/Info.plist")
+          test "$package_type" = "APPL"
           mkdir -p "$RUNNER_TEMP/Payload"
           cp -R "$app_path" "$RUNNER_TEMP/Payload/HearPort.app"
           ditto -c -k --sequesterRsrc --keepParent \
