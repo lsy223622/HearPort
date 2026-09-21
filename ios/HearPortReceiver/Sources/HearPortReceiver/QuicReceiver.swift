@@ -141,7 +141,7 @@ public final class HearPortReceiver {
                     "event": "datagram_discarded",
                     "stream_id": "\(packet.streamID)",
                     "sequence": "\(packet.sequence)",
-                    "pcm_bytes": "\(packet.pcm.count)",
+                    "audio_bytes": "\(packet.pcm.count)",
                     "disposition": "\(disposition)"
                 ]
             )
@@ -158,7 +158,7 @@ public final class HearPortReceiver {
                 "event": "datagram_received",
                 "stream_id": "\(packet.streamID)",
                 "sequence": "\(packet.sequence)",
-                "pcm_bytes": "\(packet.pcm.count)",
+                "audio_bytes": "\(packet.pcm.count)",
                 "jitter_result": "\(insertResult)",
                 "jitter_mode": "\(buffer.mode)",
                 "buffer_packets": "\(buffer.fillPackets)",

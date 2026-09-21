@@ -82,7 +82,7 @@ final class DiagnosticsTests: XCTestCase {
         XCTAssertTrue(exported.contains("event=datagram_received"))
         XCTAssertTrue(exported.contains("stream_id=7"))
         XCTAssertTrue(exported.contains("sequence=0"))
-        XCTAssertTrue(exported.contains("pcm_bytes=960"))
+        XCTAssertTrue(exported.contains("audio_bytes=960"))
         XCTAssertTrue(exported.contains("event=route_changed"))
         XCTAssertFalse(exported.contains("a5a5a5"))
     }
