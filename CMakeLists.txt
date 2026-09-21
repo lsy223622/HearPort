@@ -20,6 +20,8 @@ target_include_directories(
     "${CMAKE_CURRENT_SOURCE_DIR}/protocol"
 )
 
+add_subdirectory(core)
+
 if(BUILD_TESTING)
   add_test(
     NAME hearport_reference_protocol_constants
