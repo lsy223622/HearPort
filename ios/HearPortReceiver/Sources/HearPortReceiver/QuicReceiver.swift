@@ -1,19 +1,34 @@
 import Foundation
 
 public final class HearPortReceiver {
+    public let diagnostics: HearPortDiagnostics
     public let session = ReceiverSessionState()
-    public let lifecycle = AudioLifecycleController()
+    public let lifecycle: AudioLifecycleController
     public private(set) var invalidDatagrams = 0
 
     private var jitter: JitterBuffer?
     private var renderRing: RenderRingBuffer
     private let lock = NSLock()
 
-    public init(startupPackets: Int = 8, renderCapacityFrames: Int = 4_800) {
+    public init(startupPackets: Int = 8,
+                renderCapacityFrames: Int = 4_800,
+                diagnostics: HearPortDiagnostics = .shared) {
         precondition(startupPackets > 0)
         precondition(renderCapacityFrames > 0)
+        self.diagnostics = diagnostics
+        lifecycle = AudioLifecycleController(diagnostics: diagnostics)
         renderRing = RenderRingBuffer(capacityFrames: renderCapacityFrames)
         startupPacketTarget = startupPackets
+        diagnostics.log(
+            .info,
+            category: .realtime,
+            message: "receiver_initialized",
+            fields: [
+                "event": "receiver_initialized",
+                "startup_packets": "\(startupPackets)",
+                "render_capacity_frames": "\(renderCapacityFrames)"
+            ]
+        )
     }
 
     public var renderFillFrames: Int {
@@ -34,10 +49,28 @@ public final class HearPortReceiver {
     public func beginStream(_ streamID: UInt32) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        guard session.beginStream(streamID) else { return false }
+        guard session.beginStream(streamID) else {
+            diagnostics.log(
+                .warning,
+                category: .realtime,
+                message: "stream_begin_rejected",
+                fields: ["event": "stream_begin_rejected", "stream_id": "\(streamID)"]
+            )
+            return false
+        }
         jitter = JitterBuffer(streamID: streamID,
                               startupPackets: startupPacketTarget)
         renderRing.reset()
+        diagnostics.log(
+            .info,
+            category: .realtime,
+            message: "stream_begin_accepted",
+            fields: [
+                "event": "stream_begin_accepted",
+                "stream_id": "\(streamID)",
+                "startup_packets": "\(startupPacketTarget)"
+            ]
+        )
         return true
     }
 
@@ -45,14 +78,35 @@ public final class HearPortReceiver {
     public func markAuthenticated() -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        return session.markAuthenticated()
+        let accepted = session.markAuthenticated()
+        diagnostics.log(
+            accepted ? .info : .warning,
+            category: .pairing,
+            message: accepted ? "authentication_accepted" : "authentication_rejected",
+            fields: [
+                "event": accepted ? "authentication_accepted" : "authentication_rejected",
+                "phase": "\(session.phase)"
+            ]
+        )
+        return accepted
     }
 
     @discardableResult
     public func acknowledgeStartStream(_ streamID: UInt32) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        return session.ackWritten(streamID)
+        let accepted = session.ackWritten(streamID)
+        diagnostics.log(
+            accepted ? .info : .warning,
+            category: .control,
+            message: accepted ? "start_stream_acknowledged" : "start_stream_ack_rejected",
+            fields: [
+                "event": accepted ? "start_stream_acknowledged" : "start_stream_ack_rejected",
+                "stream_id": "\(streamID)",
+                "phase": "\(session.phase)"
+            ]
+        )
+        return accepted
     }
 
     @discardableResult
@@ -64,22 +118,60 @@ public final class HearPortReceiver {
             packet = try AudioDatagram(encoded: data)
         } catch {
             invalidDatagrams += 1
+            diagnostics.log(
+                .warning,
+                category: .audio,
+                message: "datagram_rejected",
+                fields: [
+                    "event": "invalid_datagram",
+                    "bytes": "\(data.count)",
+                    "reason": "\(error)"
+                ]
+            )
             return nil
         }
         let disposition = session.acceptAudio(packet)
         guard disposition == .accepted,
               var buffer = jitter else {
+            diagnostics.log(
+                .debug,
+                category: .audio,
+                message: "datagram_discarded",
+                fields: [
+                    "event": "datagram_discarded",
+                    "stream_id": "\(packet.streamID)",
+                    "sequence": "\(packet.sequence)",
+                    "pcm_bytes": "\(packet.pcm.count)",
+                    "disposition": "\(disposition)"
+                ]
+            )
             return disposition
         }
-        _ = buffer.insert(packet)
-        _ = buffer.startIfReady()
+        let insertResult = buffer.insert(packet)
+        let started = buffer.startIfReady()
         jitter = buffer
+        diagnostics.log(
+            .debug,
+            category: .audio,
+            message: "datagram_received",
+            fields: [
+                "event": "datagram_received",
+                "stream_id": "\(packet.streamID)",
+                "sequence": "\(packet.sequence)",
+                "pcm_bytes": "\(packet.pcm.count)",
+                "jitter_result": "\(insertResult)",
+                "jitter_mode": "\(buffer.mode)",
+                "buffer_packets": "\(buffer.fillPackets)",
+                "buffer_started": "\(started)"
+            ]
+        )
         return .accepted
     }
 
     public func handleAudioLifecycle(_ event: AudioLifecycleEvent) {
         lock.lock()
         defer { lock.unlock() }
+        let previousState = lifecycle.state
         lifecycle.handle(event)
         switch event {
         case .interruptionBegan:
@@ -96,6 +188,17 @@ public final class HearPortReceiver {
         case .audioAvailable:
             break
         }
+        diagnostics.log(
+            .info,
+            category: .audio,
+            message: "audio_lifecycle",
+            fields: [
+                "event": Self.diagnosticName(for: event),
+                "previous_state": "\(previousState)",
+                "state": "\(lifecycle.state)",
+                "reset_generation": "\(lifecycle.resetGeneration)"
+            ]
+        )
     }
 
     public func enterSilentRebuffer() {
@@ -105,6 +208,16 @@ public final class HearPortReceiver {
         session.enterSilentRebuffer()
         lifecycle.enterSilentRebuffer()
         renderRing.reset()
+        diagnostics.log(
+            .info,
+            category: .audio,
+            message: "silent_rebuffer_entered",
+            fields: [
+                "event": "silent_rebuffer_entered",
+                "phase": "\(session.phase)",
+                "state": "\(lifecycle.state)"
+            ]
+        )
     }
 
     public func renderFrames(_ frameCount: Int) -> [Float] {
@@ -165,6 +278,15 @@ public final class HearPortReceiver {
         }
         return samples
     }
+
+    private static func diagnosticName(for event: AudioLifecycleEvent) -> String {
+        switch event {
+        case .interruptionBegan: return "interruption_began"
+        case .interruptionEnded: return "interruption_ended"
+        case .routeChanged: return "route_changed"
+        case .audioAvailable: return "audio_available"
+        }
+    }
 }
 
 #if canImport(Network)
@@ -202,19 +324,44 @@ public final class HearPortQuicTransport {
     public var onStateChange: StateHandler?
 
     private let queue = DispatchQueue(label: "com.hearport.quic")
+    private let diagnostics: HearPortDiagnostics
     private var group: NWConnectionGroup?
     private var controlStream: NWConnection?
     private var datagramFlow: NWConnection?
     private var controlReady = false
     private var datagramReady = false
 
-    public init() {}
+    public init(diagnostics: HearPortDiagnostics = .shared) {
+        self.diagnostics = diagnostics
+        diagnostics.log(
+            .debug,
+            category: .transport,
+            message: "transport_initialized",
+            fields: ["event": "transport_initialized"]
+        )
+    }
 
     public func connect(
         host: String,
         port: UInt16 = defaultPort,
         tlsPolicy: TLSIdentityPolicy
     ) {
+        let policyName: String
+        switch tlsPolicy {
+        case .pairing: policyName = "pairing"
+        case .remembered: policyName = "remembered"
+        }
+        diagnostics.log(
+            .info,
+            category: .transport,
+            message: "connect_requested",
+            fields: [
+                "event": "connect_requested",
+                "host": host,
+                "port": "\(port)",
+                "tls_policy": policyName
+            ]
+        )
         cancel()
         let endpoint = NWEndpoint.hostPort(
             host: NWEndpoint.Host(host),
@@ -235,16 +382,38 @@ public final class HearPortQuicTransport {
                 guard let certificateData = Self.peerSPKI(from: metadata),
                       let spkiHash = try? PairingSecurity.windowsSPKIHash(certificateData)
                 else {
+                    self.diagnostics.log(
+                        .warning,
+                        category: .security,
+                        message: "tls_identity_rejected",
+                        fields: [
+                            "event": "tls_identity_rejected",
+                            "reason": "missing_or_malformed_peer_identity",
+                            "tls_policy": policyName
+                        ]
+                    )
                     complete(false)
                     return
                 }
+                let accepted: Bool
                 switch tlsPolicy {
                 case let .pairing(onPeerSPKIHash):
                     onPeerSPKIHash(spkiHash)
-                    complete(true)
+                    accepted = true
                 case let .remembered(expectedSPKIHash):
-                    complete(PairingSecurity.constantTimeEqual(spkiHash, expectedSPKIHash))
+                    accepted = PairingSecurity.constantTimeEqual(spkiHash, expectedSPKIHash)
                 }
+                self.diagnostics.log(
+                    accepted ? .info : .warning,
+                    category: .security,
+                    message: accepted ? "tls_identity_accepted" : "tls_identity_rejected",
+                    fields: [
+                        "event": accepted ? "tls_identity_accepted" : "tls_identity_rejected",
+                        "spki_bytes": "\(spkiHash.count)",
+                        "tls_policy": policyName
+                    ]
+                )
+                complete(accepted)
             },
             queue
         )
@@ -254,6 +423,12 @@ public final class HearPortQuicTransport {
                                                  using: parameters)
         group = connectionGroup
         state = .connecting
+        diagnostics.log(
+            .info,
+            category: .transport,
+            message: "transport_connecting",
+            fields: ["event": "transport_connecting", "host": host, "port": "\(port)"]
+        )
         onStateChange?(.connecting)
 
         connectionGroup.stateUpdateHandler = { [weak self] newState in
@@ -282,6 +457,16 @@ public final class HearPortQuicTransport {
     ) throws {
         let framed = try ControlFraming.encode(payload)
         guard let controlStream else { throw QuicTransportError.controlStreamUnavailable }
+        diagnostics.log(
+            .debug,
+            category: .control,
+            message: "control_write",
+            fields: [
+                "event": "control_write",
+                "payload_bytes": "\(payload.count)",
+                "framed_bytes": "\(framed.count)"
+            ]
+        )
         controlStream.send(content: framed,
                            contentContext: .defaultMessage,
                            isComplete: true,
@@ -299,6 +484,12 @@ public final class HearPortQuicTransport {
         group = nil
         controlReady = false
         datagramReady = false
+        diagnostics.log(
+            .info,
+            category: .transport,
+            message: "transport_cancelled",
+            fields: ["event": "transport_cancelled"]
+        )
         updateState(.closed)
     }
 
@@ -316,6 +507,12 @@ public final class HearPortQuicTransport {
                                                      using: controlOptions),
               let datagram = connectionGroup.extract(connectionTo: endpoint,
                                                       using: datagramOptions) else {
+            diagnostics.log(
+                .error,
+                category: .transport,
+                message: "flow_open_failed",
+                fields: ["event": "flow_open_failed"]
+            )
             updateState(.failed)
             return
         }
@@ -326,8 +523,20 @@ public final class HearPortQuicTransport {
             switch state {
             case .ready:
                 self.controlReady = true
+                self.diagnostics.log(
+                    .info,
+                    category: .transport,
+                    message: "control_flow_ready",
+                    fields: ["event": "control_flow_ready"]
+                )
                 self.updateReadyIfPossible()
             case .failed:
+                self.diagnostics.log(
+                    .error,
+                    category: .transport,
+                    message: "control_flow_failed",
+                    fields: ["event": "control_flow_failed"]
+                )
                 self.updateState(.failed)
             default:
                 break
@@ -338,8 +547,20 @@ public final class HearPortQuicTransport {
             switch state {
             case .ready:
                 self.datagramReady = true
+                self.diagnostics.log(
+                    .info,
+                    category: .transport,
+                    message: "datagram_flow_ready",
+                    fields: ["event": "datagram_flow_ready"]
+                )
                 self.updateReadyIfPossible()
             case .failed:
+                self.diagnostics.log(
+                    .error,
+                    category: .transport,
+                    message: "datagram_flow_failed",
+                    fields: ["event": "datagram_flow_failed"]
+                )
                 self.updateState(.failed)
             default:
                 break
@@ -360,7 +581,23 @@ public final class HearPortQuicTransport {
     private func receiveControl(on stream: NWConnection) {
         stream.receive(minimumIncompleteLength: 1, maximumLength: 65_540) {
             [weak self] data, _, isComplete, error in
-            if let data { self?.onControlData?(data) }
+            if let data {
+                self?.diagnostics.log(
+                    .debug,
+                    category: .control,
+                    message: "control_read",
+                    fields: ["event": "control_read", "bytes": "\(data.count)"]
+                )
+                self?.onControlData?(data)
+            }
+            if let error {
+                self?.diagnostics.log(
+                    .warning,
+                    category: .transport,
+                    message: "control_read_failed",
+                    fields: ["event": "control_read_failed", "error": "\(error)"]
+                )
+            }
             guard error == nil, !isComplete else { return }
             self?.receiveControl(on: stream)
         }
@@ -368,14 +605,41 @@ public final class HearPortQuicTransport {
 
     private func receiveDatagrams(on flow: NWConnection) {
         flow.receiveMessage { [weak self] data, _, _, error in
-            if let data { self?.onAudioDatagram?(data) }
+            if let data {
+                self?.diagnostics.log(
+                    .debug,
+                    category: .audio,
+                    message: "datagram_read",
+                    fields: ["event": "datagram_read", "bytes": "\(data.count)"]
+                )
+                self?.onAudioDatagram?(data)
+            }
+            if let error {
+                self?.diagnostics.log(
+                    .warning,
+                    category: .transport,
+                    message: "datagram_read_failed",
+                    fields: ["event": "datagram_read_failed", "error": "\(error)"]
+                )
+            }
             guard error == nil else { return }
             self?.receiveDatagrams(on: flow)
         }
     }
 
     private func updateState(_ newState: QuicReceiverState) {
+        let previous = state
         state = newState
+        diagnostics.log(
+            .info,
+            category: .transport,
+            message: "transport_state_changed",
+            fields: [
+                "event": "transport_state_changed",
+                "previous_state": "\(previous)",
+                "state": "\(newState)"
+            ]
+        )
         onStateChange?(newState)
     }
 

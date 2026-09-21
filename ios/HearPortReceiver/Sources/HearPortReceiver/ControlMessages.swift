@@ -33,6 +33,23 @@ public enum ControlMessage: Equatable, Sendable {
     case authResponse(peerID: Data, mac: Data)
     case startStream(UInt32)
     case startStreamAck(UInt32)
+
+    public var diagnosticName: String {
+        switch self {
+        case .connectRequest: return "connect_request"
+        case .sessionReady: return "session_ready"
+        case .error: return "error"
+        case .pairSpakeA: return "pair_spake_a"
+        case .pairSpakeB: return "pair_spake_b"
+        case .pairConfirmA: return "pair_confirm_a"
+        case .pairConfirmB: return "pair_confirm_b"
+        case .pairCredential: return "pair_credential"
+        case .authChallenge: return "auth_challenge"
+        case .authResponse: return "auth_response"
+        case .startStream: return "start_stream"
+        case .startStreamAck: return "start_stream_ack"
+        }
+    }
 }
 
 public struct ControlEnvelope: Equatable, Sendable {
