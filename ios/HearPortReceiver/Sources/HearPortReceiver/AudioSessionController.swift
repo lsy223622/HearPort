@@ -51,12 +51,6 @@ public final class AudioLifecycleController {
     public func enterSilentRebuffer() {
         guard state != .stopped else { return }
         state = .silentRebuffer
-        diagnostics.log(
-            .info,
-            category: .audio,
-            message: "silent_rebuffer_entered",
-            fields: ["event": "silent_rebuffer_entered", "state": "\(state)"]
-        )
     }
 
     public func handle(_ event: AudioLifecycleEvent) {
