@@ -40,6 +40,13 @@ public struct JitterBuffer {
     public var fillPackets: Int { packets.count }
     public var expectedSequence: UInt32? { nextSequence }
 
+    public var hasFuturePacket: Bool {
+        guard let expected = nextSequence else { return false }
+        return packets.keys.contains {
+            $0 != expected && !SequenceNumber.isBefore($0, expected)
+        }
+    }
+
     public mutating func reset(streamID: UInt32) {
         precondition(streamID != 0)
         self.streamID = streamID

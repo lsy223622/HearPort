@@ -3,6 +3,7 @@
 /out/
 /.vs/
 /.swiftpm/
+/security/spake2-provider/target/
 *.user
 *.suo
 __pycache__/

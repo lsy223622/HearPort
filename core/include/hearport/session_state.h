@@ -28,6 +28,7 @@ enum class AudioDisposition {
 
 class SessionState {
  public:
+  void Reset() noexcept;
   bool ReceiveConnect(AuthMode mode,
                       std::span<const std::byte> peer_id) noexcept;
   bool MarkAuthenticated() noexcept;

@@ -33,6 +33,11 @@ public final class AudioLifecycleController {
         state = .stopped
     }
 
+    public func enterSilentRebuffer() {
+        guard state != .stopped else { return }
+        state = .silentRebuffer
+    }
+
     public func handle(_ event: AudioLifecycleEvent) {
         switch event {
         case .interruptionBegan:
@@ -144,7 +149,8 @@ public final class PlatformAudioOutputController {
         let fillError = Double(receiver.renderFillFrames - 960)
         let ratio = drift.update(
             fillError: fillError,
-            validAudio: lifecycle.state == .playing
+            validAudio: lifecycle.state == .playing &&
+                receiver.renderFillFrames > 0
         )
         let sourceFrames = max(1, Int(ceil(Double(frameCount) * ratio)) + 1)
         let samples = receiver.renderFrames(sourceFrames)

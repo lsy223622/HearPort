@@ -21,6 +21,7 @@ target_include_directories(
 )
 
 add_subdirectory(core)
+add_subdirectory(security)
 
 if(BUILD_TESTING)
   add_test(

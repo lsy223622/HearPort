@@ -31,8 +31,30 @@ toolchains:
 python -m unittest discover -s tests -v
 ```
 
-Native Windows builds require CMake, a C++20 compiler, Protobuf, and MsQuic.
-The iPad package requires macOS/Xcode/iPadOS SDKs. Reference tests do not
+Native Windows builds require CMake, a C++20 compiler, Rust/Cargo for the
+maintained SPAKE2 provider, and MsQuic. The iPad package requires
+macOS/Xcode/iPadOS SDKs plus an Apple-platform build of that provider.
+Reference tests do not
 prove WASAPI capture, QUIC interoperability, iPad audio output, background
 behavior, or real Wi-Fi stability; those checks are tracked separately in
+`docs/validation-matrix.md`.
+
+## Manual v1 path
+
+The Windows sender requires both the certificate SHA-1 used by MsQuic and the
+SHA-256 hash of the current leaf certificate's DER SubjectPublicKeyInfo. The
+minimal local operator flow is:
+
+```powershell
+hearport_sender.exe --cert-sha1=<40 hex characters> `
+  --cert-spki-sha256=<64 hex characters> --open-pairing
+```
+
+The displayed six-digit PIN is entered in the iPad's “Pair new PC” form. A
+successful pair stores the receiver credential in Windows Credential Manager
+protected with DPAPI and in the iPad Keychain. Later connections use the
+remembered mode and require the pinned SPKI plus a fresh HMAC challenge.
+
+Firewall and optional discovery guidance is in `windows/installer/README.md`;
+the evidence boundary for native and real-device validation is in
 `docs/validation-matrix.md`.

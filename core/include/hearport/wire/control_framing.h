@@ -21,6 +21,8 @@ class ControlFrameDecoder {
   bool Push(std::span<const std::byte> bytes,
             std::vector<std::vector<std::byte>>& complete_messages);
 
+  void Reset() noexcept;
+
  private:
   std::size_t max_message_;
   std::array<std::byte, 4> header_{};

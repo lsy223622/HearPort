@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hearport.local/schemas/sender-events.json",
+  "title": "HearPort sender diagnostic event",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "timestamp", "component", "event"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "component": { "const": "sender" },
+    "event": {
+      "type": "string",
+      "enum": [
+        "capture_format", "connection", "datagram_capability",
+        "stream_started", "audio_packet", "capture_reset",
+        "authentication", "error"
+      ]
+    },
+    "stream_id": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+    "sequence": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+    "sample_rate_hz": { "type": "integer", "minimum": 1 },
+    "channels": { "type": "integer", "minimum": 1 },
+    "queue_fill_packets": { "type": "integer", "minimum": 0 },
+    "dropped_packets": { "type": "integer", "minimum": 0 },
+    "datagram_max_payload": { "type": "integer", "minimum": 0 },
+    "authenticated": { "type": "boolean" },
+    "error_code": { "type": "string" },
+    "message": { "type": "string", "maxLength": 512 }
+  }
+}

@@ -1,9 +1,9 @@
 import Foundation
 
-public enum AuthMode: Equatable, Sendable {
-    case remembered
-    case pair
-    case oneTime
+public enum AuthMode: UInt32, Equatable, Hashable, Sendable {
+    case remembered = 1
+    case pair = 2
+    case oneTime = 3
 }
 
 public enum ReceiverPhase: Equatable, Sendable {

@@ -142,6 +142,14 @@ class MsQuicServer final : public QuicServer {
     return true;
   }
 
+  void CloseConnection() override {
+    std::lock_guard lock(mutex_);
+    if (connection_ != nullptr && api_ != nullptr) {
+      api_->ConnectionShutdown(connection_, QUIC_CONNECTION_SHUTDOWN_FLAG_NONE,
+                               0);
+    }
+  }
+
   void Stop() override {
     std::unique_lock lock(mutex_);
     StopLocked(lock);
@@ -290,22 +298,34 @@ class MsQuicServer final : public QuicServer {
     switch (event->Type) {
       case QUIC_STREAM_EVENT_RECEIVE:
         {
-          std::function<void(std::span<const std::byte>)> on_control_bytes;
+          std::function<bool(std::span<const std::byte>)> on_control_bytes;
+          const QUIC_API_TABLE* api = nullptr;
           {
             std::lock_guard lock(server->mutex_);
+            api = server->api_;
             on_control_bytes = server->callbacks_.on_control_bytes;
           }
           if (!on_control_bytes) {
+            if (api != nullptr && event->RECEIVE.TotalBufferLength != 0) {
+              api->StreamReceiveComplete(
+                  stream, event->RECEIVE.TotalBufferLength);
+            }
             break;
           }
+          bool keep_connection = true;
           for (std::uint32_t index = 0;
                index < event->RECEIVE.BufferCount; ++index) {
             const auto& buffer = event->RECEIVE.Buffers[index];
             if (buffer.Length != 0) {
-              on_control_bytes(std::span<const std::byte>(
+              keep_connection = on_control_bytes(std::span<const std::byte>(
                   reinterpret_cast<const std::byte*>(buffer.Buffer),
                   buffer.Length));
+              if (!keep_connection) break;
             }
+          }
+          if (api != nullptr && event->RECEIVE.TotalBufferLength != 0) {
+            api->StreamReceiveComplete(
+                stream, event->RECEIVE.TotalBufferLength);
           }
         }
         break;
@@ -343,6 +363,9 @@ class MsQuicServer final : public QuicServer {
       const auto connection = connection_;
       api_->ConnectionShutdown(connection, QUIC_CONNECTION_SHUTDOWN_FLAG_NONE,
                                0);
+      // The shutdown callback also takes mutex_. Release it while waiting so
+      // that QUIC can publish connection_ = nullptr and signal the predicate.
+      lock.unlock();
       shutdown_condition_.wait(lock, [this, connection] {
         return connection_ != connection;
       });
@@ -399,6 +422,7 @@ class UnavailableQuicServer final : public QuicServer {
   }
   bool SendControl(std::span<const std::byte>) override { return false; }
   bool SendAudio(const wire::EncodedAudioDatagram&) override { return false; }
+  void CloseConnection() override {}
   void Stop() override {}
 };
 

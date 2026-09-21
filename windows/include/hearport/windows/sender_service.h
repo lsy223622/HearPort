@@ -15,13 +15,15 @@
 #include "hearport/windows/packetizer.h"
 #include "hearport/windows/quic_server.h"
 #include "hearport/windows/wasapi_capture.h"
+#include "hearport/wire/control_framing.h"
 
 namespace hearport::windows {
 
 class SenderService {
  public:
-  using ControlHandler = std::function<void(std::span<const std::byte>)>;
+  using ControlHandler = std::function<bool(std::span<const std::byte>)>;
   using ResetHandler = std::function<void()>;
+  using ClosedHandler = std::function<void()>;
 
   explicit SenderService(QuicServerOptions options);
   ~SenderService();
@@ -34,12 +36,16 @@ class SenderService {
 
   // Authentication/control code calls these after it has validated the
   // corresponding v1 messages. They deliberately do not invent wire fields.
+  bool ReceiveConnect(AuthMode mode,
+                      std::span<const std::byte> peer_id);
   bool MarkAuthenticated();
+  bool SendControlPayload(std::span<const std::byte> payload);
   bool BeginStream(std::uint32_t stream_id);
   bool MarkStartStreamAckWritten(std::uint32_t stream_id);
 
   void SetControlHandler(ControlHandler handler);
   void SetResetHandler(ResetHandler handler);
+  void SetClosedHandler(ClosedHandler handler);
 
   std::uint64_t dropped_audio_packets() const noexcept;
 
@@ -61,15 +67,20 @@ class SenderService {
   SessionState session_;
   ControlHandler control_handler_;
   ResetHandler reset_handler_;
+  ClosedHandler closed_handler_;
 
+  mutable std::mutex session_mutex_;
+  mutable std::mutex capture_mutex_;
   mutable std::mutex queue_mutex_;
   std::condition_variable queue_condition_;
   std::deque<wire::AudioDatagram> audio_queue_;
   std::thread audio_thread_;
   bool stop_worker_ = false;
+  bool capture_reset_pending_ = false;
   bool datagram_ready_ = false;
   std::uint64_t dropped_audio_packets_ = 0;
   bool started_ = false;
+  wire::ControlFrameDecoder control_decoder_;
 };
 
 }  // namespace hearport::windows

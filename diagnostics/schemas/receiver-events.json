@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hearport.local/schemas/receiver-events.json",
+  "title": "HearPort receiver diagnostic event",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "timestamp", "component", "event"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "component": { "const": "receiver" },
+    "event": {
+      "type": "string",
+      "enum": [
+        "connection", "authentication", "stream_started", "audio_packet",
+        "buffer", "render", "drift", "silent_rebuffer", "route_change",
+        "interruption", "error"
+      ]
+    },
+    "stream_id": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+    "expected_sequence": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+    "jitter_fill_packets": { "type": "integer", "minimum": 0 },
+    "render_fill_frames": { "type": "integer", "minimum": 0 },
+    "duplicate": { "type": "integer", "minimum": 0 },
+    "loss": { "type": "integer", "minimum": 0 },
+    "late": { "type": "integer", "minimum": 0 },
+    "underrun": { "type": "integer", "minimum": 0 },
+    "overflow": { "type": "integer", "minimum": 0 },
+    "resampler_ratio": { "type": "number", "exclusiveMinimum": 0 },
+    "sample_rate_hz": { "type": "number", "exclusiveMinimum": 0 },
+    "silent_rebuffer": { "type": "boolean" },
+    "route": { "type": "string", "maxLength": 256 },
+    "message": { "type": "string", "maxLength": 512 }
+  }
+}

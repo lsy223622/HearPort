@@ -1,0 +1,22 @@
+[package]
+name = "hearport-spake2-provider"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT"
+publish = false
+
+[lib]
+crate-type = ["rlib", "staticlib", "cdylib"]
+
+[dependencies]
+hmac = "0.13"
+pakery-core = { version = "0.4.0", default-features = false }
+pakery-crypto = { version = "0.4.0", default-features = false, features = ["p256", "spake2", "std"] }
+pakery-spake2 = { version = "0.4.0", default-features = false, features = ["std"] }
+rand = "0.10"
+sha2 = "0.11"
+zeroize = { version = "1.9", features = ["derive"] }
+
+[dev-dependencies]
+pakery-spake2 = { version = "0.4.0", default-features = false, features = ["std", "test-utils"] }

@@ -4,6 +4,7 @@
 #include <utility>
 
 #include "hearport/wire/audio_datagram.h"
+#include "hearport/wire/control_framing.h"
 
 namespace hearport::windows {
 
@@ -19,9 +20,20 @@ bool SenderService::Start() {
 
   QuicServerCallbacks callbacks;
   callbacks.on_control_bytes = [this](std::span<const std::byte> bytes) {
-    if (control_handler_) {
-      control_handler_(bytes);
+    std::vector<std::vector<std::byte>> messages;
+    if (!control_decoder_.Push(bytes, messages)) {
+      if (quic_) quic_->CloseConnection();
+      return false;
     }
+    for (const auto& message : messages) {
+      if (control_handler_ &&
+          !control_handler_(std::span<const std::byte>(message.data(),
+                                                       message.size()))) {
+        if (quic_) quic_->CloseConnection();
+        return false;
+      }
+    }
+    return true;
   };
   callbacks.on_datagram_ready = [this](std::size_t max_payload) {
     std::lock_guard lock(queue_mutex_);
@@ -32,8 +44,16 @@ bool SenderService::Start() {
     datagram_ready_ = false;
   };
   callbacks.on_closed = [this] {
-    std::lock_guard lock(queue_mutex_);
-    datagram_ready_ = false;
+    {
+      std::lock_guard lock(queue_mutex_);
+      datagram_ready_ = false;
+    }
+    {
+      std::lock_guard lock(session_mutex_);
+      session_.Reset();
+    }
+    control_decoder_.Reset();
+    if (closed_handler_) closed_handler_();
   };
 
   if (!quic_->Start(options_, std::move(callbacks))) {
@@ -43,7 +63,9 @@ bool SenderService::Start() {
   {
     std::lock_guard lock(queue_mutex_);
     stop_worker_ = false;
+    capture_reset_pending_ = false;
   }
+  control_decoder_.Reset();
   audio_thread_ = std::thread([this] { AudioWorker(); });
   if (!capture_.Start(
           [this](std::span<const std::byte> bytes, const PcmFormat& format) {
@@ -76,6 +98,7 @@ void SenderService::Stop() {
   {
     std::lock_guard lock(queue_mutex_);
     audio_queue_.clear();
+    capture_reset_pending_ = false;
     datagram_ready_ = false;
   }
   normalizer_.reset();
@@ -83,9 +106,28 @@ void SenderService::Stop() {
   started_ = false;
 }
 
-bool SenderService::MarkAuthenticated() { return session_.MarkAuthenticated(); }
+bool SenderService::ReceiveConnect(AuthMode mode,
+                                   std::span<const std::byte> peer_id) {
+  std::lock_guard lock(session_mutex_);
+  return session_.ReceiveConnect(mode, peer_id);
+}
+
+bool SenderService::MarkAuthenticated() {
+  std::lock_guard lock(session_mutex_);
+  return session_.MarkAuthenticated();
+}
+
+bool SenderService::SendControlPayload(std::span<const std::byte> payload) {
+  if (!quic_) {
+    return false;
+  }
+  const auto framed = wire::EncodeControlFrame(payload);
+  return quic_->SendControl(framed);
+}
 
 bool SenderService::BeginStream(std::uint32_t stream_id) {
+  std::lock_guard capture_lock(capture_mutex_);
+  std::lock_guard session_lock(session_mutex_);
   if (!session_.BeginStream(stream_id)) {
     return false;
   }
@@ -96,6 +138,7 @@ bool SenderService::BeginStream(std::uint32_t stream_id) {
 }
 
 bool SenderService::MarkStartStreamAckWritten(std::uint32_t stream_id) {
+  std::lock_guard lock(session_mutex_);
   return session_.AckWritten(stream_id) == AudioDisposition::accepted;
 }
 
@@ -105,6 +148,10 @@ void SenderService::SetControlHandler(ControlHandler handler) {
 
 void SenderService::SetResetHandler(ResetHandler handler) {
   reset_handler_ = std::move(handler);
+}
+
+void SenderService::SetClosedHandler(ClosedHandler handler) {
+  closed_handler_ = std::move(handler);
 }
 
 std::uint64_t SenderService::dropped_audio_packets() const noexcept {
@@ -128,10 +175,17 @@ void SenderService::AudioWorker() {
     {
       std::unique_lock lock(queue_mutex_);
       queue_condition_.wait(lock, [this] {
-        return stop_worker_ || !audio_queue_.empty();
+        return stop_worker_ || capture_reset_pending_ || !audio_queue_.empty();
       });
       if (stop_worker_ && audio_queue_.empty()) {
         return;
+      }
+      if (capture_reset_pending_) {
+        capture_reset_pending_ = false;
+        const bool should_notify = !stop_worker_;
+        lock.unlock();
+        if (should_notify && reset_handler_) reset_handler_();
+        continue;
       }
       packet = audio_queue_.front();
       audio_queue_.pop_front();
@@ -149,8 +203,12 @@ void SenderService::AudioWorker() {
 
 void SenderService::HandleCapturePacket(std::span<const std::byte> bytes,
                                          const PcmFormat& format) {
-  if (session_.phase() != SessionPhase::active) {
-    return;
+  std::lock_guard capture_lock(capture_mutex_);
+  {
+    std::lock_guard session_lock(session_mutex_);
+    if (session_.phase() != SessionPhase::active) {
+      return;
+    }
   }
   if (!normalizer_format_.has_value() ||
       normalizer_format_->sample_rate_hz != format.sample_rate_hz ||
@@ -161,18 +219,29 @@ void SenderService::HandleCapturePacket(std::span<const std::byte> bytes,
   }
   const auto samples = normalizer_->Convert(bytes);
   packetizer_.Push(samples, [this](const wire::AudioDatagram& packet) {
-    if (session_.AcceptAudio(packet) == AudioDisposition::accepted) {
+    bool accepted = false;
+    {
+      std::lock_guard lock(session_mutex_);
+      accepted = session_.AcceptAudio(packet) == AudioDisposition::accepted;
+    }
+    if (accepted) {
       EnqueueAudio(packet);
     }
   });
 }
 
 void SenderService::HandleCaptureReset() {
-  normalizer_.reset();
-  normalizer_format_.reset();
-  if (reset_handler_) {
-    reset_handler_();
+  {
+    std::lock_guard lock(capture_mutex_);
+    normalizer_.reset();
+    normalizer_format_.reset();
   }
+  {
+    std::lock_guard lock(queue_mutex_);
+    audio_queue_.clear();
+    capture_reset_pending_ = true;
+  }
+  queue_condition_.notify_one();
 }
 
 }  // namespace hearport::windows

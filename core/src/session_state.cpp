@@ -2,6 +2,13 @@
 
 namespace hearport {
 
+void SessionState::Reset() noexcept {
+  phase_ = SessionPhase::awaiting_connect;
+  auth_mode_ = AuthMode::unspecified;
+  pending_stream_id_.reset();
+  active_stream_id_.reset();
+}
+
 bool SessionState::ReceiveConnect(AuthMode mode,
                                   std::span<const std::byte> peer_id) noexcept {
   if (phase_ != SessionPhase::awaiting_connect ||

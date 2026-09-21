@@ -5,6 +5,7 @@ add_library(hearport_core STATIC
   src/render_ring_buffer.cpp
   src/session_state.cpp
   src/wire/audio_datagram.cpp
+  src/wire/control_message.cpp
   src/wire/control_framing.cpp
 )
 
@@ -15,6 +16,10 @@ if(BUILD_TESTING)
   add_executable(hearport_wire_codec_tests tests/wire_codec_tests.cpp)
   target_link_libraries(hearport_wire_codec_tests PRIVATE hearport_core)
   add_test(NAME hearport_wire_codec_tests COMMAND hearport_wire_codec_tests)
+
+  add_executable(hearport_control_message_tests tests/control_message_tests.cpp)
+  target_link_libraries(hearport_control_message_tests PRIVATE hearport_core)
+  add_test(NAME hearport_control_message_tests COMMAND hearport_control_message_tests)
 
   add_executable(hearport_realtime_core_tests tests/realtime_core_tests.cpp)
   target_link_libraries(hearport_realtime_core_tests PRIVATE hearport_core)

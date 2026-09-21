@@ -42,6 +42,13 @@ public final class HearPortReceiver {
     }
 
     @discardableResult
+    public func markAuthenticated() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return session.markAuthenticated()
+    }
+
+    @discardableResult
     public func acknowledgeStartStream(_ streamID: UInt32) -> Bool {
         lock.lock()
         defer { lock.unlock() }
@@ -59,9 +66,10 @@ public final class HearPortReceiver {
             invalidDatagrams += 1
             return nil
         }
-        guard session.acceptAudio(packet) == .accepted,
+        let disposition = session.acceptAudio(packet)
+        guard disposition == .accepted,
               var buffer = jitter else {
-            return session.acceptAudio(packet)
+            return disposition
         }
         _ = buffer.insert(packet)
         _ = buffer.startIfReady()
@@ -95,7 +103,7 @@ public final class HearPortReceiver {
         defer { lock.unlock() }
         jitter?.enterSilentRebuffer()
         session.enterSilentRebuffer()
-        lifecycle.handle(.routeChanged)
+        lifecycle.enterSilentRebuffer()
         renderRing.reset()
     }
 
@@ -105,18 +113,36 @@ public final class HearPortReceiver {
             return Array(repeating: 0, count: frameCount * 2)
         }
         defer { lock.unlock() }
+        let wasSilent = lifecycle.shouldRenderSilence
         pumpLocked(minimumFrames: frameCount)
-        if lifecycle.shouldRenderSilence {
-            return Array(repeating: 0, count: frameCount * 2)
+        let output = renderRing.pop(frames: frameCount)
+        if let buffer = jitter,
+           renderRing.fillFrames == 0,
+           buffer.fillPackets == 0,
+           buffer.mode != .silentRebuffer {
+            jitter?.enterSilentRebuffer()
+            session.enterSilentRebuffer()
+            lifecycle.enterSilentRebuffer()
         }
-        return renderRing.pop(frames: frameCount)
+        if wasSilent || lifecycle.shouldRenderSilence {
+            return wasSilent
+                ? Array(repeating: 0, count: frameCount * 2)
+                : output
+        }
+        return output
     }
 
     private func pumpLocked(minimumFrames: Int) {
         guard var buffer = jitter else { return }
         while renderRing.fillFrames < minimumFrames {
-            guard let packet = buffer.consumeNext() else { break }
-            renderRing.push(Self.decodePCM(packet.pcm))
+            if let packet = buffer.consumeNext() {
+                renderRing.push(Self.decodePCM(packet.pcm))
+            } else if buffer.hasFuturePacket,
+                      let concealed = buffer.concealMissing() {
+                renderRing.push(Self.decodePCM(concealed))
+            } else {
+                break
+            }
         }
         jitter = buffer
         if buffer.mode == .running {
@@ -143,6 +169,7 @@ public final class HearPortReceiver {
 
 #if canImport(Network)
 import Network
+import Security
 
 public enum QuicReceiverState: Equatable, Sendable {
     case idle
@@ -150,6 +177,16 @@ public enum QuicReceiverState: Equatable, Sendable {
     case ready
     case failed
     case closed
+}
+
+public enum QuicTransportError: Error, Equatable {
+    case controlStreamUnavailable
+    case malformedTLSIdentity
+}
+
+public enum TLSIdentityPolicy: Sendable {
+    case pairing(onPeerSPKIHash: @Sendable (Data) -> Void)
+    case remembered(spkiSHA256: Data)
 }
 
 public final class HearPortQuicTransport {
@@ -168,16 +205,50 @@ public final class HearPortQuicTransport {
     private var group: NWConnectionGroup?
     private var controlStream: NWConnection?
     private var datagramFlow: NWConnection?
+    private var controlReady = false
+    private var datagramReady = false
 
     public init() {}
 
-    public func connect(host: String, port: UInt16 = defaultPort) {
+    public func connect(
+        host: String,
+        port: UInt16 = defaultPort,
+        tlsPolicy: TLSIdentityPolicy
+    ) {
         cancel()
         let endpoint = NWEndpoint.hostPort(
             host: NWEndpoint.Host(host),
             port: NWEndpoint.Port(rawValue: port)!
         )
-        let parameters = NWParameters.quic(alpn: [Self.alpn])
+        let quicOptions = NWProtocolQUIC.Options(alpn: [Self.alpn])
+        sec_protocol_options_set_tls_resumption_enabled(
+            quicOptions.securityProtocolOptions,
+            false
+        )
+        sec_protocol_options_set_tls_tickets_enabled(
+            quicOptions.securityProtocolOptions,
+            false
+        )
+        sec_protocol_options_set_verify_block(
+            quicOptions.securityProtocolOptions,
+            { metadata, _, complete in
+                guard let certificateData = Self.peerSPKI(from: metadata),
+                      let spkiHash = try? PairingSecurity.windowsSPKIHash(certificateData)
+                else {
+                    complete(false)
+                    return
+                }
+                switch tlsPolicy {
+                case let .pairing(onPeerSPKIHash):
+                    onPeerSPKIHash(spkiHash)
+                    complete(true)
+                case let .remembered(expectedSPKIHash):
+                    complete(PairingSecurity.constantTimeEqual(spkiHash, expectedSPKIHash))
+                }
+            },
+            queue
+        )
+        let parameters = NWParameters(quic: quicOptions)
         let multiplex = NWMultiplexGroup(to: endpoint)
         let connectionGroup = NWConnectionGroup(with: multiplex,
                                                  using: parameters)
@@ -205,12 +276,18 @@ public final class HearPortQuicTransport {
         connectionGroup.start(queue: queue)
     }
 
-    public func sendControl(_ payload: Data) throws {
+    public func sendControl(
+        _ payload: Data,
+        completion: @escaping @Sendable (NWError?) -> Void = { _ in }
+    ) throws {
         let framed = try ControlFraming.encode(payload)
-        controlStream?.send(content: framed,
-                            contentContext: .defaultMessage,
-                            isComplete: true,
-                            completion: .contentProcessed { _ in })
+        guard let controlStream else { throw QuicTransportError.controlStreamUnavailable }
+        controlStream.send(content: framed,
+                           contentContext: .defaultMessage,
+                           isComplete: true,
+                           completion: .contentProcessed { error in
+                               completion(error)
+                           })
     }
 
     public func cancel() {
@@ -220,6 +297,8 @@ public final class HearPortQuicTransport {
         controlStream = nil
         datagramFlow = nil
         group = nil
+        controlReady = false
+        datagramReady = false
         updateState(.closed)
     }
 
@@ -243,16 +322,39 @@ public final class HearPortQuicTransport {
         controlStream = control
         datagramFlow = datagram
         control.stateUpdateHandler = { [weak self] state in
-            if case .failed = state { self?.updateState(.failed) }
+            guard let self else { return }
+            switch state {
+            case .ready:
+                self.controlReady = true
+                self.updateReadyIfPossible()
+            case .failed:
+                self.updateState(.failed)
+            default:
+                break
+            }
         }
         datagram.stateUpdateHandler = { [weak self] state in
-            if case .failed = state { self?.updateState(.failed) }
+            guard let self else { return }
+            switch state {
+            case .ready:
+                self.datagramReady = true
+                self.updateReadyIfPossible()
+            case .failed:
+                self.updateState(.failed)
+            default:
+                break
+            }
         }
         control.start(queue: queue)
         datagram.start(queue: queue)
         receiveControl(on: control)
         receiveDatagrams(on: datagram)
-        updateState(.ready)
+    }
+
+    private func updateReadyIfPossible() {
+        if controlReady && datagramReady {
+            updateState(.ready)
+        }
     }
 
     private func receiveControl(on stream: NWConnection) {
@@ -275,6 +377,81 @@ public final class HearPortQuicTransport {
     private func updateState(_ newState: QuicReceiverState) {
         state = newState
         onStateChange?(newState)
+    }
+
+    private static func peerSPKI(from metadata: sec_protocol_metadata_t) -> Data? {
+        var certificateData: Data?
+        guard sec_protocol_metadata_access_peer_certificate_chain(metadata, { certificate in
+            let reference = sec_certificate_copy_ref(certificate).takeRetainedValue()
+            certificateData = SecCertificateCopyData(reference) as Data?
+        }) else {
+            return nil
+        }
+        guard let certificateData else { return nil }
+        return extractSPKI(from: certificateData)
+    }
+
+    private struct DERValue {
+        let tag: UInt8
+        let fullRange: Range<Int>
+        let contentRange: Range<Int>
+    }
+
+    private static func readDER(_ bytes: [UInt8], from offset: inout Int) -> DERValue? {
+        guard offset < bytes.count else { return nil }
+        let start = offset
+        let tag = bytes[offset]
+        offset += 1
+        guard offset < bytes.count else { return nil }
+        let firstLengthByte = bytes[offset]
+        offset += 1
+        let length: Int
+        if firstLengthByte & 0x80 == 0 {
+            length = Int(firstLengthByte)
+        } else {
+            let lengthBytes = Int(firstLengthByte & 0x7f)
+            guard lengthBytes > 0, lengthBytes <= 4,
+                  offset + lengthBytes <= bytes.count else { return nil }
+            var decoded = 0
+            for _ in 0..<lengthBytes {
+                decoded = (decoded << 8) | Int(bytes[offset])
+                offset += 1
+            }
+            length = decoded
+        }
+        let contentStart = offset
+        let contentEnd = contentStart + length
+        guard contentEnd <= bytes.count else { return nil }
+        offset = contentEnd
+        return DERValue(
+            tag: tag,
+            fullRange: start..<contentEnd,
+            contentRange: contentStart..<contentEnd
+        )
+    }
+
+    private static func extractSPKI(from certificate: Data) -> Data? {
+        let bytes = Array(certificate)
+        var outerOffset = 0
+        guard let outer = readDER(bytes, from: &outerOffset), outer.tag == 0x30 else {
+            return nil
+        }
+        var tbsOffset = outer.contentRange.lowerBound
+        guard let tbs = readDER(bytes, from: &tbsOffset), tbs.tag == 0x30 else {
+            return nil
+        }
+        var cursor = tbs.contentRange.lowerBound
+        if cursor < tbs.contentRange.upperBound, bytes[cursor] == 0xa0 {
+            guard readDER(bytes, from: &cursor) != nil else { return nil }
+        }
+        for _ in 0..<5 {
+            guard readDER(bytes, from: &cursor) != nil else { return nil }
+        }
+        guard let subjectPublicKeyInfo = readDER(bytes, from: &cursor),
+              subjectPublicKeyInfo.tag == 0x30 else {
+            return nil
+        }
+        return Data(bytes[subjectPublicKeyInfo.fullRange])
     }
 }
 #endif

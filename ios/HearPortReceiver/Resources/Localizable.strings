@@ -1,0 +1,15 @@
+"app.title" = "HearPort";
+"windows.pc" = "Windows PC";
+"hostname.placeholder" = "Hostname or IP address";
+"authentication" = "Authentication";
+"pair.new" = "Pair new PC";
+"pair.one_time" = "One-time";
+"pair.remembered" = "Remembered";
+"pair.pin" = "6-digit PIN";
+"connect" = "Connect";
+"status.disconnected" = "Disconnected";
+"status.connecting" = "Connecting";
+"status.connected" = "Connected";
+"status.playing" = "Playing";
+"status.failed" = "Connection failed";
+"status.pin_required" = "Enter the 6-digit PIN shown on Windows";

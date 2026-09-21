@@ -43,6 +43,13 @@ ControlFrameDecoder::ControlFrameDecoder(std::size_t max_message)
   }
 }
 
+void ControlFrameDecoder::Reset() noexcept {
+  header_size_ = 0;
+  expected_payload_size_ = 0;
+  payload_.clear();
+  failed_ = false;
+}
+
 bool ControlFrameDecoder::Push(
     std::span<const std::byte> bytes,
     std::vector<std::vector<std::byte>>& complete_messages) {

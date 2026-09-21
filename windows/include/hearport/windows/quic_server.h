@@ -15,11 +15,13 @@ struct QuicServerOptions {
   std::uint16_t port = 52137;
   std::array<std::uint8_t, 20> certificate_sha1{};
   bool has_certificate_sha1 = false;
+  std::array<std::byte, 32> certificate_spki_sha256{};
+  bool has_certificate_spki_sha256 = false;
 };
 
 struct QuicServerCallbacks {
   std::function<void()> on_connected;
-  std::function<void(std::span<const std::byte>)> on_control_bytes;
+  std::function<bool(std::span<const std::byte>)> on_control_bytes;
   std::function<void(std::size_t)> on_datagram_ready;
   std::function<void()> on_datagram_unavailable;
   std::function<void()> on_closed;
@@ -32,6 +34,7 @@ class QuicServer {
                      QuicServerCallbacks callbacks) = 0;
   virtual bool SendControl(std::span<const std::byte> framed_bytes) = 0;
   virtual bool SendAudio(const wire::EncodedAudioDatagram& datagram) = 0;
+  virtual void CloseConnection() = 0;
   virtual void Stop() = 0;
 };
 

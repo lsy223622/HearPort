@@ -3,6 +3,21 @@ import XCTest
 @testable import HearPortReceiver
 
 final class ReceiverCoreTests: XCTestCase {
+    func testControlEnvelopeVectorsMatchCanonicalProtoFields() throws {
+        let connect = ControlEnvelope(.connectRequest(authMode: .pair, peerID: Data()))
+        XCTAssertEqual(try connect.encoded(), Data([0x0a, 0x02, 0x08, 0x02]))
+        XCTAssertEqual(try ControlEnvelope.decode(connect.encoded()), connect)
+
+        let ack = ControlEnvelope(.startStreamAck(7))
+        XCTAssertEqual(try ack.encoded(), Data([0xfa, 0x01, 0x02, 0x08, 0x07]))
+        XCTAssertEqual(try ControlEnvelope.decode(ack.encoded()), ack)
+    }
+
+    func testControlEnvelopeRejectsUnknownAndDuplicateFields() {
+        XCTAssertThrowsError(try ControlEnvelope.decode(Data([0x12, 0x02, 0x08, 0x01])))
+        XCTAssertThrowsError(try ControlEnvelope.decode(Data([0x0a, 0x04, 0x08, 0x02, 0x08, 0x02])))
+    }
+
     func testControlFramingUsesBigEndianAndHandlesFragmentation() throws {
         let payload = Data([0x01, 0x02, 0x03])
         let encoded = try ControlFraming.encode(payload)
