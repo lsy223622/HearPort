@@ -442,8 +442,7 @@ public final class HearPortQuicTransport {
                     message: "datagram_group_ready",
                     fields: ["event": "datagram_group_ready"]
                 )
-                self.openControlStream(endpoint: endpoint,
-                                       connectionGroup: connectionGroup)
+                self.openControlStream(connectionGroup: connectionGroup)
             case let .waiting(error):
                 self.diagnostics.log(
                     .warning,
@@ -536,15 +535,8 @@ public final class HearPortQuicTransport {
         updateState(.closed)
     }
 
-    private func openControlStream(endpoint: NWEndpoint,
-                                   connectionGroup: NWConnectionGroup) {
-        let controlOptions = NWProtocolQUIC.Options()
-        controlOptions.direction = .bidirectional
-        controlOptions.isDatagram = false
-
-        guard let control = NWConnection(from: connectionGroup,
-                                         to: endpoint,
-                                         using: controlOptions) else {
+    private func openControlStream(connectionGroup: NWConnectionGroup) {
+        guard let control = NWConnection(from: connectionGroup) else {
             diagnostics.log(
                 .error,
                 category: .transport,
