@@ -69,7 +69,7 @@ final class DiagnosticsTests: XCTestCase {
         let diagnostics = try makeDiagnostics()
         diagnostics.level = .debug
         let receiver = HearPortReceiver(
-            startupPackets: 1,
+            bufferTargetPackets: 1,
             renderCapacityFrames: AudioDatagram.framesPerPacket,
             diagnostics: diagnostics
         )

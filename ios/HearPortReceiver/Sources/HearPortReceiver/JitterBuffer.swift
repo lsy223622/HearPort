@@ -21,6 +21,7 @@ public struct JitterStats: Equatable, Sendable {
     public fileprivate(set) var wrongStreamPackets = 0
     public fileprivate(set) var lostPackets = 0
     public fileprivate(set) var capacityDrops = 0
+    public fileprivate(set) var trimmedPackets = 0
 }
 
 public struct JitterBuffer {
@@ -28,17 +29,17 @@ public struct JitterBuffer {
     public private(set) var mode: JitterMode = .startup
     public private(set) var stats = JitterStats()
 
-    public let startupPackets: Int
+    public let targetPackets: Int
     public let maximumPackets: Int
     private var packets: [UInt32: AudioDatagram] = [:]
     private var nextSequence: UInt32?
 
-    public init(streamID: UInt32, startupPackets: Int = 4, maximumPackets: Int = 256) {
+    public init(streamID: UInt32, targetPackets: Int = 4, maximumPackets: Int = 256) {
         precondition(streamID != 0)
-        precondition(startupPackets > 0)
-        precondition(maximumPackets >= startupPackets)
+        precondition(targetPackets > 0)
+        precondition(maximumPackets >= targetPackets)
         self.streamID = streamID
-        self.startupPackets = startupPackets
+        self.targetPackets = targetPackets
         self.maximumPackets = maximumPackets
     }
 
@@ -46,9 +47,9 @@ public struct JitterBuffer {
                 configuration: JitterBufferConfiguration,
                 maximumPackets: Int = 256) {
         precondition(streamID != 0)
-        precondition(maximumPackets >= configuration.startupPackets)
+        precondition(maximumPackets >= configuration.targetPackets)
         self.streamID = streamID
-        self.startupPackets = configuration.startupPackets
+        self.targetPackets = configuration.targetPackets
         self.maximumPackets = maximumPackets
     }
 
@@ -84,7 +85,7 @@ public struct JitterBuffer {
             stats.duplicatePackets += 1
             return .duplicate
         }
-        guard packets.count < maximumPackets else {
+        guard packets.count < maximumPackets || mode == .running else {
             stats.capacityDrops += 1
             return .capacityExceeded
         }
@@ -93,14 +94,16 @@ public struct JitterBuffer {
         }
         packets[packet.sequence] = packet
         stats.insertedPackets += 1
+        trimToTarget()
         return .inserted
     }
 
     @discardableResult
     public mutating func startIfReady() -> Bool {
         guard mode != .running, nextSequence != nil,
-              packets.count >= startupPackets else { return false }
+              packets.count >= targetPackets else { return false }
         mode = .running
+        trimToTarget()
         return true
     }
 
@@ -123,5 +126,21 @@ public struct JitterBuffer {
         packets.removeAll(keepingCapacity: true)
         nextSequence = nil
         mode = .silentRebuffer
+    }
+
+    private mutating func trimToTarget() {
+        guard mode == .running, packets.count > targetPackets else { return }
+        guard let expected = nextSequence else { return }
+
+        while packets.count > targetPackets {
+            guard let oldestSequence = packets.keys.min(by: {
+                ($0 &- expected) < ($1 &- expected)
+            }) else { break }
+            packets.removeValue(forKey: oldestSequence)
+            stats.trimmedPackets += 1
+        }
+        nextSequence = packets.keys.min {
+            ($0 &- expected) < ($1 &- expected)
+        }
     }
 }
