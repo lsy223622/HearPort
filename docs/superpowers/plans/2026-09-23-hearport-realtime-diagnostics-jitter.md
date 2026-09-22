@@ -584,7 +584,6 @@ git add docs/validation-matrix.md .github/workflows/ios-receiver.yml
 git commit -m "docs: record realtime diagnostics validation"
 git push origin main
 ~~~
-
 - [ ] **Step 5: Watch the GitHub Actions workflow**
 
 Run:
@@ -628,4 +627,3 @@ git add docs/validation-matrix.md
 git commit -m "docs: record final diagnostics validation evidence"
 git push origin main
 ~~~
-
