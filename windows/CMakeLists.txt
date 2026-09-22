@@ -17,6 +17,7 @@ find_path(HEARPORT_MSQUIC_INCLUDE_DIR msquic.h)
 find_library(HEARPORT_MSQUIC_LIBRARY NAMES msquic MsQuic)
 
 add_library(hearport_windows_platform STATIC
+  src/audio_metrics.cpp
   src/credential_store.cpp
   src/quic_server_msquic.cpp
   src/sender_authentication.cpp
@@ -41,3 +42,10 @@ target_link_libraries(hearport_windows_platform PRIVATE ole32 avrt advapi32 cryp
 
 add_executable(hearport_sender src/main.cpp)
 target_link_libraries(hearport_sender PRIVATE hearport_windows_platform)
+
+if(BUILD_TESTING)
+  add_executable(hearport_windows_audio_metrics_tests tests/audio_metrics_tests.cpp)
+  target_link_libraries(hearport_windows_audio_metrics_tests PRIVATE hearport_windows_platform)
+  add_test(NAME hearport_windows_audio_metrics_tests
+           COMMAND hearport_windows_audio_metrics_tests)
+endif()
