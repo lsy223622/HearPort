@@ -41,7 +41,7 @@ class EchoProtocol(QuicConnectionProtocol):
             self.transmit()
         elif isinstance(event, ConnectionTerminated):
             print(f"closed code={event.error_code} reason={event.reason_phrase}", flush=True)
-            for entry in self._quic._quic_logger.to_dict()["events"]:
+            for entry in self._quic.configuration.quic_logger.to_dict()["traces"][-1]["events"]:
                 if entry["name"] == "transport:packet_received":
                     for frame in entry["data"].get("frames", []):
                         if frame["frame_type"] in ("streams_blocked", "stream", "connection_close"):

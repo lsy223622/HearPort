@@ -512,7 +512,10 @@ public final class HearPortQuicTransport {
                 break
             }
         }
-        connectionGroup.newConnectionHandler = { connection in
+        connectionGroup.newConnectionHandler = { [weak self] connection in
+            self?.diagnostics.log(.warning, category: .transport,
+                                  message: "unexpected_incoming_connection",
+                                  fields: ["connection": "\(connection)"])
             connection.cancel()
         }
         connectionGroup.setReceiveHandler(
