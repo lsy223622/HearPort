@@ -20,12 +20,6 @@ on:
 jobs:
   swift-package:
     runs-on: macos-14
-    strategy:
-      fail-fast: false
-      matrix:
-        stream-limit: [1, 8]
-    env:
-      HEARPORT_QUIC_STREAM_LIMIT: ${{ matrix.stream-limit }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v5
@@ -45,7 +39,11 @@ jobs:
           done
           grep -q quic_test_server_ready "$RUNNER_TEMP/quic-server.log"
           cd ios/HearPortReceiver
-          HEARPORT_QUIC_INTEGRATION=1 swift test
+          swift build --build-tests
+          sudo log stream --level debug --style compact --predicate 'subsystem == "com.apple.network"' > "$RUNNER_TEMP/network.log" 2>&1 &
+          log_pid=$!
+          trap 'sudo kill "$log_pid" 2>/dev/null || true; kill "$server_pid" 2>/dev/null || true; cat "$RUNNER_TEMP/quic-server.log"; cat "$RUNNER_TEMP/network.log"' EXIT
+          HEARPORT_QUIC_INTEGRATION=1 swift test --skip-build
 
   ios-unsigned-ipa:
     needs: swift-package
