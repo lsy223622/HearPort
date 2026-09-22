@@ -57,11 +57,15 @@ public final class HearPortReceiver {
         return jitter?.stats
     }
 
-    public func recordRenderCallback(renderedFrames: Int,
+    public func recordRenderCallback(requestedFrames: Int,
+                                     renderedFrames: Int,
+                                     fillFrames: Int,
                                      resamplerRatio: Double,
                                      fillError: Double) {
         realtimeMetrics.recordRenderCallback(
+            requestedFrames: requestedFrames,
             renderedFrames: renderedFrames,
+            fillFrames: fillFrames,
             resamplerRatio: resamplerRatio,
             fillError: fillError
         )

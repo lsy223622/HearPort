@@ -222,6 +222,7 @@ public final class PlatformAudioOutputController {
                                         "HearPort v1 requires a stereo output route"])
         }
         outputSampleRate = audioSession.sampleRate
+        receiver.recordAudioOutput(route: output.portName, sampleRate: outputSampleRate)
         drift = DriftController(nominalRatio: 48_000.0 / outputSampleRate)
         resampler.reset()
         try configureEngine()
@@ -294,11 +295,12 @@ public final class PlatformAudioOutputController {
     private func render(frameCount: Int,
                         audioBufferList: UnsafeMutablePointer<AudioBufferList>) {
         guard frameCount > 0 else { return }
-        let fillError = Double(receiver.renderFillFrames - 960)
+        let fillFrames = receiver.renderFillFrames
+        let fillError = Double(fillFrames - 960)
         let ratio = drift.update(
             fillError: fillError,
             validAudio: lifecycle.state == .playing &&
-                receiver.renderFillFrames > 0
+                fillFrames > 0
         )
         let sourceFrames = max(
             1,
@@ -309,6 +311,13 @@ public final class PlatformAudioOutputController {
             samples,
             outputFrameCount: frameCount,
             ratio: ratio
+        )
+        receiver.recordRenderCallback(
+            requestedFrames: sourceFrames,
+            renderedFrames: frameCount,
+            fillFrames: fillFrames,
+            resamplerRatio: ratio,
+            fillError: fillError
         )
         let buffers = UnsafeMutableAudioBufferListPointer(audioBufferList)
         guard buffers.count > 0 else { return }
@@ -397,6 +406,8 @@ public final class PlatformAudioOutputController {
         do {
             try audioSession.setActive(true)
             outputSampleRate = audioSession.sampleRate
+            let route = audioSession.currentRoute.outputs.first?.portName ?? "unknown"
+            receiver.recordAudioOutput(route: route, sampleRate: outputSampleRate)
             drift = DriftController(nominalRatio: 48_000.0 / outputSampleRate)
             try configureEngine()
             receiver.diagnostics.log(

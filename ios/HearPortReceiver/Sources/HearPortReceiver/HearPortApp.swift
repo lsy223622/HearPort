@@ -13,6 +13,7 @@ public struct HearPortApp: View {
     @State private var control: ReceiverControlSession?
     @State private var audioOutput: PlatformAudioOutputController?
     @AppStorage("hearport.detailedLogging") private var detailedLogging = false
+    @AppStorage("hearport.jitterStartupPackets") private var jitterStartupPackets = 8
     @State private var diagnosticsSnapshot = HearPortDiagnostics.shared.snapshot()
     @State private var exportedDiagnosticsURL: URL?
     @State private var diagnosticsStatus: String?
@@ -41,6 +42,25 @@ public struct HearPortApp: View {
                     }
                     .disabled(host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     Text(status)
+                        .foregroundStyle(.secondary)
+                }
+
+                Section("Jitter buffer") {
+                    Picker("Startup buffer", selection: $jitterStartupPackets) {
+                        ForEach(JitterBufferConfiguration.supportedStartupPacketCounts, id: \.self) { packets in
+                            let configuration = JitterBufferConfiguration(startupPackets: packets)
+                            Text("\(packets) packets (\(configuration.startupLatencyMilliseconds) ms)")
+                                .tag(packets)
+                        }
+                    }
+                    let configuration = JitterBufferConfiguration(startupPackets: jitterStartupPackets)
+                    Text("Estimated startup delay: \(configuration.startupLatencyMilliseconds) ms")
+                        .foregroundStyle(.secondary)
+                    Text("Larger buffers tolerate bursty delivery but increase startup latency.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Text("Applies on next connection.")
+                        .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
 
@@ -95,6 +115,9 @@ public struct HearPortApp: View {
         }
         .onAppear {
             status = "Disconnected"
+            jitterStartupPackets = JitterBufferConfiguration(
+                startupPackets: jitterStartupPackets
+            ).startupPackets
             diagnostics.level = detailedLogging ? .debug : .info
             refreshDiagnostics()
         }
@@ -138,6 +161,16 @@ public struct HearPortApp: View {
             refreshDiagnostics()
             return
         }
+        control?.cancel()
+        try? audioOutput?.stop()
+        audioOutput = nil
+        let normalizedJitter = JitterBufferConfiguration(startupPackets: jitterStartupPackets)
+        jitterStartupPackets = normalizedJitter.startupPackets
+        let activeReceiver = HearPortReceiver(
+            startupPackets: normalizedJitter.startupPackets,
+            diagnostics: diagnostics
+        )
+        receiver = activeReceiver
         diagnostics.log(
             .info,
             category: .app,
@@ -149,7 +182,7 @@ public struct HearPortApp: View {
             ]
         )
         let session = ReceiverControlSession(
-            receiver: receiver,
+            receiver: activeReceiver,
             provider: PairingSecurity.defaultSpake2Provider()
         )
         session.onTransportState = { newState in
@@ -173,7 +206,7 @@ public struct HearPortApp: View {
         session.onReady = {
             DispatchQueue.main.async {
                 do {
-                    let output = PlatformAudioOutputController(receiver: receiver)
+                    let output = PlatformAudioOutputController(receiver: activeReceiver)
                     try output.start()
                     audioOutput = output
                     status = "Playing"

@@ -19,6 +19,7 @@ final class RealtimeAudioMetrics: @unchecked Sendable {
     private let lostPackets = AtomicUInt64()
     private let concealedPackets = AtomicUInt64()
     private let renderCallbacks = AtomicUInt64()
+    private let requestedRenderFrames = AtomicUInt64()
     private let renderedFrames = AtomicUInt64()
     private let renderUnderflowFrames = AtomicUInt64()
     private let renderOverflowFrames = AtomicUInt64()
@@ -26,6 +27,7 @@ final class RealtimeAudioMetrics: @unchecked Sendable {
     private let skippedSnapshots = AtomicUInt64()
     private let jitterMinFillPackets = AtomicUInt64(UInt64.max)
     private let jitterMaxFillPackets = AtomicUInt64()
+    private let currentRenderFillFrames = AtomicUInt64()
     private let renderMinFillFrames = AtomicUInt64(UInt64.max)
     private let renderMaxFillFrames = AtomicUInt64()
     private let resamplerRatio = AtomicUInt64(Double(1).bitPattern)
@@ -87,17 +89,20 @@ final class RealtimeAudioMetrics: @unchecked Sendable {
     func recordRenderBuffer(fillFrames: Int,
                             underflowFrames: Int,
                             overflowFrames: Int) {
-        renderMinFillFrames.updateMinimum(UInt64(max(0, fillFrames)))
-        renderMaxFillFrames.updateMaximum(UInt64(max(0, fillFrames)))
+        recordRenderFill(fillFrames)
         renderUnderflowFrames.increment(by: UInt64(max(0, underflowFrames)))
         renderOverflowFrames.increment(by: UInt64(max(0, overflowFrames)))
     }
 
-    func recordRenderCallback(renderedFrames: Int,
+    func recordRenderCallback(requestedFrames: Int,
+                              renderedFrames: Int,
+                              fillFrames: Int,
                               resamplerRatio: Double,
                               fillError: Double) {
         renderCallbacks.increment()
+        requestedRenderFrames.increment(by: UInt64(max(0, requestedFrames)))
         self.renderedFrames.increment(by: UInt64(max(0, renderedFrames)))
+        recordRenderFill(fillFrames)
         recordConversion(resamplerRatio: resamplerRatio, fillError: fillError)
     }
 
@@ -136,7 +141,7 @@ final class RealtimeAudioMetrics: @unchecked Sendable {
             "jitter_fill_packets": "\(jitterFillPackets)",
             "jitter_min_fill_packets": intervalMinimum(jitterMinFillPackets),
             "jitter_max_fill_packets": "\(jitterMaxFillPackets.exchange(0))",
-            "render_fill_frames": "\(renderFillFrames)",
+            "render_fill_frames": "\(max(renderFillFrames, Int(currentRenderFillFrames.load())))",
             "render_min_fill_frames": intervalMinimum(renderMinFillFrames),
             "render_max_fill_frames": "\(renderMaxFillFrames.exchange(0))",
             "datagrams_received": "\(datagramsReceived.exchange(0))",
@@ -153,6 +158,7 @@ final class RealtimeAudioMetrics: @unchecked Sendable {
             "lost_packets": "\(lostPackets.exchange(0))",
             "concealed_packets": "\(concealedPackets.exchange(0))",
             "render_callbacks": "\(renderCallbacks.exchange(0))",
+            "requested_render_frames": "\(requestedRenderFrames.exchange(0))",
             "rendered_frames": "\(renderedFrames.exchange(0))",
             "render_underflow_frames": "\(renderUnderflowFrames.exchange(0))",
             "render_overflow_frames": "\(renderOverflowFrames.exchange(0))",
@@ -175,9 +181,17 @@ final class RealtimeAudioMetrics: @unchecked Sendable {
             acceptedDatagrams, pendingStreamDatagrams, oldStreamDatagrams,
             insertedPackets, duplicatePackets, latePackets, wrongStreamPackets,
             capacityDrops, lostPackets, concealedPackets, renderCallbacks,
-            renderedFrames, renderUnderflowFrames, renderOverflowFrames,
+            requestedRenderFrames, renderedFrames,
+            renderUnderflowFrames, renderOverflowFrames,
             renderLockMisses, skippedSnapshots
         ]
+    }
+
+    private func recordRenderFill(_ fillFrames: Int) {
+        let fill = UInt64(max(0, fillFrames))
+        currentRenderFillFrames.store(fill)
+        renderMinFillFrames.updateMinimum(fill)
+        renderMaxFillFrames.updateMaximum(fill)
     }
 
     private func intervalMinimum(_ counter: AtomicUInt64) -> String {
