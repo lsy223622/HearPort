@@ -31,6 +31,8 @@ class EchoProtocol(QuicConnectionProtocol):
                   f"peer_datagram_limit={self._quic._remote_max_datagram_frame_size}", flush=True)
         elif isinstance(event, StreamDataReceived):
             print(f"stream={event.stream_id} bytes={len(event.data)} fin={event.end_stream}", flush=True)
+            if not event.data:
+                return
             self._quic.send_stream_data(event.stream_id, event.data, end_stream=False)
             if not self.sent_audio:
                 self.sent_audio = True
