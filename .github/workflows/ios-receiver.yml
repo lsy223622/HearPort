@@ -48,8 +48,8 @@ jobs:
           mkdir -p ios/HearPortApp/ThirdParty
           cp security/spake2-provider/target/aarch64-apple-ios/release/libhearport_spake2_provider.a \
             ios/HearPortApp/ThirdParty/
-          nm -g ios/HearPortApp/ThirdParty/libhearport_spake2_provider.a | \
-            grep -F "hearport_spake2_begin"
+          grep -a -F -m 1 "hearport_spake2_begin" \
+            ios/HearPortApp/ThirdParty/libhearport_spake2_provider.a
 
       - name: Generate Xcode project
         working-directory: ios/HearPortApp
