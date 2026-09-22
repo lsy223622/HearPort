@@ -49,7 +49,7 @@ public struct HearPortApp: View {
                     Picker("Startup buffer", selection: $jitterStartupPackets) {
                         ForEach(JitterBufferConfiguration.supportedStartupPacketCounts, id: \.self) { packets in
                             let configuration = JitterBufferConfiguration(startupPackets: packets)
-                            Text("\(packets) packets (\(configuration.startupLatencyMilliseconds) ms)")
+                            Text("\(Self.jitterLabel(for: packets)) · \(packets) packets (\(configuration.startupLatencyMilliseconds) ms)")
                                 .tag(packets)
                         }
                     }
@@ -283,6 +283,18 @@ public struct HearPortApp: View {
         case .info: return "Info"
         case .warning: return "Warning"
         case .error: return "Error"
+        }
+    }
+
+    private static func jitterLabel(for packets: Int) -> String {
+        switch packets {
+        case 4: return "Low latency"
+        case 8: return "Balanced"
+        case 16: return "Stable"
+        case 32: return "Strong stability"
+        case 64: return "Very stable"
+        case 128: return "Maximum stability"
+        default: return "Custom"
         }
     }
 
