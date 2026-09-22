@@ -323,10 +323,8 @@ class MsQuicServer final : public QuicServer {
       case QUIC_STREAM_EVENT_RECEIVE:
         {
           std::function<bool(std::span<const std::byte>)> on_control_bytes;
-          const QUIC_API_TABLE* api = nullptr;
           {
             std::lock_guard lock(server->mutex_);
-            api = server->api_;
             on_control_bytes = server->callbacks_.on_control_bytes;
           }
           std::cerr << "quic_control_receive buffers="
@@ -335,10 +333,6 @@ class MsQuicServer final : public QuicServer {
                     << " handler=" << static_cast<bool>(on_control_bytes)
                     << "\n";
           if (!on_control_bytes) {
-            if (api != nullptr && event->RECEIVE.TotalBufferLength != 0) {
-              api->StreamReceiveComplete(
-                  stream, event->RECEIVE.TotalBufferLength);
-            }
             break;
           }
           bool keep_connection = true;
@@ -354,10 +348,6 @@ class MsQuicServer final : public QuicServer {
                         << " keep_connection=" << keep_connection << "\n";
               if (!keep_connection) break;
             }
-          }
-          if (api != nullptr && event->RECEIVE.TotalBufferLength != 0) {
-            api->StreamReceiveComplete(
-                stream, event->RECEIVE.TotalBufferLength);
           }
         }
         break;

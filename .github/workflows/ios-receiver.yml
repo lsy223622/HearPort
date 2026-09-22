@@ -20,6 +20,12 @@ on:
 jobs:
   swift-package:
     runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        stream-limit: [1, 8]
+    env:
+      HEARPORT_QUIC_STREAM_LIMIT: ${{ matrix.stream-limit }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v5
