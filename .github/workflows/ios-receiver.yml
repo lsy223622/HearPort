@@ -45,7 +45,7 @@ jobs:
           trap 'sudo kill "$log_pid" 2>/dev/null || true; kill "$server_pid" 2>/dev/null || true; cat "$RUNNER_TEMP/quic-server.log"; cat "$RUNNER_TEMP/network.log"' EXIT
           HEARPORT_QUIC_INTEGRATION=1 swift test --skip-build || {
             HEARPORT_QUIC_INTEGRATION=1 lldb --batch -o run \
-              -o 'script print("CRASH_STACK_BEGIN"); print("\n".join(f.GetFunctionName() or "unknown" for f in lldb.debugger.GetSelectedTarget().GetProcess().GetSelectedThread())); print("CRASH_STACK_END")' \
+              -k 'script print("CRASH_STACK_BEGIN"); print("\n".join(f.GetFunctionName() or "unknown" for f in lldb.debugger.GetSelectedTarget().GetProcess().GetSelectedThread())); print("CRASH_STACK_END")' \
               -- "$(xcrun --find xctest)" .build/debug/HearPortReceiverPackageTests.xctest \
               > "$RUNNER_TEMP/debugger.log" 2>&1 || true
             sed -n '/^CRASH_STACK_BEGIN/,/^CRASH_STACK_END/p; /^error:/p' "$RUNNER_TEMP/debugger.log"
