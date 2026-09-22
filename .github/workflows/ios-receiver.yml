@@ -46,7 +46,7 @@ jobs:
             --release \
             --target aarch64-apple-ios
           mkdir -p ios/HearPortApp/ThirdParty
-          cp target/aarch64-apple-ios/release/libhearport_spake2_provider.a \
+          cp security/spake2-provider/target/aarch64-apple-ios/release/libhearport_spake2_provider.a \
             ios/HearPortApp/ThirdParty/
 
       - name: Generate Xcode project
