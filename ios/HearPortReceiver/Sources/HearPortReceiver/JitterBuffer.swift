@@ -34,11 +34,12 @@ public struct JitterBuffer {
     private var nextSequence: UInt32?
 
     public init(streamID: UInt32, startupPackets: Int = 4, maximumPackets: Int = 256) {
-        self.init(
-            streamID: streamID,
-            configuration: JitterBufferConfiguration(startupPackets: startupPackets),
-            maximumPackets: maximumPackets
-        )
+        precondition(streamID != 0)
+        precondition(startupPackets > 0)
+        precondition(maximumPackets >= startupPackets)
+        self.streamID = streamID
+        self.startupPackets = startupPackets
+        self.maximumPackets = maximumPackets
     }
 
     public init(streamID: UInt32,

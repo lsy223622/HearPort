@@ -49,7 +49,7 @@ final class RealtimeDiagnosticsTests: XCTestCase {
         let diagnostics = HearPortDiagnostics(directory: directory)
         diagnostics.level = .debug
         let receiver = HearPortReceiver(
-            startupPackets: 1,
+            startupPackets: 4,
             renderCapacityFrames: AudioDatagram.framesPerPacket,
             diagnostics: diagnostics
         )
@@ -71,7 +71,7 @@ final class RealtimeDiagnosticsTests: XCTestCase {
         let exported = try String(contentsOf: diagnostics.export(), encoding: .utf8)
 
         XCTAssertTrue(exported.contains("event=realtime_summary"))
-        XCTAssertTrue(exported.contains("jitter_target_packets=1"))
+        XCTAssertTrue(exported.contains("jitter_target_packets=4"))
         XCTAssertTrue(exported.contains("jitter_fill_packets="))
         XCTAssertTrue(exported.contains("render_fill_frames="))
         XCTAssertTrue(exported.contains("render_underflow_frames="))
