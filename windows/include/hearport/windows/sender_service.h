@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -55,6 +56,7 @@ class SenderService {
   void HandleCapturePacket(std::span<const std::byte> bytes,
                            const PcmFormat& format);
   void HandleCaptureReset();
+  void LogAudioSummaryIfDueLocked();
 
   static constexpr std::size_t kAudioQueueCapacity = 256;
 
@@ -79,6 +81,12 @@ class SenderService {
   bool capture_reset_pending_ = false;
   bool datagram_ready_ = false;
   std::uint64_t dropped_audio_packets_ = 0;
+  std::chrono::steady_clock::time_point audio_summary_started_ =
+      std::chrono::steady_clock::now();
+  std::uint64_t audio_captured_window_ = 0;
+  std::uint64_t audio_sent_window_ = 0;
+  std::uint64_t audio_dropped_window_ = 0;
+  std::uint64_t audio_send_failures_window_ = 0;
   bool started_ = false;
   wire::ControlFrameDecoder control_decoder_;
 };

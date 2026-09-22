@@ -190,6 +190,41 @@ final class ReceiverCoreTests: XCTestCase {
         XCTAssertEqual(drift.ratio, nominal, accuracy: 0.0000001)
     }
 
+    func testAudioDatagramDiagnosticsAreRateLimited() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HearPortRealtimeDiagnostics-\(UUID().uuidString)",
+                                   isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        let diagnostics = HearPortDiagnostics(directory: directory)
+        diagnostics.level = .debug
+        let receiver = HearPortReceiver(
+            startupPackets: 1,
+            renderCapacityFrames: AudioDatagram.framesPerPacket,
+            diagnostics: diagnostics
+        )
+
+        XCTAssertTrue(receiver.beginAuthentication(authMode: .oneTime, peerID: Data()))
+        XCTAssertTrue(receiver.markAuthenticated())
+        XCTAssertTrue(receiver.beginStream(7))
+        XCTAssertTrue(receiver.acknowledgeStartStream(7))
+
+        for sequence in 0..<20 {
+            let packet = try AudioDatagram(
+                streamID: 7,
+                sequence: UInt32(sequence),
+                pcm: Data(repeating: 0, count: AudioDatagram.pcmByteCount)
+            )
+            XCTAssertEqual(receiver.receiveDatagram(packet.encoded), .accepted)
+        }
+
+        let packetLogs = diagnostics.recentLines(limit: 200)
+            .filter { $0.contains("event=datagram_received") }
+        XCTAssertLessThan(packetLogs.count, 20)
+    }
+
     func testAudioLifecycleResetsBuffersForInterruptionAndRouteChange() {
         let lifecycle = AudioLifecycleController()
         lifecycle.startSpeakerSession()
