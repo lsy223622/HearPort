@@ -20,7 +20,7 @@ jobs:
     runs-on: macos-14
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Run Swift package tests
         working-directory: ios/HearPortReceiver
@@ -31,7 +31,7 @@ jobs:
     runs-on: macos-14
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install XcodeGen
         run: brew install xcodegen
@@ -100,7 +100,7 @@ jobs:
           } > "$RUNNER_TEMP/HearPort-archive-metadata.txt"
 
       - name: Upload unsigned IPA
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: HearPort-unsigned-ipa
           if-no-files-found: error
