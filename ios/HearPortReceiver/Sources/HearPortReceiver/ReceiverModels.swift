@@ -39,6 +39,13 @@ public final class ReceiverSessionState {
     public private(set) var pendingStreamID: UInt32?
     public private(set) var activeStreamID: UInt32?
 
+    public func resetForConnection() {
+        phase = .awaitingConnect
+        authMode = nil
+        pendingStreamID = nil
+        activeStreamID = nil
+    }
+
     @discardableResult
     public func receiveConnect(authMode: AuthMode, peerID: Data) -> Bool {
         guard phase == .awaitingConnect else {

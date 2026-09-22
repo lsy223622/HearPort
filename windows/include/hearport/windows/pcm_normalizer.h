@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -25,12 +26,15 @@ class PcmNormalizer {
   explicit PcmNormalizer(PcmFormat source_format);
 
   // Returns canonical interleaved stereo Float32 samples at 48 kHz.
-  std::vector<float> Convert(std::span<const std::byte> source_bytes) const;
+  std::vector<float> Convert(std::span<const std::byte> source_bytes);
 
   const PcmFormat& source_format() const noexcept { return source_format_; }
 
  private:
   PcmFormat source_format_;
+  double source_position_ = 0.0;
+  std::array<float, 2> previous_frame_{};
+  bool has_previous_frame_ = false;
 };
 
 }  // namespace hearport::windows

@@ -177,6 +177,7 @@ public final class PlatformAudioOutputController {
     private var sourceNode: AVAudioSourceNode?
     private var observers: [NSObjectProtocol] = []
     private var drift = DriftController()
+    private var resampler = StreamingStereoResampler()
     private var outputSampleRate = 48_000.0
 
     public init(receiver: HearPortReceiver) {
@@ -222,6 +223,23 @@ public final class PlatformAudioOutputController {
         }
         outputSampleRate = audioSession.sampleRate
         drift = DriftController(nominalRatio: 48_000.0 / outputSampleRate)
+        resampler.reset()
+        try configureEngine()
+        installAudioNotifications()
+        lifecycle.startSpeakerSession()
+        receiver.diagnostics.log(
+            .info,
+            category: .audio,
+            message: "audio_output_started",
+            fields: [
+                "event": "audio_output_started",
+                "sample_rate": "\(outputSampleRate)",
+                "channels": "2"
+            ]
+        )
+    }
+
+    private func configureEngine() throws {
         let format = engine.outputNode.outputFormat(forBus: 0)
         guard format.channelCount == 2 else {
             receiver.diagnostics.log(
@@ -243,19 +261,7 @@ public final class PlatformAudioOutputController {
         sourceNode = source
         engine.attach(source)
         engine.connect(source, to: engine.mainMixerNode, format: format)
-        installAudioNotifications()
-        lifecycle.startSpeakerSession()
         try engine.start()
-        receiver.diagnostics.log(
-            .info,
-            category: .audio,
-            message: "audio_output_started",
-            fields: [
-                "event": "audio_output_started",
-                "sample_rate": "\(outputSampleRate)",
-                "channels": "\(channelCount)"
-            ]
-        )
     }
 
     public func stop() throws {
@@ -274,6 +280,7 @@ public final class PlatformAudioOutputController {
             engine.detach(sourceNode)
         }
         self.sourceNode = nil
+        resampler.reset()
         lifecycle.stopSpeakerSession()
         try audioSession.setActive(false, options: [.notifyOthersOnDeactivation])
         receiver.diagnostics.log(
@@ -293,8 +300,16 @@ public final class PlatformAudioOutputController {
             validAudio: lifecycle.state == .playing &&
                 receiver.renderFillFrames > 0
         )
-        let sourceFrames = max(1, Int(ceil(Double(frameCount) * ratio)) + 1)
+        let sourceFrames = max(
+            1,
+            resampler.requiredInputFrames(outputFrameCount: frameCount, ratio: ratio)
+        )
         let samples = receiver.renderFrames(sourceFrames)
+        let output = resampler.process(
+            samples,
+            outputFrameCount: frameCount,
+            ratio: ratio
+        )
         let buffers = UnsafeMutableAudioBufferListPointer(audioBufferList)
         guard buffers.count > 0 else { return }
         if buffers.count == 1 {
@@ -302,9 +317,8 @@ public final class PlatformAudioOutputController {
                 return
             }
             for frame in 0..<frameCount {
-                let position = min(Int(Double(frame) * ratio), sourceFrames - 1)
-                pointer[frame * 2] = samples[position * 2]
-                pointer[frame * 2 + 1] = samples[position * 2 + 1]
+                pointer[frame * 2] = output[frame * 2]
+                pointer[frame * 2 + 1] = output[frame * 2 + 1]
             }
         } else {
             guard let left = buffers[0].mData?.assumingMemoryBound(to: Float.self),
@@ -312,9 +326,8 @@ public final class PlatformAudioOutputController {
                 return
             }
             for frame in 0..<frameCount {
-                let position = min(Int(Double(frame) * ratio), sourceFrames - 1)
-                left[frame] = samples[position * 2]
-                right[frame] = samples[position * 2 + 1]
+                left[frame] = output[frame * 2]
+                right[frame] = output[frame * 2 + 1]
             }
         }
     }
@@ -334,6 +347,8 @@ public final class PlatformAudioOutputController {
             )
             self?.receiver.handleAudioLifecycle(.routeChanged)
             self?.drift.reset()
+            self?.resampler.reset()
+            self?.rebuildEngine()
         })
         observers.append(center.addObserver(
             forName: AVAudioSession.interruptionNotification,
@@ -354,6 +369,8 @@ public final class PlatformAudioOutputController {
                 )
                 self.receiver.handleAudioLifecycle(.interruptionBegan)
                 self.drift.reset()
+                self.resampler.reset()
+                self.stopEngineForRecovery()
             } else {
                 self.receiver.diagnostics.log(
                     .info,
@@ -362,8 +379,46 @@ public final class PlatformAudioOutputController {
                     fields: ["event": "interruption_ended"]
                 )
                 self.receiver.handleAudioLifecycle(.interruptionEnded)
+                self.rebuildEngine()
             }
         })
+    }
+
+    private func stopEngineForRecovery() {
+        engine.stop()
+        if let sourceNode {
+            engine.detach(sourceNode)
+        }
+        sourceNode = nil
+    }
+
+    private func rebuildEngine() {
+        stopEngineForRecovery()
+        do {
+            try audioSession.setActive(true)
+            outputSampleRate = audioSession.sampleRate
+            drift = DriftController(nominalRatio: 48_000.0 / outputSampleRate)
+            try configureEngine()
+            receiver.diagnostics.log(
+                .info,
+                category: .audio,
+                message: "audio_output_restarted",
+                fields: [
+                    "event": "audio_output_restarted",
+                    "sample_rate": "\(outputSampleRate)"
+                ]
+            )
+        } catch {
+            receiver.diagnostics.log(
+                .error,
+                category: .audio,
+                message: "audio_output_restart_failed",
+                fields: [
+                    "event": "audio_output_restart_failed",
+                    "error_type": "\(type(of: error))"
+                ]
+            )
+        }
     }
 }
 #endif

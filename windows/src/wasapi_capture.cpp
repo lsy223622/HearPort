@@ -82,28 +82,6 @@ struct WasapiLoopbackCapture::Impl {
   void Run() {
     const auto com_result = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     const bool com_initialized = SUCCEEDED(com_result);
-    ComPtr<IMMDeviceEnumerator> enumerator;
-    ComPtr<IMMDevice> device;
-    ComPtr<IAudioClient> audio_client;
-    ComPtr<IAudioCaptureClient> capture_client;
-    WAVEFORMATEX* mix_format = nullptr;
-
-    const auto cleanup = [&] {
-      if (audio_client) {
-        audio_client->Stop();
-      }
-      if (mix_format != nullptr) {
-        CoTaskMemFree(mix_format);
-        mix_format = nullptr;
-      }
-      if (wake_event != nullptr) {
-        CloseHandle(wake_event);
-        wake_event = nullptr;
-      }
-      if (com_initialized) {
-        CoUninitialize();
-      }
-    };
 
     if (!com_initialized) {
       running = false;
@@ -113,124 +91,152 @@ struct WasapiLoopbackCapture::Impl {
       return;
     }
 
-    HRESULT result = CoCreateInstance(
-        __uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
-        IID_PPV_ARGS(&enumerator));
-    if (FAILED(result) ||
-        FAILED(enumerator->GetDefaultAudioEndpoint(eRender, eConsole,
-                                                    &device)) ||
-        FAILED(device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr,
-                                 &audio_client)) ||
-        FAILED(audio_client->GetMixFormat(&mix_format))) {
-      cleanup();
-      running = false;
-      if (on_reset) {
-        on_reset();
-      }
-      return;
-    }
-
-    PcmFormat format;
-    try {
-      format = ReadPcmFormat(*mix_format);
-    } catch (...) {
-      cleanup();
-      running = false;
-      if (on_reset) {
-        on_reset();
-      }
-      return;
-    }
-
-    constexpr DWORD stream_flags = AUDCLNT_STREAMFLAGS_LOOPBACK |
-                                   AUDCLNT_STREAMFLAGS_EVENTCALLBACK;
-    if (FAILED(audio_client->Initialize(AUDCLNT_SHAREMODE_SHARED, stream_flags,
-                                         0, 0, mix_format, nullptr))) {
-      cleanup();
-      running = false;
-      if (on_reset) {
-        on_reset();
-      }
-      return;
-    }
-    if (FAILED(audio_client->SetEventHandle(wake_event)) ||
-        FAILED(audio_client->GetService(IID_PPV_ARGS(&capture_client))) ||
-        FAILED(audio_client->Start())) {
-      cleanup();
-      running = false;
-      if (on_reset) {
-        on_reset();
-      }
-      return;
-    }
-
-    const auto block_bytes = static_cast<std::size_t>(mix_format->nBlockAlign);
-    constexpr std::size_t kMaxCaptureFrames = 4096;
-    std::vector<std::byte> scratch(kMaxCaptureFrames * block_bytes);
-    HANDLE avrt_task = nullptr;
-    DWORD avrt_task_index = 0;
-    avrt_task = AvSetMmThreadCharacteristicsW(L"Pro Audio", &avrt_task_index);
-
-    bool reset = false;
-    while (running && !reset) {
-      const auto wait_result = WaitForSingleObject(wake_event, 100);
-      if (wait_result == WAIT_FAILED) {
-        reset = true;
-        break;
-      }
-
-      UINT32 packet_frames = 0;
-      auto packet_result = capture_client->GetNextPacketSize(&packet_frames);
-      if (FAILED(packet_result)) {
-        reset = true;
-        break;
-      }
-      while (packet_frames != 0) {
-        BYTE* data = nullptr;
-        UINT32 frames = 0;
-        DWORD flags = 0;
-        const auto buffer_result = capture_client->GetBuffer(
-            &data, &frames, &flags, nullptr, nullptr);
-        if (FAILED(buffer_result)) {
-          reset = buffer_result == AUDCLNT_E_DEVICE_INVALIDATED ||
-                  buffer_result == AUDCLNT_E_RESOURCES_INVALIDATED ||
-                  buffer_result == AUDCLNT_E_SERVICE_NOT_RUNNING;
-          break;
+    bool reset_notified = false;
+    while (running) {
+      ComPtr<IMMDeviceEnumerator> enumerator;
+      ComPtr<IMMDevice> device;
+      ComPtr<IAudioClient> audio_client;
+      ComPtr<IAudioCaptureClient> capture_client;
+      WAVEFORMATEX* mix_format = nullptr;
+      const auto cleanup = [&] {
+        if (audio_client) {
+          audio_client->Stop();
         }
+        if (mix_format != nullptr) {
+          CoTaskMemFree(mix_format);
+          mix_format = nullptr;
+        }
+      };
 
-        const auto byte_count = static_cast<std::size_t>(frames) * block_bytes;
-        if (frames > kMaxCaptureFrames) {
-          capture_client->ReleaseBuffer(frames);
+      HRESULT result = CoCreateInstance(
+          __uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
+          IID_PPV_ARGS(&enumerator));
+      if (FAILED(result) ||
+          FAILED(enumerator->GetDefaultAudioEndpoint(eRender, eConsole,
+                                                      &device)) ||
+          FAILED(device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr,
+                                  &audio_client)) ||
+          FAILED(audio_client->GetMixFormat(&mix_format))) {
+        cleanup();
+        if (!reset_notified && on_reset) {
+          on_reset();
+          reset_notified = true;
+        }
+        WaitForSingleObject(wake_event, 250);
+        continue;
+      }
+
+      PcmFormat format;
+      try {
+        format = ReadPcmFormat(*mix_format);
+      } catch (...) {
+        cleanup();
+        if (!reset_notified && on_reset) {
+          on_reset();
+          reset_notified = true;
+        }
+        WaitForSingleObject(wake_event, 250);
+        continue;
+      }
+
+      constexpr DWORD stream_flags = AUDCLNT_STREAMFLAGS_LOOPBACK |
+                                     AUDCLNT_STREAMFLAGS_EVENTCALLBACK;
+      if (FAILED(audio_client->Initialize(AUDCLNT_SHAREMODE_SHARED,
+                                           stream_flags, 0, 0, mix_format,
+                                           nullptr)) ||
+          FAILED(audio_client->SetEventHandle(wake_event)) ||
+          FAILED(audio_client->GetService(IID_PPV_ARGS(&capture_client))) ||
+          FAILED(audio_client->Start())) {
+        cleanup();
+        if (!reset_notified && on_reset) {
+          on_reset();
+          reset_notified = true;
+        }
+        WaitForSingleObject(wake_event, 250);
+        continue;
+      }
+
+      reset_notified = false;
+      const auto block_bytes = static_cast<std::size_t>(mix_format->nBlockAlign);
+      constexpr std::size_t kMaxCaptureFrames = 4096;
+      std::vector<std::byte> scratch(kMaxCaptureFrames * block_bytes);
+      HANDLE avrt_task = nullptr;
+      DWORD avrt_task_index = 0;
+      avrt_task = AvSetMmThreadCharacteristicsW(L"Pro Audio", &avrt_task_index);
+
+      bool reset = false;
+      while (running && !reset) {
+        const auto wait_result = WaitForSingleObject(wake_event, 100);
+        if (wait_result == WAIT_FAILED) {
           reset = true;
           break;
         }
-        if ((flags & AUDCLNT_BUFFERFLAGS_SILENT) != 0) {
-          std::fill(scratch.begin(), scratch.begin() +
-                                      static_cast<std::ptrdiff_t>(byte_count),
-                    std::byte{0});
-        } else {
-          std::memcpy(scratch.data(), data, byte_count);
-        }
-        if (on_packet) {
-          on_packet(std::span<const std::byte>(scratch.data(), byte_count),
-                    format);
-        }
-        capture_client->ReleaseBuffer(frames);
-        packet_result = capture_client->GetNextPacketSize(&packet_frames);
+
+        UINT32 packet_frames = 0;
+        auto packet_result = capture_client->GetNextPacketSize(&packet_frames);
         if (FAILED(packet_result)) {
           reset = true;
           break;
         }
+        while (packet_frames != 0) {
+          BYTE* data = nullptr;
+          UINT32 frames = 0;
+          DWORD flags = 0;
+          const auto buffer_result = capture_client->GetBuffer(
+              &data, &frames, &flags, nullptr, nullptr);
+          if (FAILED(buffer_result)) {
+            reset = buffer_result == AUDCLNT_E_DEVICE_INVALIDATED ||
+                    buffer_result == AUDCLNT_E_RESOURCES_INVALIDATED ||
+                    buffer_result == AUDCLNT_E_SERVICE_NOT_RUNNING;
+            break;
+          }
+
+          const auto byte_count = static_cast<std::size_t>(frames) * block_bytes;
+          if (frames > kMaxCaptureFrames) {
+            capture_client->ReleaseBuffer(frames);
+            reset = true;
+            break;
+          }
+          if ((flags & AUDCLNT_BUFFERFLAGS_SILENT) != 0) {
+            std::fill(scratch.begin(), scratch.begin() +
+                                        static_cast<std::ptrdiff_t>(byte_count),
+                      std::byte{0});
+          } else {
+            std::memcpy(scratch.data(), data, byte_count);
+          }
+          if (on_packet) {
+            on_packet(std::span<const std::byte>(scratch.data(), byte_count),
+                      format);
+          }
+          capture_client->ReleaseBuffer(frames);
+          packet_result = capture_client->GetNextPacketSize(&packet_frames);
+          if (FAILED(packet_result)) {
+            reset = true;
+            break;
+          }
+        }
+      }
+
+      if (avrt_task != nullptr) {
+        AvRevertMmThreadCharacteristics(avrt_task);
+      }
+      cleanup();
+      if (reset && running) {
+        if (!reset_notified && on_reset) {
+          on_reset();
+          reset_notified = true;
+        }
+        WaitForSingleObject(wake_event, 250);
       }
     }
 
-    if (avrt_task != nullptr) {
-      AvRevertMmThreadCharacteristics(avrt_task);
+    if (wake_event != nullptr) {
+      CloseHandle(wake_event);
+      wake_event = nullptr;
     }
-    cleanup();
     running = false;
-    if (reset && on_reset) {
-      on_reset();
+    if (com_initialized) {
+      CoUninitialize();
     }
   }
 };

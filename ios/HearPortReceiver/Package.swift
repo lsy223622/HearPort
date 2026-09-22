@@ -11,7 +11,12 @@ let package = Package(
         .library(name: "HearPortReceiver", targets: ["HearPortReceiver"])
     ],
     targets: [
-        .target(name: "HearPortReceiver"),
+        .target(
+            name: "HearPortReceiver",
+            swiftSettings: [
+                .define("HEARPORT_SPAKE2_PROVIDER", .when(platforms: [.iOS]))
+            ]
+        ),
         .testTarget(
             name: "HearPortReceiverTests",
             dependencies: ["HearPortReceiver"]

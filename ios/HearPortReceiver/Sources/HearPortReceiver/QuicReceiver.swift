@@ -34,7 +34,7 @@ public final class HearPortReceiver {
     public var renderFillFrames: Int {
         guard lock.try() else { return 0 }
         defer { lock.unlock() }
-        return renderRing.fillFrames
+        return renderRing.fillFrames + (jitter?.fillPackets ?? 0) * AudioDatagram.framesPerPacket
     }
 
     public var jitterStats: JitterStats? {
@@ -44,6 +44,39 @@ public final class HearPortReceiver {
     }
 
     private let startupPacketTarget: Int
+
+    @discardableResult
+    public func beginAuthentication(authMode: AuthMode, peerID: Data) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        let accepted = session.receiveConnect(authMode: authMode, peerID: peerID)
+        diagnostics.log(
+            accepted ? .info : .warning,
+            category: .pairing,
+            message: accepted ? "connect_accepted" : "connect_rejected",
+            fields: [
+                "event": accepted ? "connect_accepted" : "connect_rejected",
+                "auth_mode": "\(authMode)",
+                "peer_id_bytes": "\(peerID.count)",
+                "phase": "\(session.phase)"
+            ]
+        )
+        return accepted
+    }
+
+    public func resetForConnection() {
+        lock.lock()
+        defer { lock.unlock() }
+        session.resetForConnection()
+        jitter = nil
+        renderRing.reset()
+        diagnostics.log(
+            .debug,
+            category: .pairing,
+            message: "receiver_connection_reset",
+            fields: ["event": "receiver_connection_reset"]
+        )
+    }
 
     @discardableResult
     public func beginStream(_ streamID: UInt32) -> Bool {

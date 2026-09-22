@@ -77,6 +77,21 @@ final class ReceiverCoreTests: XCTestCase {
         XCTAssertEqual(session.acceptAudio(packet), .oldStreamDiscarded)
     }
 
+    func testReceiverSessionCanResetForAnotherConnection() {
+        let session = ReceiverSessionState()
+        XCTAssertTrue(session.receiveConnect(authMode: .oneTime, peerID: Data()))
+        XCTAssertTrue(session.markAuthenticated())
+        XCTAssertTrue(session.beginStream(7))
+
+        session.resetForConnection()
+
+        XCTAssertEqual(session.phase, .awaitingConnect)
+        XCTAssertNil(session.authMode)
+        XCTAssertNil(session.pendingStreamID)
+        XCTAssertNil(session.activeStreamID)
+        XCTAssertTrue(session.receiveConnect(authMode: .pair, peerID: Data()))
+    }
+
     func testJitterBufferReordersDropsDuplicatesLateAndConcealsLoss() throws {
         var jitter = JitterBuffer(streamID: 1, startupPackets: 2)
         let packet10 = try AudioDatagram(streamID: 1, sequence: 10,
@@ -102,6 +117,40 @@ final class ReceiverCoreTests: XCTestCase {
         XCTAssertEqual(lossJitter.concealMissing()?.count, AudioDatagram.pcmByteCount)
         XCTAssertEqual(lossJitter.insert(packet11), .late)
         XCTAssertEqual(lossJitter.stats.lostPackets, 1)
+    }
+
+    func testJitterBufferStartsWithARecoverableGapAndStaysBounded() throws {
+        var jitter = JitterBuffer(streamID: 1, startupPackets: 2, maximumPackets: 3)
+        let packet10 = try AudioDatagram(streamID: 1, sequence: 10,
+                                         pcm: Data(repeating: 1, count: AudioDatagram.pcmByteCount))
+        let packet12 = try AudioDatagram(streamID: 1, sequence: 12,
+                                         pcm: Data(repeating: 3, count: AudioDatagram.pcmByteCount))
+        let packet13 = try AudioDatagram(streamID: 1, sequence: 13,
+                                         pcm: Data(repeating: 4, count: AudioDatagram.pcmByteCount))
+        let packet14 = try AudioDatagram(streamID: 1, sequence: 14,
+                                         pcm: Data(repeating: 5, count: AudioDatagram.pcmByteCount))
+
+        XCTAssertEqual(jitter.insert(packet10), .inserted)
+        XCTAssertEqual(jitter.insert(packet12), .inserted)
+        XCTAssertTrue(jitter.startIfReady())
+        XCTAssertEqual(jitter.consumeNext()?.sequence, 10)
+        XCTAssertEqual(jitter.concealMissing()?.count, AudioDatagram.pcmByteCount)
+        XCTAssertEqual(jitter.consumeNext()?.sequence, 12)
+
+        XCTAssertEqual(jitter.insert(packet13), .inserted)
+        XCTAssertEqual(jitter.insert(packet14), .inserted)
+        XCTAssertLessThanOrEqual(jitter.fillPackets, 3)
+        XCTAssertEqual(jitter.stats.capacityDrops, 0)
+    }
+
+    func testStreamingResamplerPreservesEveryFrameAtOneToOneRatio() {
+        var resampler = StreamingStereoResampler()
+        let first = (0..<256).flatMap { value in [Float(value), -Float(value)] }
+        let second = (256..<512).flatMap { value in [Float(value), -Float(value)] }
+
+        XCTAssertEqual(resampler.requiredInputFrames(outputFrameCount: 256, ratio: 1), 256)
+        XCTAssertEqual(resampler.process(first, outputFrameCount: 256, ratio: 1), first)
+        XCTAssertEqual(resampler.process(second, outputFrameCount: 256, ratio: 1), second)
     }
 
     func testSequenceComparisonHandlesWrap() {

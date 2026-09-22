@@ -22,6 +22,8 @@ public final class ReceiverControlSession {
     private var spakeOutput: Spake2Output?
     private var connectSent = false
     private var ready = false
+    private var pairConfirmationVerified = false
+    private var rememberedResponseSent = false
 
     public init(
         receiver: HearPortReceiver,
@@ -54,6 +56,12 @@ public final class ReceiverControlSession {
             self.onTransportState?(state)
             if state == .ready {
                 self.sendConnectIfPossible()
+            } else if state == .failed || state == .closed {
+                self.ready = false
+                self.connectSent = false
+                self.pairConfirmationVerified = false
+                self.rememberedResponseSent = false
+                self.receiver.resetForConnection()
             }
         }
         diagnostics.log(
@@ -78,6 +86,9 @@ public final class ReceiverControlSession {
         self.decoder = ControlFrameDecoder()
         self.spakeOutput = nil
         self.pendingCredential = nil
+        self.pairConfirmationVerified = false
+        self.rememberedResponseSent = false
+        receiver.resetForConnection()
         diagnostics.log(
             .info,
             category: .control,
@@ -158,6 +169,9 @@ public final class ReceiverControlSession {
         transport.cancel()
         ready = false
         connectSent = false
+        pairConfirmationVerified = false
+        rememberedResponseSent = false
+        receiver.resetForConnection()
     }
 
     private func sendConnectIfPossible() {
@@ -166,6 +180,9 @@ public final class ReceiverControlSession {
         let peerID = credential?.peerID ?? Data()
         let envelope = ControlEnvelope(.connectRequest(authMode: mode, peerID: peerID))
         do {
+            guard receiver.beginAuthentication(authMode: mode, peerID: peerID) else {
+                throw PairingSecurityError.providerFailure(-5)
+            }
             let encoded = try envelope.encoded()
             diagnostics.log(
                 .debug,
@@ -187,6 +204,7 @@ public final class ReceiverControlSession {
                 message: "connect_message_failed",
                 fields: ["event": "connect_message_failed", "error_type": "\(type(of: error))"]
             )
+            receiver.resetForConnection()
             onError?("Control stream is not available")
         }
     }
@@ -308,9 +326,10 @@ public final class ReceiverControlSession {
                 message: "pairing_confirmation_accepted",
                 fields: ["event": "pairing_confirmation_accepted"]
             )
+            pairConfirmationVerified = true
             send(.pairConfirmB(output.confirmation))
         case let .pairCredential(peerID, pairSecret):
-            guard mode == .pair, let windowsSPKIHash else {
+            guard mode == .pair, pairConfirmationVerified, let windowsSPKIHash else {
                 throw PairingSecurityError.invalidLength
             }
             pendingCredential = try RememberedCredential(
@@ -343,8 +362,26 @@ public final class ReceiverControlSession {
                 message: "remembered_auth_challenge_received",
                 fields: ["event": "remembered_auth_challenge_received", "nonce_bytes": "\(nonce.count)"]
             )
+            rememberedResponseSent = true
             send(.authResponse(peerID: credential.peerID, mac: mac))
         case .sessionReady:
+            switch mode {
+            case .remembered:
+                guard rememberedResponseSent else {
+                    throw PairingSecurityError.providerFailure(-6)
+                }
+            case .pair:
+                guard pairConfirmationVerified, pendingCredential != nil else {
+                    throw PairingSecurityError.providerFailure(-7)
+                }
+            case .oneTime:
+                guard pairConfirmationVerified else {
+                    throw PairingSecurityError.providerFailure(-8)
+                }
+            }
+            guard receiver.markAuthenticated() else {
+                throw PairingSecurityError.providerFailure(-2)
+            }
             if mode == .pair, let pendingCredential {
                 try keychain.save(pendingCredential)
                 credential = pendingCredential
@@ -354,9 +391,6 @@ public final class ReceiverControlSession {
                     message: "remembered_credential_saved",
                     fields: ["event": "remembered_credential_saved"]
                 )
-            }
-            guard receiver.markAuthenticated() else {
-                throw PairingSecurityError.providerFailure(-2)
             }
             ready = true
             diagnostics.log(

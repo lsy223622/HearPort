@@ -5,11 +5,13 @@ on:
     paths:
       - "ios/HearPortReceiver/**"
       - "ios/HearPortApp/**"
+      - "security/spake2-provider/**"
       - ".github/workflows/ios-receiver.yml"
   pull_request:
     paths:
       - "ios/HearPortReceiver/**"
       - "ios/HearPortApp/**"
+      - "security/spake2-provider/**"
       - ".github/workflows/ios-receiver.yml"
   workflow_dispatch:
 
@@ -33,6 +35,19 @@ jobs:
 
       - name: Install XcodeGen
         run: brew install xcodegen
+
+      - name: Build iOS SPAKE2 provider
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup target add aarch64-apple-ios
+          cargo build \
+            --manifest-path security/spake2-provider/Cargo.toml \
+            --release \
+            --target aarch64-apple-ios
+          mkdir -p ios/HearPortApp/ThirdParty
+          cp target/aarch64-apple-ios/release/libhearport_spake2_provider.a \
+            ios/HearPortApp/ThirdParty/
 
       - name: Generate Xcode project
         working-directory: ios/HearPortApp
@@ -63,6 +78,7 @@ jobs:
           test "$executable" = "HearPort"
           package_type=$(/usr/libexec/PlistBuddy -c 'Print :CFBundlePackageType' "$app_path/Info.plist")
           test "$package_type" = "APPL"
+          nm -gU "$app_path/HearPort" | grep -F "_hearport_spake2_begin"
           mkdir -p "$RUNNER_TEMP/Payload"
           cp -R "$app_path" "$RUNNER_TEMP/Payload/HearPort.app"
           ditto -c -k --sequesterRsrc --keepParent \

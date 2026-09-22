@@ -25,6 +25,12 @@ targets:
         MARKETING_VERSION: 0.1.0
         CURRENT_PROJECT_VERSION: 4
         SWIFT_VERSION: 5.9
+        LIBRARY_SEARCH_PATHS:
+          - "$(inherited)"
+          - "$(SRCROOT)/ThirdParty"
+        OTHER_LDFLAGS:
+          - "$(inherited)"
+          - "-lhearport_spake2_provider"
         IPHONEOS_DEPLOYMENT_TARGET: 16.0
         TARGETED_DEVICE_FAMILY: "1,2"
         GENERATE_INFOPLIST_FILE: NO
