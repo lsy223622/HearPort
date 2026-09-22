@@ -13,6 +13,7 @@
 #include <thread>
 
 #include "hearport/session_state.h"
+#include "hearport/windows/audio_metrics.h"
 #include "hearport/windows/packetizer.h"
 #include "hearport/windows/quic_server.h"
 #include "hearport/windows/wasapi_capture.h"
@@ -56,7 +57,8 @@ class SenderService {
   void HandleCapturePacket(std::span<const std::byte> bytes,
                            const PcmFormat& format);
   void HandleCaptureReset();
-  void LogAudioSummaryIfDueLocked();
+  void DiagnosticsWorker();
+  void LogAudioSummary();
 
   static constexpr std::size_t kAudioQueueCapacity = 256;
 
@@ -75,18 +77,20 @@ class SenderService {
   mutable std::mutex capture_mutex_;
   mutable std::mutex queue_mutex_;
   std::condition_variable queue_condition_;
+  mutable std::mutex diagnostics_mutex_;
+  std::condition_variable diagnostics_condition_;
   std::deque<wire::AudioDatagram> audio_queue_;
   std::thread audio_thread_;
+  std::thread diagnostics_thread_;
   bool stop_worker_ = false;
+  bool stop_diagnostics_ = false;
   bool capture_reset_pending_ = false;
   bool datagram_ready_ = false;
+  std::size_t datagram_max_payload_ = 0;
   std::uint64_t dropped_audio_packets_ = 0;
-  std::chrono::steady_clock::time_point audio_summary_started_ =
+  SenderAudioMetrics audio_metrics_;
+  std::chrono::steady_clock::time_point diagnostics_last_summary_ =
       std::chrono::steady_clock::now();
-  std::uint64_t audio_captured_window_ = 0;
-  std::uint64_t audio_sent_window_ = 0;
-  std::uint64_t audio_dropped_window_ = 0;
-  std::uint64_t audio_send_failures_window_ = 0;
   bool started_ = false;
   wire::ControlFrameDecoder control_decoder_;
 };

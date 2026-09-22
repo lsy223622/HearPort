@@ -1,6 +1,6 @@
 #include "hearport/windows/sender_service.h"
 
-#include <algorithm>
+#include <chrono>
 #include <iostream>
 #include <utility>
 
@@ -8,6 +8,24 @@
 #include "hearport/wire/control_framing.h"
 
 namespace hearport::windows {
+
+namespace {
+
+const char* SampleFormatName(SampleFormat format) {
+  switch (format) {
+    case SampleFormat::float32_le:
+      return "float32_le";
+    case SampleFormat::int16_le:
+      return "int16_le";
+    case SampleFormat::int24_le:
+      return "int24_le";
+    case SampleFormat::int32_le:
+      return "int32_le";
+  }
+  return "unknown";
+}
+
+}  // namespace
 
 SenderService::SenderService(QuicServerOptions options)
     : options_(options), quic_(CreateMsQuicServer()), packetizer_(1) {}
@@ -39,15 +57,22 @@ bool SenderService::Start() {
   callbacks.on_datagram_ready = [this](std::size_t max_payload) {
     std::lock_guard lock(queue_mutex_);
     datagram_ready_ = max_payload >= wire::kAudioDatagramBytes;
+    datagram_max_payload_ = max_payload;
+    audio_metrics_.set_queue_state(audio_queue_.size(), datagram_ready_,
+                                   datagram_max_payload_);
   };
   callbacks.on_datagram_unavailable = [this] {
     std::lock_guard lock(queue_mutex_);
     datagram_ready_ = false;
+    datagram_max_payload_ = 0;
+    audio_metrics_.set_queue_state(audio_queue_.size(), false, 0);
   };
   callbacks.on_closed = [this] {
     {
       std::lock_guard lock(queue_mutex_);
       datagram_ready_ = false;
+      datagram_max_payload_ = 0;
+      audio_metrics_.set_queue_state(audio_queue_.size(), false, 0);
     }
     {
       std::lock_guard lock(session_mutex_);
@@ -65,14 +90,18 @@ bool SenderService::Start() {
     std::lock_guard lock(queue_mutex_);
     stop_worker_ = false;
     capture_reset_pending_ = false;
-    audio_summary_started_ = std::chrono::steady_clock::now();
-    audio_captured_window_ = 0;
-    audio_sent_window_ = 0;
-    audio_dropped_window_ = 0;
-    audio_send_failures_window_ = 0;
+    datagram_ready_ = false;
+    datagram_max_payload_ = 0;
+    audio_metrics_.exchange_interval();
+    audio_metrics_.set_queue_state(0, false, 0);
   }
   control_decoder_.Reset();
   audio_thread_ = std::thread([this] { AudioWorker(); });
+  {
+    std::lock_guard lock(diagnostics_mutex_);
+    stop_diagnostics_ = false;
+  }
+  diagnostics_thread_ = std::thread([this] { DiagnosticsWorker(); });
   if (!capture_.Start(
           [this](std::span<const std::byte> bytes, const PcmFormat& format) {
             HandleCapturePacket(bytes, format);
@@ -86,7 +115,7 @@ bool SenderService::Start() {
 }
 
 void SenderService::Stop() {
-  if (!started_ && !audio_thread_.joinable()) {
+  if (!started_ && !audio_thread_.joinable() && !diagnostics_thread_.joinable()) {
     return;
   }
   capture_.Stop();
@@ -98,6 +127,14 @@ void SenderService::Stop() {
   if (audio_thread_.joinable()) {
     audio_thread_.join();
   }
+  {
+    std::lock_guard lock(diagnostics_mutex_);
+    stop_diagnostics_ = true;
+  }
+  diagnostics_condition_.notify_all();
+  if (diagnostics_thread_.joinable()) {
+    diagnostics_thread_.join();
+  }
   if (quic_) {
     quic_->Stop();
   }
@@ -106,6 +143,8 @@ void SenderService::Stop() {
     audio_queue_.clear();
     capture_reset_pending_ = false;
     datagram_ready_ = false;
+    datagram_max_payload_ = 0;
+    audio_metrics_.set_queue_state(0, false, 0);
   }
   normalizer_.reset();
   normalizer_format_.reset();
@@ -140,6 +179,7 @@ bool SenderService::BeginStream(std::uint32_t stream_id) {
   packetizer_.Reset(stream_id);
   normalizer_.reset();
   normalizer_format_.reset();
+  audio_metrics_.set_stream(stream_id);
   return true;
 }
 
@@ -167,16 +207,18 @@ std::uint64_t SenderService::dropped_audio_packets() const noexcept {
 
 void SenderService::EnqueueAudio(const wire::AudioDatagram& packet) {
   std::lock_guard lock(queue_mutex_);
-  ++audio_captured_window_;
   if (audio_queue_.size() >= kAudioQueueCapacity) {
     ++dropped_audio_packets_;
-    ++audio_dropped_window_;
-    LogAudioSummaryIfDueLocked();
+    audio_metrics_.record_dropped(false);
+    audio_metrics_.set_queue_state(audio_queue_.size(), datagram_ready_,
+                                   datagram_max_payload_);
     return;
   }
   audio_queue_.push_back(packet);
+  audio_metrics_.record_queued();
+  audio_metrics_.set_queue_state(audio_queue_.size(), datagram_ready_,
+                                 datagram_max_payload_);
   queue_condition_.notify_one();
-  LogAudioSummaryIfDueLocked();
 }
 
 void SenderService::AudioWorker() {
@@ -199,29 +241,31 @@ void SenderService::AudioWorker() {
       }
       packet = audio_queue_.front();
       audio_queue_.pop_front();
+      audio_metrics_.set_queue_state(audio_queue_.size(), datagram_ready_,
+                                     datagram_max_payload_);
       if (!datagram_ready_) {
         ++dropped_audio_packets_;
-        ++audio_dropped_window_;
-        LogAudioSummaryIfDueLocked();
+        audio_metrics_.record_dropped(false);
         continue;
       }
     }
     const auto encoded = wire::EncodeAudioDatagram(packet);
     const bool sent = quic_->SendAudio(encoded);
-    std::lock_guard lock(queue_mutex_);
     if (sent) {
-      ++audio_sent_window_;
+      audio_metrics_.record_sent();
     } else {
+      std::lock_guard lock(queue_mutex_);
       ++dropped_audio_packets_;
-      ++audio_dropped_window_;
-      ++audio_send_failures_window_;
+      audio_metrics_.set_queue_state(audio_queue_.size(), datagram_ready_,
+                                     datagram_max_payload_);
+      audio_metrics_.record_dropped(true);
     }
-    LogAudioSummaryIfDueLocked();
   }
 }
 
 void SenderService::HandleCapturePacket(std::span<const std::byte> bytes,
                                          const PcmFormat& format) {
+  audio_metrics_.record_capture(bytes.size(), format);
   std::lock_guard capture_lock(capture_mutex_);
   {
     std::lock_guard session_lock(session_mutex_);
@@ -237,7 +281,9 @@ void SenderService::HandleCapturePacket(std::span<const std::byte> bytes,
     normalizer_.emplace(format);
   }
   const auto samples = normalizer_->Convert(bytes);
+  audio_metrics_.record_normalized_frames(samples.size() / 2);
   packetizer_.Push(samples, [this](const wire::AudioDatagram& packet) {
+    audio_metrics_.record_packetized(packet.stream_id, packet.sequence);
     bool accepted = false;
     {
       std::lock_guard lock(session_mutex_);
@@ -250,6 +296,7 @@ void SenderService::HandleCapturePacket(std::span<const std::byte> bytes,
 }
 
 void SenderService::HandleCaptureReset() {
+  audio_metrics_.record_capture_reset();
   {
     std::lock_guard lock(capture_mutex_);
     normalizer_.reset();
@@ -259,30 +306,61 @@ void SenderService::HandleCaptureReset() {
     std::lock_guard lock(queue_mutex_);
     audio_queue_.clear();
     capture_reset_pending_ = true;
+    audio_metrics_.set_queue_state(audio_queue_.size(), datagram_ready_,
+                                   datagram_max_payload_);
   }
   queue_condition_.notify_one();
 }
 
-void SenderService::LogAudioSummaryIfDueLocked() {
-  const auto now = std::chrono::steady_clock::now();
-  const auto elapsed = now - audio_summary_started_;
-  if (elapsed < std::chrono::seconds(1)) {
-    return;
+void SenderService::DiagnosticsWorker() {
+  diagnostics_last_summary_ = std::chrono::steady_clock::now();
+  auto next_summary = diagnostics_last_summary_ + std::chrono::seconds(1);
+  for (;;) {
+    std::unique_lock lock(diagnostics_mutex_);
+    if (diagnostics_condition_.wait_until(
+            lock, next_summary, [this] { return stop_diagnostics_; })) {
+      return;
+    }
+    lock.unlock();
+    LogAudioSummary();
+    const auto now = std::chrono::steady_clock::now();
+    next_summary = now + std::chrono::seconds(1);
   }
-  const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-      elapsed);
+}
+
+void SenderService::LogAudioSummary() {
+  {
+    std::lock_guard lock(queue_mutex_);
+    audio_metrics_.set_queue_state(audio_queue_.size(), datagram_ready_,
+                                   datagram_max_payload_);
+  }
+  const auto now = std::chrono::steady_clock::now();
+  const auto elapsed_ms =
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          now - diagnostics_last_summary_);
+  diagnostics_last_summary_ = now;
+  const auto snapshot = audio_metrics_.exchange_interval();
   std::cerr << "quic_audio_summary interval_ms=" << elapsed_ms.count()
-            << " captured_packets=" << audio_captured_window_
-            << " sent_packets=" << audio_sent_window_
-            << " dropped_packets=" << audio_dropped_window_
-            << " send_failures=" << audio_send_failures_window_
-            << " queue_depth=" << audio_queue_.size()
-            << " datagram_ready=" << datagram_ready_ << "\n";
-  audio_summary_started_ = now;
-  audio_captured_window_ = 0;
-  audio_sent_window_ = 0;
-  audio_dropped_window_ = 0;
-  audio_send_failures_window_ = 0;
+            << " capture_callbacks=" << snapshot.capture_callbacks
+            << " capture_frames=" << snapshot.capture_frames
+            << " normalized_frames=" << snapshot.normalized_frames
+            << " packetized_packets=" << snapshot.packetized_packets
+            << " queued_packets=" << snapshot.queued_packets
+            << " sent_packets=" << snapshot.sent_packets
+            << " dropped_packets=" << snapshot.dropped_packets
+            << " send_failures=" << snapshot.send_failures
+            << " capture_resets=" << snapshot.capture_resets
+            << " queue_depth=" << snapshot.queue_depth
+            << " queue_high_watermark=" << snapshot.queue_high_watermark
+            << " stream_id=" << snapshot.stream_id
+            << " last_sequence=" << snapshot.last_sequence
+            << " datagram_ready=" << snapshot.datagram_ready
+            << " max_datagram_payload=" << snapshot.datagram_max_payload
+            << " capture_sample_rate="
+            << snapshot.capture_format.sample_rate_hz
+            << " capture_channels=" << snapshot.capture_format.channels
+            << " capture_format="
+            << SampleFormatName(snapshot.capture_format.sample_format) << "\n";
 }
 
 }  // namespace hearport::windows
