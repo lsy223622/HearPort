@@ -11,7 +11,12 @@ let package = Package(
         .library(name: "HearPortReceiver", targets: ["HearPortReceiver"])
     ],
     targets: [
-        .target(name: "HearPortReceiver"),
+        .target(
+            name: "HearPortAtomics",
+            path: "Sources/HearPortAtomics",
+            publicHeadersPath: "include"
+        ),
+        .target(name: "HearPortReceiver", dependencies: ["HearPortAtomics"]),
         .testTarget(
             name: "HearPortReceiverTests",
             dependencies: ["HearPortReceiver"]
