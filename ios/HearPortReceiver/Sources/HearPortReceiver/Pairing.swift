@@ -96,7 +96,7 @@ public struct PairingSecurity {
     }
 
     public static func defaultSpake2Provider() -> any Spake2Provider {
-        #if HEARPORT_SPAKE2_PROVIDER
+        #if os(iOS)
         return RustSpake2Provider()
         #else
         return UnavailableSpake2Provider()
@@ -293,7 +293,7 @@ public final class PairingWindow {
     }
 }
 
-#if HEARPORT_SPAKE2_PROVIDER
+#if os(iOS)
 @_silgen_name("hearport_spake2_begin")
 private func hearportSpake2Begin(
     _ role: UInt8,
