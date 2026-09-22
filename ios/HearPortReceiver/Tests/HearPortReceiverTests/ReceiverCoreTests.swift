@@ -220,6 +220,7 @@ final class ReceiverCoreTests: XCTestCase {
             XCTAssertEqual(receiver.receiveDatagram(packet.encoded), .accepted)
         }
 
+        XCTAssertTrue(diagnostics.flushAsync(timeout: 1.0))
         let packetLogs = diagnostics.recentLines(limit: 200)
             .filter { $0.contains("event=datagram_received") }
         XCTAssertLessThan(packetLogs.count, 20)

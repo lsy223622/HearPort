@@ -28,17 +28,26 @@ public struct JitterBuffer {
     public private(set) var mode: JitterMode = .startup
     public private(set) var stats = JitterStats()
 
-    private let startupPackets: Int
-    private let maximumPackets: Int
+    public let startupPackets: Int
+    public let maximumPackets: Int
     private var packets: [UInt32: AudioDatagram] = [:]
     private var nextSequence: UInt32?
 
     public init(streamID: UInt32, startupPackets: Int = 4, maximumPackets: Int = 256) {
+        self.init(
+            streamID: streamID,
+            configuration: JitterBufferConfiguration(startupPackets: startupPackets),
+            maximumPackets: maximumPackets
+        )
+    }
+
+    public init(streamID: UInt32,
+                configuration: JitterBufferConfiguration,
+                maximumPackets: Int = 256) {
         precondition(streamID != 0)
-        precondition(startupPackets > 0)
-        precondition(maximumPackets >= startupPackets)
+        precondition(maximumPackets >= configuration.startupPackets)
         self.streamID = streamID
-        self.startupPackets = startupPackets
+        self.startupPackets = configuration.startupPackets
         self.maximumPackets = maximumPackets
     }
 
