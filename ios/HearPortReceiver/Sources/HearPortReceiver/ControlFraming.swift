@@ -39,17 +39,18 @@ public struct ControlFrameDecoder {
 
         var frames: [Data] = []
         while buffer.count >= 4 {
-            let length = (UInt32(buffer[0]) << 24) |
-                (UInt32(buffer[1]) << 16) |
-                (UInt32(buffer[2]) << 8) |
-                UInt32(buffer[3])
+            let start = buffer.startIndex
+            let length = (UInt32(buffer[start]) << 24) |
+                (UInt32(buffer[start + 1]) << 16) |
+                (UInt32(buffer[start + 2]) << 8) |
+                UInt32(buffer[start + 3])
             guard length != 0 else { throw ControlFramingError.emptyPayload }
             guard length <= ControlFraming.maxPayloadBytes else {
                 throw ControlFramingError.payloadTooLarge(Int(length))
             }
             let frameLength = 4 + Int(length)
             guard buffer.count >= frameLength else { break }
-            frames.append(buffer.subdata(in: 4..<frameLength))
+            frames.append(buffer.subdata(in: (start + 4)..<(start + frameLength)))
             buffer.removeFirst(frameLength)
         }
         return frames
