@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <condition_variable>
 #include <cstring>
+#include <iostream>
 #include <mutex>
 #include <string>
 #include <utility>
@@ -49,6 +50,7 @@ class MsQuicServer final : public QuicServer {
     }
     options_ = options;
     callbacks_ = std::move(callbacks);
+    std::cerr << "quic_start port=" << options_.port << "\n";
 
     if (QUIC_FAILED(MsQuicOpen2(&api_))) {
       api_ = nullptr;
@@ -114,15 +116,24 @@ class MsQuicServer final : public QuicServer {
     std::lock_guard lock(mutex_);
     if (!started_ || control_stream_ == nullptr || api_ == nullptr ||
         framed_bytes.empty()) {
+      std::cerr << "quic_control_send_skipped started=" << started_
+                << " has_control_stream=" << (control_stream_ != nullptr)
+                << " has_api=" << (api_ != nullptr)
+                << " bytes=" << framed_bytes.size() << "\n";
       return false;
     }
     auto* context = new SendBufferContext(framed_bytes);
     const auto status = api_->StreamSend(
         control_stream_, &context->buffer, 1, QUIC_SEND_FLAG_NONE, context);
     if (QUIC_FAILED(status)) {
+      std::cerr << "quic_control_send_failed status="
+                << static_cast<unsigned long>(status)
+                << " bytes=" << framed_bytes.size() << "\n";
       delete context;
       return false;
     }
+    std::cerr << "quic_control_send_queued bytes=" << framed_bytes.size()
+              << "\n";
     return true;
   }
 
@@ -162,6 +173,7 @@ class MsQuicServer final : public QuicServer {
     if (event->Type != QUIC_LISTENER_EVENT_NEW_CONNECTION) {
       return QUIC_STATUS_SUCCESS;
     }
+    std::cerr << "quic_listener_new_connection\n";
     server->api_->SetCallbackHandler(
         event->NEW_CONNECTION.Connection,
         reinterpret_cast<void*>(ConnectionCallback), server);
@@ -186,6 +198,8 @@ class MsQuicServer final : public QuicServer {
             accepted = true;
           }
         }
+        std::cerr << "quic_connection_connected accepted=" << accepted
+                  << "\n";
         if (!accepted) {
           if (api != nullptr) {
             api->ConnectionShutdown(connection,
@@ -214,6 +228,10 @@ class MsQuicServer final : public QuicServer {
             accepted = true;
           }
         }
+        std::cerr << "quic_peer_stream_started flags="
+                  << static_cast<unsigned long>(flags)
+                  << " unidirectional=" << unidirectional
+                  << " accepted=" << accepted << "\n";
         if (api != nullptr) {
           if (accepted) {
             api->SetCallbackHandler(stream,
@@ -230,17 +248,21 @@ class MsQuicServer final : public QuicServer {
         std::function<void()> on_unavailable;
         const auto max_send_length =
             event->DATAGRAM_STATE_CHANGED.MaxSendLength;
+        const auto send_enabled = event->DATAGRAM_STATE_CHANGED.SendEnabled;
         bool ready = false;
         {
           std::lock_guard lock(server->mutex_);
           if (server->connection_ == connection) {
-            ready = event->DATAGRAM_STATE_CHANGED.SendEnabled &&
+            ready = send_enabled &&
                     max_send_length >= kAudioDatagramBytes;
             server->datagram_ready_ = ready;
             on_ready = server->callbacks_.on_datagram_ready;
             on_unavailable = server->callbacks_.on_datagram_unavailable;
           }
         }
+        std::cerr << "quic_datagram_state send_enabled=" << send_enabled
+                  << " max_send_length=" << max_send_length
+                  << " ready=" << ready << "\n";
         if (ready) {
           if (on_ready) {
             on_ready(max_send_length);
@@ -275,6 +297,8 @@ class MsQuicServer final : public QuicServer {
               on_closed = server->callbacks_.on_closed;
             }
           }
+          std::cerr << "quic_connection_shutdown tracked=" << tracked
+                    << "\n";
           if (api != nullptr) {
             api->ConnectionClose(connection);
           }
@@ -305,6 +329,11 @@ class MsQuicServer final : public QuicServer {
             api = server->api_;
             on_control_bytes = server->callbacks_.on_control_bytes;
           }
+          std::cerr << "quic_control_receive buffers="
+                    << event->RECEIVE.BufferCount
+                    << " bytes=" << event->RECEIVE.TotalBufferLength
+                    << " handler=" << static_cast<bool>(on_control_bytes)
+                    << "\n";
           if (!on_control_bytes) {
             if (api != nullptr && event->RECEIVE.TotalBufferLength != 0) {
               api->StreamReceiveComplete(
@@ -320,6 +349,9 @@ class MsQuicServer final : public QuicServer {
               keep_connection = on_control_bytes(std::span<const std::byte>(
                   reinterpret_cast<const std::byte*>(buffer.Buffer),
                   buffer.Length));
+              std::cerr << "quic_control_receive_handled bytes="
+                        << buffer.Length
+                        << " keep_connection=" << keep_connection << "\n";
               if (!keep_connection) break;
             }
           }
@@ -330,6 +362,7 @@ class MsQuicServer final : public QuicServer {
         }
         break;
       case QUIC_STREAM_EVENT_SEND_COMPLETE:
+        std::cerr << "quic_control_send_complete\n";
         delete static_cast<SendBufferContext*>(
             event->SEND_COMPLETE.ClientContext);
         break;
