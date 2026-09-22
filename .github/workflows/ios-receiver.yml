@@ -48,7 +48,7 @@ jobs:
               -o 'script print("CRASH_STACK_BEGIN"); print("\n".join(f.GetFunctionName() or "unknown" for f in lldb.debugger.GetSelectedTarget().GetProcess().GetSelectedThread())); print("CRASH_STACK_END")' \
               -- "$(xcrun --find xctest)" .build/debug/HearPortReceiverPackageTests.xctest \
               > "$RUNNER_TEMP/debugger.log" 2>&1 || true
-            sed -n '/^CRASH_STACK_BEGIN$/,/^CRASH_STACK_END$/p' "$RUNNER_TEMP/debugger.log"
+            sed -n '/^CRASH_STACK_BEGIN/,/^CRASH_STACK_END/p; /^error:/p' "$RUNNER_TEMP/debugger.log"
             exit 1
           }
 
