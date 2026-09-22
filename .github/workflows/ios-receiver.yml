@@ -48,6 +48,8 @@ jobs:
           mkdir -p ios/HearPortApp/ThirdParty
           cp security/spake2-provider/target/aarch64-apple-ios/release/libhearport_spake2_provider.a \
             ios/HearPortApp/ThirdParty/
+          nm -g ios/HearPortApp/ThirdParty/libhearport_spake2_provider.a | \
+            grep -F "hearport_spake2_begin"
 
       - name: Generate Xcode project
         working-directory: ios/HearPortApp
@@ -64,8 +66,6 @@ jobs:
           -derivedDataPath "$RUNNER_TEMP/HearPortDerivedData"
           CODE_SIGNING_ALLOWED=NO
           CODE_SIGNING_REQUIRED=NO
-          LD_GENERATE_MAP_FILE=YES
-          LD_MAP_FILE_PATH="$RUNNER_TEMP/HearPort-LinkMap.txt"
           archive
 
       - name: Validate archive and create unsigned IPA
@@ -80,9 +80,6 @@ jobs:
           test "$executable" = "HearPort"
           package_type=$(/usr/libexec/PlistBuddy -c 'Print :CFBundlePackageType' "$app_path/Info.plist")
           test "$package_type" = "APPL"
-          link_map="$RUNNER_TEMP/HearPort-LinkMap.txt"
-          test -f "$link_map"
-          grep -F "libhearport_spake2_provider.a" "$link_map"
           mkdir -p "$RUNNER_TEMP/Payload"
           cp -R "$app_path" "$RUNNER_TEMP/Payload/HearPort.app"
           ditto -c -k --sequesterRsrc --keepParent \
