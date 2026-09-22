@@ -109,9 +109,43 @@ final class DiagnosticsTests: XCTestCase {
         )
     }
 
+    func testAsyncEntriesDrainBeforeExportAndRemainRedacted() throws {
+        let diagnostics = try makeDiagnostics(asyncQueueCapacity: 4)
+        diagnostics.level = .debug
+
+        XCTAssertTrue(diagnostics.logAsync(
+            .debug,
+            category: .realtime,
+            message: "async packet summary",
+            fields: ["pin": "123456", "stream_id": "7", "packets": "400"]
+        ))
+        XCTAssertTrue(diagnostics.flushAsync(timeout: 1.0))
+
+        let exported = try String(contentsOf: diagnostics.export(), encoding: .utf8)
+        XCTAssertFalse(exported.contains("123456"))
+        XCTAssertTrue(exported.contains("stream_id=7"))
+        XCTAssertTrue(exported.contains("packets=400"))
+    }
+
+    func testBoundedAsyncQueueDropsWithoutBlocking() throws {
+        let queue = DiagnosticsAsyncQueue<Int>(capacity: 1)
+        XCTAssertTrue(queue.tryEnqueue(1))
+        XCTAssertFalse(queue.tryEnqueue(2))
+        XCTAssertEqual(queue.droppedCount, 1)
+        XCTAssertEqual(queue.dequeue(), 1)
+    }
+
+    func testAtomicCounterExchangesIntervalValue() {
+        let counter = AtomicUInt64(3)
+        XCTAssertEqual(counter.increment(by: 4), 7)
+        XCTAssertEqual(counter.exchange(0), 7)
+        XCTAssertEqual(counter.load(), 0)
+    }
+
     private func makeDiagnostics(
         maxFileBytes: Int = 4_096,
-        maxRotatedFiles: Int = 3
+        maxRotatedFiles: Int = 3,
+        asyncQueueCapacity: Int = 512
     ) throws -> HearPortDiagnostics {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("HearPortDiagnosticsTests-\(UUID().uuidString)",
@@ -123,7 +157,8 @@ final class DiagnosticsTests: XCTestCase {
         return HearPortDiagnostics(
             directory: directory,
             maxFileBytes: maxFileBytes,
-            maxRotatedFiles: maxRotatedFiles
+            maxRotatedFiles: maxRotatedFiles,
+            asyncQueueCapacity: asyncQueueCapacity
         )
     }
 }

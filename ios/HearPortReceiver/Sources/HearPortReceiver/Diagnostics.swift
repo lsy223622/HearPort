@@ -36,16 +36,87 @@ public struct DiagnosticsSnapshot: Equatable, Sendable {
     public let activeBytes: Int
     public let rotatedFileCount: Int
     public let level: DiagnosticsLevel
+    public let asyncQueueDepth: Int
+    public let asyncDroppedCount: UInt64
 
     public init(entryCount: Int,
                 activeBytes: Int,
                 rotatedFileCount: Int,
-                level: DiagnosticsLevel) {
+                level: DiagnosticsLevel,
+                asyncQueueDepth: Int = 0,
+                asyncDroppedCount: UInt64 = 0) {
         self.entryCount = entryCount
         self.activeBytes = activeBytes
         self.rotatedFileCount = rotatedFileCount
         self.level = level
+        self.asyncQueueDepth = asyncQueueDepth
+        self.asyncDroppedCount = asyncDroppedCount
     }
+}
+
+final class DiagnosticsAsyncQueue<Element>: @unchecked Sendable {
+    private let lock = NSLock()
+    private let wake = DispatchSemaphore(value: 0)
+    private let capacity: Int
+    private var elements: [Element] = []
+    private var closed = false
+    private let dropped = AtomicUInt64()
+
+    init(capacity: Int) {
+        self.capacity = max(1, capacity)
+        elements.reserveCapacity(self.capacity)
+    }
+
+    @discardableResult
+    func tryEnqueue(_ element: Element) -> Bool {
+        guard lock.try() else {
+            dropped.increment()
+            return false
+        }
+        defer { lock.unlock() }
+        guard !closed, elements.count < capacity else {
+            dropped.increment()
+            return false
+        }
+        elements.append(element)
+        wake.signal()
+        return true
+    }
+
+    func dequeue() -> Element? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !elements.isEmpty else { return nil }
+        return elements.removeFirst()
+    }
+
+    func wait() {
+        _ = wake.wait(timeout: .distantFuture)
+    }
+
+    func close() {
+        lock.lock()
+        closed = true
+        lock.unlock()
+        wake.signal()
+    }
+
+    var count: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return elements.count
+    }
+
+    var droppedCount: UInt64 {
+        dropped.load()
+    }
+}
+
+private struct AsyncDiagnosticEvent: Sendable {
+    let level: DiagnosticsLevel
+    let category: DiagnosticsCategory
+    let message: String
+    let fields: [String: String]
 }
 
 public final class HearPortDiagnostics: @unchecked Sendable {
@@ -67,12 +138,21 @@ public final class HearPortDiagnostics: @unchecked Sendable {
     private let osLogger = Logger(subsystem: "com.hearport.receiver",
                                   category: "diagnostics")
     private var configuredLevel: DiagnosticsLevel = .info
+    private let configuredLevelAtomic = AtomicUInt64(UInt64(DiagnosticsLevel.info.rawValue))
     private var tail: [String] = []
     private let tailLimit = 2_000
+    private let asyncQueue: DiagnosticsAsyncQueue<AsyncDiagnosticEvent>
+    private let asyncWriterQueue = DispatchQueue(
+        label: "com.hearport.receiver.diagnostics-writer",
+        qos: .utility
+    )
+    private let asyncWriterStop = AtomicUInt64()
+    private let asyncWriterGroup = DispatchGroup()
 
     public init(directory: URL? = nil,
                 maxFileBytes: Int = 1_048_576,
                 maxRotatedFiles: Int = 3,
+                asyncQueueCapacity: Int = 512,
                 clock: @escaping () -> Date = Date.init) {
         let baseDirectory = directory ?? Self.defaultDirectory()
         self.directory = baseDirectory
@@ -80,22 +160,25 @@ public final class HearPortDiagnostics: @unchecked Sendable {
         self.maxFileBytes = max(1, maxFileBytes)
         self.maxRotatedFiles = max(0, maxRotatedFiles)
         self.clock = clock
+        asyncQueue = DiagnosticsAsyncQueue(capacity: asyncQueueCapacity)
         formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         try? fileManager.createDirectory(at: baseDirectory,
                                          withIntermediateDirectories: true)
         loadTail()
+        asyncWriterQueue.async { [weak self] in
+            self?.runAsyncWriter()
+        }
     }
 
     public var level: DiagnosticsLevel {
         get {
-            lock.lock()
-            defer { lock.unlock() }
-            return configuredLevel
+            DiagnosticsLevel(rawValue: Int(configuredLevelAtomic.load())) ?? .info
         }
         set {
             lock.lock()
             configuredLevel = newValue
+            configuredLevelAtomic.exchange(UInt64(newValue.rawValue))
             lock.unlock()
         }
     }
@@ -125,6 +208,56 @@ public final class HearPortDiagnostics: @unchecked Sendable {
         emitToUnifiedLog(line, level: level)
     }
 
+    @discardableResult
+    public func logAsync(_ level: DiagnosticsLevel,
+                         category: DiagnosticsCategory,
+                         message: String,
+                         fields: [String: String] = [:]) -> Bool {
+        guard level.rawValue >= Int(configuredLevelAtomic.load()) else {
+            return true
+        }
+        let event = AsyncDiagnosticEvent(
+            level: level,
+            category: category,
+            message: message,
+            fields: fields
+        )
+        asyncWriterGroup.enter()
+        guard asyncQueue.tryEnqueue(event) else {
+            asyncWriterGroup.leave()
+            return false
+        }
+        return true
+    }
+
+    @discardableResult
+    public func flushAsync(timeout: TimeInterval = 1.0) -> Bool {
+        let deadline = DispatchTime.now() + max(0, timeout)
+        return asyncWriterGroup.wait(timeout: deadline) == .success
+    }
+
+    private func runAsyncWriter() {
+        while asyncWriterStop.load() == 0 {
+            guard let event = asyncQueue.dequeue() else {
+                asyncQueue.wait()
+                continue
+            }
+            log(event.level,
+                category: event.category,
+                message: event.message,
+                fields: event.fields)
+            asyncWriterGroup.leave()
+        }
+
+        while let event = asyncQueue.dequeue() {
+            log(event.level,
+                category: event.category,
+                message: event.message,
+                fields: event.fields)
+            asyncWriterGroup.leave()
+        }
+    }
+
     public func snapshot() -> DiagnosticsSnapshot {
         lock.lock()
         defer { lock.unlock() }
@@ -134,7 +267,9 @@ public final class HearPortDiagnostics: @unchecked Sendable {
             rotatedFileCount: rotatedURLsLocked()
                 .filter { fileManager.fileExists(atPath: $0.path) }
                 .count,
-            level: configuredLevel
+            level: configuredLevel,
+            asyncQueueDepth: asyncQueue.count,
+            asyncDroppedCount: asyncQueue.droppedCount
         )
     }
 
@@ -146,6 +281,12 @@ public final class HearPortDiagnostics: @unchecked Sendable {
     }
 
     public func export() throws -> URL {
+        guard flushAsync() else {
+            throw NSError(domain: "HearPortDiagnostics",
+                          code: 1,
+                          userInfo: [NSLocalizedDescriptionKey:
+                                        "Diagnostics writer did not drain in time"])
+        }
         lock.lock()
         defer { lock.unlock() }
 
@@ -156,6 +297,8 @@ public final class HearPortDiagnostics: @unchecked Sendable {
             "Generated: \(formatter.string(from: clock()))",
             "Log level: \(configuredLevel.label.lowercased())",
             "Retained entries: \(tail.count)",
+            "Async queue depth: \(asyncQueue.count)",
+            "Async entries dropped: \(asyncQueue.droppedCount)",
             "",
             "Environment:"
         ]
@@ -186,6 +329,12 @@ public final class HearPortDiagnostics: @unchecked Sendable {
     }
 
     public func clear() throws {
+        guard flushAsync() else {
+            throw NSError(domain: "HearPortDiagnostics",
+                          code: 2,
+                          userInfo: [NSLocalizedDescriptionKey:
+                                        "Diagnostics writer did not drain in time"])
+        }
         lock.lock()
         defer { lock.unlock() }
         for url in [activeURL] + rotatedURLsLocked() where fileManager.fileExists(atPath: url.path) {
