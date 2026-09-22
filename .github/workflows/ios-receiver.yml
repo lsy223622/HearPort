@@ -78,7 +78,7 @@ jobs:
           test "$executable" = "HearPort"
           package_type=$(/usr/libexec/PlistBuddy -c 'Print :CFBundlePackageType' "$app_path/Info.plist")
           test "$package_type" = "APPL"
-          nm -gU "$app_path/HearPort" | grep -F "_hearport_spake2_begin"
+          nm -arch arm64 "$app_path/HearPort" | grep -F "hearport_spake2_begin"
           mkdir -p "$RUNNER_TEMP/Payload"
           cp -R "$app_path" "$RUNNER_TEMP/Payload/HearPort.app"
           ditto -c -k --sequesterRsrc --keepParent \
