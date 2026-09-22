@@ -456,8 +456,9 @@ public final class HearPortQuicTransport {
         let multiplex = NWMultiplexGroup(to: endpoint)
         let connectionGroup = NWConnectionGroup(with: multiplex,
                                                  using: parameters)
-        let controlOptions = NWProtocolQUIC.Options(alpn: [Self.alpn])
+        let controlOptions = NWProtocolQUIC.Options()
         controlOptions.direction = .bidirectional
+        controlOptions.isDatagram = false
         group = connectionGroup
         state = .connecting
         diagnostics.log(
@@ -481,7 +482,6 @@ public final class HearPortQuicTransport {
                 )
                 self.openControlStream(
                     connectionGroup: connectionGroup,
-                    endpoint: endpoint,
                     options: controlOptions
                 )
             case let .waiting(error):
@@ -578,7 +578,6 @@ public final class HearPortQuicTransport {
 
     private func openControlStream(
         connectionGroup: NWConnectionGroup,
-        endpoint: NWEndpoint,
         options: NWProtocolQUIC.Options
     ) {
         diagnostics.log(
@@ -587,11 +586,7 @@ public final class HearPortQuicTransport {
             message: "control_stream_open_requested",
             fields: ["event": "control_stream_open_requested", "direction": "bidirectional"]
         )
-        guard let control = NWConnection(
-            from: connectionGroup,
-            to: endpoint,
-            using: options
-        ) else {
+        guard let control = NWConnection(from: connectionGroup, using: options) else {
             diagnostics.log(
                 .error,
                 category: .transport,
@@ -605,6 +600,16 @@ public final class HearPortQuicTransport {
         control.stateUpdateHandler = { [weak self] state in
             guard let self else { return }
             switch state {
+            case .setup, .preparing:
+                self.diagnostics.log(
+                    .debug,
+                    category: .transport,
+                    message: "control_flow_state",
+                    fields: [
+                        "event": "control_flow_state",
+                        "state": "\(state)"
+                    ]
+                )
             case .ready:
                 self.controlReady = true
                 self.diagnostics.log(
@@ -636,6 +641,16 @@ public final class HearPortQuicTransport {
                     ]
                 )
                 self.updateState(.failed)
+            case .cancelled:
+                self.diagnostics.log(
+                    .debug,
+                    category: .transport,
+                    message: "control_flow_state",
+                    fields: [
+                        "event": "control_flow_state",
+                        "state": "cancelled"
+                    ]
+                )
             default:
                 break
             }
