@@ -5,6 +5,21 @@ import XCTest
 @testable import HearPortReceiver
 
 final class QuicTransportTests: XCTestCase {
+    private final class EchoState: @unchecked Sendable {
+        private let lock = NSLock()
+        private var decoder = ControlFrameDecoder()
+        private var count = 0
+
+        func append(_ data: Data) throws -> [(Int, Data)] {
+            lock.lock()
+            defer { lock.unlock() }
+            return try decoder.append(data).map { frame in
+                count += 1
+                return (count, frame)
+            }
+        }
+    }
+
     func testControlRoundTripsAndAudioShareOneConnection() throws {
         guard ProcessInfo.processInfo.environment["HEARPORT_QUIC_INTEGRATION"] == "1" else {
             throw XCTSkip("Requires the loopback QUIC echo server")
@@ -18,8 +33,7 @@ final class QuicTransportTests: XCTestCase {
         let audio = expectation(description: "968-byte audio datagram received")
         let first = Data([1, 2, 3])
         let second = Data([4, 5, 6])
-        var decoder = ControlFrameDecoder()
-        var messages = 0
+        let echoes = EchoState()
         transport.onStateChange = { state in
             if state == .ready {
                 do { try transport.sendControl(first) }
@@ -28,8 +42,7 @@ final class QuicTransportTests: XCTestCase {
         }
         transport.onControlData = { data in
             do {
-                for frame in try decoder.append(data) {
-                    messages += 1
+                for (messages, frame) in try echoes.append(data) {
                     XCTAssertEqual(frame, messages == 1 ? first : second)
                     if messages == 1 {
                         try transport.sendControl(second)
