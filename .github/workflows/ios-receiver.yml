@@ -64,6 +64,7 @@ jobs:
           -derivedDataPath "$RUNNER_TEMP/HearPortDerivedData"
           CODE_SIGNING_ALLOWED=NO
           CODE_SIGNING_REQUIRED=NO
+          LD_GENERATE_MAP_FILE=YES
           archive
 
       - name: Validate archive and create unsigned IPA
@@ -78,7 +79,9 @@ jobs:
           test "$executable" = "HearPort"
           package_type=$(/usr/libexec/PlistBuddy -c 'Print :CFBundlePackageType' "$app_path/Info.plist")
           test "$package_type" = "APPL"
-          nm -arch arm64 "$app_path/HearPort" | grep -F "hearport_spake2_begin"
+          link_map=$(find "$RUNNER_TEMP" -name '*LinkMap*.txt' -print -quit)
+          test -n "$link_map"
+          grep -F "libhearport_spake2_provider.a" "$link_map"
           mkdir -p "$RUNNER_TEMP/Payload"
           cp -R "$app_path" "$RUNNER_TEMP/Payload/HearPort.app"
           ditto -c -k --sequesterRsrc --keepParent \
