@@ -47,6 +47,17 @@ final class ReceiverCoreTests: XCTestCase {
         XCTAssertEqual(try decoder.append(Data(encoded.dropFirst(2))), [payload])
     }
 
+    func testControlFramingDecodesSuccessiveAndCoalescedMessages() throws {
+        let first = Data(repeating: 0x41, count: 64)
+        let second = Data(repeating: 0x42, count: 96)
+        let firstFrame = try ControlFraming.encode(first)
+        let secondFrame = try ControlFraming.encode(second)
+        var decoder = ControlFrameDecoder()
+        XCTAssertEqual(try decoder.append(firstFrame), [first])
+        XCTAssertEqual(try decoder.append(secondFrame), [second])
+        XCTAssertEqual(try decoder.append(firstFrame + secondFrame), [first, second])
+    }
+
     func testAudioDatagramValidatesFixedLayoutAndBigEndianHeader() throws {
         var encoded = Data(repeating: 0, count: AudioDatagram.byteCount)
         encoded[3] = 7
