@@ -104,7 +104,7 @@ final class ReceiverCoreTests: XCTestCase {
     }
 
     func testJitterBufferReordersDropsDuplicatesLateAndConcealsLoss() throws {
-        var jitter = JitterBuffer(streamID: 1, startupPackets: 2)
+        var jitter = JitterBuffer(streamID: 1, targetPackets: 2)
         let packet10 = try AudioDatagram(streamID: 1, sequence: 10,
                                          pcm: Data(repeating: 1, count: AudioDatagram.pcmByteCount))
         let packet11 = try AudioDatagram(streamID: 1, sequence: 11,
@@ -120,7 +120,7 @@ final class ReceiverCoreTests: XCTestCase {
         XCTAssertEqual(jitter.consumeNext()?.sequence, 11)
         XCTAssertEqual(jitter.consumeNext()?.sequence, 12)
 
-        var lossJitter = JitterBuffer(streamID: 1, startupPackets: 1)
+        var lossJitter = JitterBuffer(streamID: 1, targetPackets: 1)
         XCTAssertEqual(lossJitter.insert(packet10), .inserted)
         XCTAssertTrue(lossJitter.startIfReady())
         XCTAssertEqual(lossJitter.consumeNext()?.sequence, 10)
@@ -131,7 +131,7 @@ final class ReceiverCoreTests: XCTestCase {
     }
 
     func testJitterBufferStartsWithARecoverableGapAndStaysBounded() throws {
-        var jitter = JitterBuffer(streamID: 1, startupPackets: 2, maximumPackets: 3)
+        var jitter = JitterBuffer(streamID: 1, targetPackets: 2, maximumPackets: 3)
         let packet10 = try AudioDatagram(streamID: 1, sequence: 10,
                                          pcm: Data(repeating: 1, count: AudioDatagram.pcmByteCount))
         let packet12 = try AudioDatagram(streamID: 1, sequence: 12,
@@ -171,7 +171,7 @@ final class ReceiverCoreTests: XCTestCase {
     }
 
     func testSilentRebufferDoesNotCreateLossOrMoveDrift() throws {
-        var jitter = JitterBuffer(streamID: 1, startupPackets: 1)
+        var jitter = JitterBuffer(streamID: 1, targetPackets: 1)
         let packet = try AudioDatagram(streamID: 1, sequence: 100,
                                        pcm: Data(repeating: 0, count: AudioDatagram.pcmByteCount))
         XCTAssertEqual(jitter.insert(packet), .inserted)
@@ -201,7 +201,7 @@ final class ReceiverCoreTests: XCTestCase {
         let diagnostics = HearPortDiagnostics(directory: directory)
         diagnostics.level = .debug
         let receiver = HearPortReceiver(
-            startupPackets: 1,
+            bufferTargetPackets: 1,
             renderCapacityFrames: AudioDatagram.framesPerPacket,
             diagnostics: diagnostics
         )

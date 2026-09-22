@@ -13,7 +13,7 @@ public struct HearPortApp: View {
     @State private var control: ReceiverControlSession?
     @State private var audioOutput: PlatformAudioOutputController?
     @AppStorage("hearport.detailedLogging") private var detailedLogging = false
-    @AppStorage("hearport.jitterStartupPackets") private var jitterStartupPackets = 8
+    @AppStorage("hearport.jitterStartupPackets") private var jitterBufferTargetPackets = 8
     @State private var diagnosticsSnapshot = HearPortDiagnostics.shared.snapshot()
     @State private var exportedDiagnosticsURL: URL?
     @State private var diagnosticsStatus: String?
@@ -46,17 +46,17 @@ public struct HearPortApp: View {
                 }
 
                 Section("Jitter buffer") {
-                    Picker("Startup buffer", selection: $jitterStartupPackets) {
-                        ForEach(JitterBufferConfiguration.supportedStartupPacketCounts, id: \.self) { packets in
-                            let configuration = JitterBufferConfiguration(startupPackets: packets)
-                            Text("\(Self.jitterLabel(for: packets)) · \(packets) packets (\(configuration.startupLatencyMilliseconds) ms)")
+                    Picker("Buffer target", selection: $jitterBufferTargetPackets) {
+                        ForEach(JitterBufferConfiguration.supportedTargetPacketCounts, id: \.self) { packets in
+                            let configuration = JitterBufferConfiguration(targetPackets: packets)
+                            Text("\(Self.jitterLabel(for: packets)) · \(packets) packets (\(configuration.targetLatencyMilliseconds) ms)")
                                 .tag(packets)
                         }
                     }
-                    let configuration = JitterBufferConfiguration(startupPackets: jitterStartupPackets)
-                    Text("Estimated startup delay: \(configuration.startupLatencyMilliseconds) ms")
+                    let configuration = JitterBufferConfiguration(targetPackets: jitterBufferTargetPackets)
+                    Text("Estimated buffer delay: \(configuration.targetLatencyMilliseconds) ms")
                         .foregroundStyle(.secondary)
-                    Text("Larger buffers tolerate bursty delivery but increase startup latency.")
+                    Text("Larger buffers tolerate bursty delivery but increase playback delay.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                     Text("Applies on next connection.")
@@ -115,9 +115,9 @@ public struct HearPortApp: View {
         }
         .onAppear {
             status = "Disconnected"
-            jitterStartupPackets = JitterBufferConfiguration(
-                startupPackets: jitterStartupPackets
-            ).startupPackets
+            jitterBufferTargetPackets = JitterBufferConfiguration(
+                targetPackets: jitterBufferTargetPackets
+            ).targetPackets
             diagnostics.level = detailedLogging ? .debug : .info
             refreshDiagnostics()
         }
@@ -164,10 +164,10 @@ public struct HearPortApp: View {
         control?.cancel()
         try? audioOutput?.stop()
         audioOutput = nil
-        let normalizedJitter = JitterBufferConfiguration(startupPackets: jitterStartupPackets)
-        jitterStartupPackets = normalizedJitter.startupPackets
+        let normalizedJitter = JitterBufferConfiguration(targetPackets: jitterBufferTargetPackets)
+        jitterBufferTargetPackets = normalizedJitter.targetPackets
         let activeReceiver = HearPortReceiver(
-            startupPackets: normalizedJitter.startupPackets,
+            bufferTargetPackets: normalizedJitter.targetPackets,
             diagnostics: diagnostics
         )
         receiver = activeReceiver

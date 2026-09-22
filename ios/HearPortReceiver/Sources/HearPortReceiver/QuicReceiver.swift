@@ -20,21 +20,22 @@ public final class HearPortReceiver {
     )
     private var realtimeReporter: DispatchSourceTimer?
 
-    public init(startupPackets: Int = 8,
+    public init(bufferTargetPackets: Int = 8,
                 renderCapacityFrames: Int = 4_800,
                 diagnostics: HearPortDiagnostics = .shared) {
         precondition(renderCapacityFrames > 0)
         self.diagnostics = diagnostics
         lifecycle = AudioLifecycleController(diagnostics: diagnostics)
         renderRing = RenderRingBuffer(capacityFrames: renderCapacityFrames)
-        startupPacketTarget = JitterBufferConfiguration(startupPackets: startupPackets).startupPackets
+        jitterTargetPackets = JitterBufferConfiguration(targetPackets: bufferTargetPackets)
+            .targetPackets
         diagnostics.log(
             .info,
             category: .realtime,
             message: "receiver_initialized",
             fields: [
                 "event": "receiver_initialized",
-                "startup_packets": "\(startupPacketTarget)",
+                "jitter_target_packets": "\(jitterTargetPackets)",
                 "render_capacity_frames": "\(renderCapacityFrames)"
             ]
         )
@@ -78,7 +79,11 @@ public final class HearPortReceiver {
         lock.unlock()
     }
 
-    private let startupPacketTarget: Int
+    private let jitterTargetPackets: Int
+
+    var jitterTargetFrames: Int {
+        jitterTargetPackets * AudioDatagram.framesPerPacket
+    }
 
     @discardableResult
     public func beginAuthentication(authMode: AuthMode, peerID: Data) -> Bool {
@@ -123,7 +128,7 @@ public final class HearPortReceiver {
         let accepted = session.beginStream(streamID)
         if accepted {
             jitter = JitterBuffer(streamID: streamID,
-                                  startupPackets: startupPacketTarget)
+                                  targetPackets: jitterTargetPackets)
             renderRing.reset()
             loggedFirstAudioDatagram = false
             lastReceivedSequence = nil
@@ -138,7 +143,7 @@ public final class HearPortReceiver {
             fields: [
                 "event": accepted ? "stream_begin_accepted" : "stream_begin_rejected",
                 "stream_id": "\(streamID)",
-                "startup_packets": "\(startupPacketTarget)",
+                "jitter_target_packets": "\(jitterTargetPackets)",
                 "phase": "\(phase)"
             ]
         )
@@ -217,18 +222,21 @@ public final class HearPortReceiver {
         }
         if disposition == .accepted, var buffer = jitter {
             let previousMode = buffer.mode
+            let previousTrimmedPackets = buffer.stats.trimmedPackets
             let insertResult = buffer.insert(packet)
             let started = buffer.startIfReady()
+            let trimmedPackets = buffer.stats.trimmedPackets - previousTrimmedPackets
             jitter = buffer
             realtimeMetrics.recordJitterResult(insertResult,
-                                               fillPackets: buffer.fillPackets)
+                                               fillPackets: buffer.fillPackets,
+                                               trimmedPackets: trimmedPackets)
             if started && previousMode != buffer.mode {
                 transitionFields = [
                     "event": "jitter_started",
                     "stream_id": "\(packet.streamID)",
                     "sequence": "\(packet.sequence)",
                     "jitter_mode": "\(buffer.mode)",
-                    "target_packets": "\(buffer.startupPackets)",
+                    "target_packets": "\(buffer.targetPackets)",
                     "buffer_packets": "\(buffer.fillPackets)"
                 ]
             }
@@ -401,7 +409,7 @@ public final class HearPortReceiver {
         let lastSequence = lastReceivedSequence
         let expectedSequence = buffer?.expectedSequence
         let mode = buffer?.mode
-        let targetPackets = buffer?.startupPackets ?? startupPacketTarget
+        let targetPackets = buffer?.targetPackets ?? jitterTargetPackets
         let jitterFillPackets = buffer?.fillPackets ?? 0
         let renderFill = renderRing.fillFrames
         let lifecycleState = lifecycle.state

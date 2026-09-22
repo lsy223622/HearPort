@@ -16,6 +16,7 @@ final class RealtimeAudioMetrics: @unchecked Sendable {
     private let latePackets = AtomicUInt64()
     private let wrongStreamPackets = AtomicUInt64()
     private let capacityDrops = AtomicUInt64()
+    private let bufferTrimmedPackets = AtomicUInt64()
     private let lostPackets = AtomicUInt64()
     private let concealedPackets = AtomicUInt64()
     private let renderCallbacks = AtomicUInt64()
@@ -63,7 +64,9 @@ final class RealtimeAudioMetrics: @unchecked Sendable {
         }
     }
 
-    func recordJitterResult(_ result: JitterInsertResult, fillPackets: Int) {
+    func recordJitterResult(_ result: JitterInsertResult,
+                            fillPackets: Int,
+                            trimmedPackets: Int = 0) {
         switch result {
         case .inserted:
             insertedPackets.increment()
@@ -75,6 +78,9 @@ final class RealtimeAudioMetrics: @unchecked Sendable {
             wrongStreamPackets.increment()
         case .capacityExceeded:
             capacityDrops.increment()
+        }
+        if trimmedPackets > 0 {
+            bufferTrimmedPackets.increment(by: UInt64(trimmedPackets))
         }
         let fill = UInt64(max(0, fillPackets))
         jitterMinFillPackets.updateMinimum(fill)
@@ -155,6 +161,7 @@ final class RealtimeAudioMetrics: @unchecked Sendable {
             "late_packets": "\(latePackets.exchange(0))",
             "wrong_stream_packets": "\(wrongStreamPackets.exchange(0))",
             "capacity_drops": "\(capacityDrops.exchange(0))",
+            "buffer_trimmed_packets": "\(bufferTrimmedPackets.exchange(0))",
             "lost_packets": "\(lostPackets.exchange(0))",
             "concealed_packets": "\(concealedPackets.exchange(0))",
             "render_callbacks": "\(renderCallbacks.exchange(0))",
@@ -180,7 +187,7 @@ final class RealtimeAudioMetrics: @unchecked Sendable {
             datagramsReceived, datagramBytes, invalidDatagrams,
             acceptedDatagrams, pendingStreamDatagrams, oldStreamDatagrams,
             insertedPackets, duplicatePackets, latePackets, wrongStreamPackets,
-            capacityDrops, lostPackets, concealedPackets, renderCallbacks,
+            capacityDrops, bufferTrimmedPackets, lostPackets, concealedPackets, renderCallbacks,
             requestedRenderFrames, renderedFrames,
             renderUnderflowFrames, renderOverflowFrames,
             renderLockMisses, skippedSnapshots

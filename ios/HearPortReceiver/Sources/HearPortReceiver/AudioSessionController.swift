@@ -296,7 +296,7 @@ public final class PlatformAudioOutputController {
                         audioBufferList: UnsafeMutablePointer<AudioBufferList>) {
         guard frameCount > 0 else { return }
         let fillFrames = receiver.renderFillFrames
-        let fillError = Double(fillFrames - 960)
+        let fillError = Double(fillFrames - receiver.jitterTargetFrames)
         let ratio = drift.update(
             fillError: fillError,
             validAudio: lifecycle.state == .playing &&
