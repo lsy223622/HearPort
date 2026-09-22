@@ -27,4 +27,28 @@ final class AtomicUInt64: @unchecked Sendable {
     func exchange(_ replacement: UInt64) -> UInt64 {
         hearport_atomic_exchange_u64(storage, replacement)
     }
+
+    func store(_ value: UInt64) {
+        _ = exchange(value)
+    }
+
+    func compareExchange(expected: inout UInt64, replacement: UInt64) -> Bool {
+        hearport_atomic_compare_exchange_u64(storage, &expected, replacement)
+    }
+
+    func updateMinimum(_ value: UInt64) {
+        while true {
+            var expected = load()
+            if value >= expected { return }
+            if compareExchange(expected: &expected, replacement: value) { return }
+        }
+    }
+
+    func updateMaximum(_ value: UInt64) {
+        while true {
+            var expected = load()
+            if value <= expected { return }
+            if compareExchange(expected: &expected, replacement: value) { return }
+        }
+    }
 }

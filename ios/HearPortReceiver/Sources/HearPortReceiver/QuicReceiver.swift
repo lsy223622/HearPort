@@ -1,32 +1,5 @@
 import Foundation
 
-private struct AudioDatagramDiagnosticWindow {
-    private(set) var packetCount = 0
-    private(set) var byteCount = 0
-    private var startUptime = ProcessInfo.processInfo.systemUptime
-
-    mutating func record(byteCount: Int,
-                         now: TimeInterval = ProcessInfo.processInfo.systemUptime)
-        -> [String: String]? {
-        packetCount += 1
-        self.byteCount += byteCount
-        let elapsed = now - startUptime
-        guard elapsed >= 1.0 else { return nil }
-        let fields: [String: String] = [
-            "event": "datagram_summary",
-            "packet_count": "\(packetCount)",
-            "bytes": "\(self.byteCount)",
-            "elapsed_ms": "\(Int(elapsed * 1_000))",
-            "packets_per_second": "\(Double(packetCount) / elapsed)",
-            "bytes_per_second": "\(Double(self.byteCount) / elapsed)"
-        ]
-        packetCount = 0
-        self.byteCount = 0
-        startUptime = now
-        return fields
-    }
-}
-
 public final class HearPortReceiver {
     public let diagnostics: HearPortDiagnostics
     public let session = ReceiverSessionState()
@@ -36,28 +9,40 @@ public final class HearPortReceiver {
     private var jitter: JitterBuffer?
     private var renderRing: RenderRingBuffer
     private let lock = NSLock()
-    private var audioDiagnosticWindow = AudioDatagramDiagnosticWindow()
     private var loggedFirstAudioDatagram = false
+    private var lastReceivedSequence: UInt32?
+    private var outputRoute = "unknown"
+    private var outputSampleRate = 48_000.0
+    private let realtimeMetrics = RealtimeAudioMetrics()
+    private let realtimeReporterQueue = DispatchQueue(
+        label: "com.hearport.receiver.realtime-reporter",
+        qos: .utility
+    )
+    private var realtimeReporter: DispatchSourceTimer?
 
     public init(startupPackets: Int = 8,
                 renderCapacityFrames: Int = 4_800,
                 diagnostics: HearPortDiagnostics = .shared) {
-        precondition(startupPackets > 0)
         precondition(renderCapacityFrames > 0)
         self.diagnostics = diagnostics
         lifecycle = AudioLifecycleController(diagnostics: diagnostics)
         renderRing = RenderRingBuffer(capacityFrames: renderCapacityFrames)
-        startupPacketTarget = startupPackets
+        startupPacketTarget = JitterBufferConfiguration(startupPackets: startupPackets).startupPackets
         diagnostics.log(
             .info,
             category: .realtime,
             message: "receiver_initialized",
             fields: [
                 "event": "receiver_initialized",
-                "startup_packets": "\(startupPackets)",
+                "startup_packets": "\(startupPacketTarget)",
                 "render_capacity_frames": "\(renderCapacityFrames)"
             ]
         )
+        startRealtimeReporter()
+    }
+
+    deinit {
+        realtimeReporter?.cancel()
     }
 
     public var renderFillFrames: Int {
@@ -72,13 +57,31 @@ public final class HearPortReceiver {
         return jitter?.stats
     }
 
+    public func recordRenderCallback(renderedFrames: Int,
+                                     resamplerRatio: Double,
+                                     fillError: Double) {
+        realtimeMetrics.recordRenderCallback(
+            renderedFrames: renderedFrames,
+            resamplerRatio: resamplerRatio,
+            fillError: fillError
+        )
+    }
+
+    public func recordAudioOutput(route: String, sampleRate: Double) {
+        lock.lock()
+        outputRoute = route
+        outputSampleRate = sampleRate
+        lock.unlock()
+    }
+
     private let startupPacketTarget: Int
 
     @discardableResult
     public func beginAuthentication(authMode: AuthMode, peerID: Data) -> Bool {
         lock.lock()
-        defer { lock.unlock() }
         let accepted = session.receiveConnect(authMode: authMode, peerID: peerID)
+        let phase = session.phase
+        lock.unlock()
         diagnostics.log(
             accepted ? .info : .warning,
             category: .pairing,
@@ -87,7 +90,7 @@ public final class HearPortReceiver {
                 "event": accepted ? "connect_accepted" : "connect_rejected",
                 "auth_mode": "\(authMode)",
                 "peer_id_bytes": "\(peerID.count)",
-                "phase": "\(session.phase)"
+                "phase": "\(phase)"
             ]
         )
         return accepted
@@ -95,12 +98,13 @@ public final class HearPortReceiver {
 
     public func resetForConnection() {
         lock.lock()
-        defer { lock.unlock() }
         session.resetForConnection()
         jitter = nil
         renderRing.reset()
-        audioDiagnosticWindow = AudioDatagramDiagnosticWindow()
         loggedFirstAudioDatagram = false
+        lastReceivedSequence = nil
+        realtimeMetrics.resetInterval()
+        lock.unlock()
         diagnostics.log(
             .debug,
             category: .pairing,
@@ -112,46 +116,44 @@ public final class HearPortReceiver {
     @discardableResult
     public func beginStream(_ streamID: UInt32) -> Bool {
         lock.lock()
-        defer { lock.unlock() }
-        guard session.beginStream(streamID) else {
-            diagnostics.log(
-                .warning,
-                category: .realtime,
-                message: "stream_begin_rejected",
-                fields: ["event": "stream_begin_rejected", "stream_id": "\(streamID)"]
-            )
-            return false
+        let accepted = session.beginStream(streamID)
+        if accepted {
+            jitter = JitterBuffer(streamID: streamID,
+                                  startupPackets: startupPacketTarget)
+            renderRing.reset()
+            loggedFirstAudioDatagram = false
+            lastReceivedSequence = nil
+            realtimeMetrics.resetInterval()
         }
-        jitter = JitterBuffer(streamID: streamID,
-                              startupPackets: startupPacketTarget)
-        renderRing.reset()
-        audioDiagnosticWindow = AudioDatagramDiagnosticWindow()
-        loggedFirstAudioDatagram = false
+        let phase = session.phase
+        lock.unlock()
         diagnostics.log(
-            .info,
+            accepted ? .info : .warning,
             category: .realtime,
-            message: "stream_begin_accepted",
+            message: accepted ? "stream_begin_accepted" : "stream_begin_rejected",
             fields: [
-                "event": "stream_begin_accepted",
+                "event": accepted ? "stream_begin_accepted" : "stream_begin_rejected",
                 "stream_id": "\(streamID)",
-                "startup_packets": "\(startupPacketTarget)"
+                "startup_packets": "\(startupPacketTarget)",
+                "phase": "\(phase)"
             ]
         )
-        return true
+        return accepted
     }
 
     @discardableResult
     public func markAuthenticated() -> Bool {
         lock.lock()
-        defer { lock.unlock() }
         let accepted = session.markAuthenticated()
+        let phase = session.phase
+        lock.unlock()
         diagnostics.log(
             accepted ? .info : .warning,
             category: .pairing,
             message: accepted ? "authentication_accepted" : "authentication_rejected",
             fields: [
                 "event": accepted ? "authentication_accepted" : "authentication_rejected",
-                "phase": "\(session.phase)"
+                "phase": "\(phase)"
             ]
         )
         return accepted
@@ -160,8 +162,9 @@ public final class HearPortReceiver {
     @discardableResult
     public func acknowledgeStartStream(_ streamID: UInt32) -> Bool {
         lock.lock()
-        defer { lock.unlock() }
         let accepted = session.ackWritten(streamID)
+        let phase = session.phase
+        lock.unlock()
         diagnostics.log(
             accepted ? .info : .warning,
             category: .control,
@@ -169,7 +172,7 @@ public final class HearPortReceiver {
             fields: [
                 "event": accepted ? "start_stream_acknowledged" : "start_stream_ack_rejected",
                 "stream_id": "\(streamID)",
-                "phase": "\(session.phase)"
+                "phase": "\(phase)"
             ]
         )
         return accepted
@@ -177,16 +180,16 @@ public final class HearPortReceiver {
 
     @discardableResult
     public func receiveDatagram(_ data: Data) -> AudioDisposition? {
+        realtimeMetrics.recordDatagram(byteCount: data.count)
         let packet: AudioDatagram
         do {
             packet = try AudioDatagram(encoded: data)
         } catch {
-            var summaryFields: [String: String]?
             lock.lock()
             invalidDatagrams += 1
-            summaryFields = audioDiagnosticWindow.record(byteCount: data.count)
             lock.unlock()
-            diagnostics.log(
+            realtimeMetrics.recordInvalidDatagram()
+            _ = diagnostics.logAsync(
                 .warning,
                 category: .audio,
                 message: "datagram_rejected",
@@ -196,24 +199,35 @@ public final class HearPortReceiver {
                     "reason": "\(error)"
                 ]
             )
-            if let summaryFields {
-                diagnostics.log(.debug,
-                                 category: .audio,
-                                 message: "datagram_summary",
-                                 fields: summaryFields)
-            }
             return nil
         }
 
         var firstFields: [String: String]?
-        var summaryFields: [String: String]?
+        var transitionFields: [String: String]?
         var disposition: AudioDisposition
         lock.lock()
         disposition = session.acceptAudio(packet)
+        realtimeMetrics.recordDisposition(disposition)
+        if disposition == .accepted {
+            lastReceivedSequence = packet.sequence
+        }
         if disposition == .accepted, var buffer = jitter {
+            let previousMode = buffer.mode
             let insertResult = buffer.insert(packet)
             let started = buffer.startIfReady()
             jitter = buffer
+            realtimeMetrics.recordJitterResult(insertResult,
+                                               fillPackets: buffer.fillPackets)
+            if started && previousMode != buffer.mode {
+                transitionFields = [
+                    "event": "jitter_started",
+                    "stream_id": "\(packet.streamID)",
+                    "sequence": "\(packet.sequence)",
+                    "jitter_mode": "\(buffer.mode)",
+                    "target_packets": "\(buffer.startupPackets)",
+                    "buffer_packets": "\(buffer.fillPackets)"
+                ]
+            }
             if !loggedFirstAudioDatagram {
                 loggedFirstAudioDatagram = true
                 firstFields = [
@@ -228,27 +242,25 @@ public final class HearPortReceiver {
                 ]
             }
         }
-        summaryFields = audioDiagnosticWindow.record(byteCount: data.count)
         lock.unlock()
 
         if let firstFields {
-            diagnostics.log(.debug,
-                             category: .audio,
-                             message: "datagram_received",
-                             fields: firstFields)
+            _ = diagnostics.logAsync(.debug,
+                                     category: .audio,
+                                     message: "datagram_received",
+                                     fields: firstFields)
         }
-        if let summaryFields {
-            diagnostics.log(.debug,
-                             category: .audio,
-                             message: "datagram_summary",
-                             fields: summaryFields)
+        if let transitionFields {
+            _ = diagnostics.logAsync(.info,
+                                     category: .realtime,
+                                     message: "jitter_started",
+                                     fields: transitionFields)
         }
         return disposition
     }
 
     public func handleAudioLifecycle(_ event: AudioLifecycleEvent) {
         lock.lock()
-        defer { lock.unlock() }
         let previousState = lifecycle.state
         lifecycle.handle(event)
         switch event {
@@ -266,6 +278,9 @@ public final class HearPortReceiver {
         case .audioAvailable:
             break
         }
+        let state = lifecycle.state
+        let generation = lifecycle.resetGeneration
+        lock.unlock()
         diagnostics.log(
             .info,
             category: .audio,
@@ -273,27 +288,29 @@ public final class HearPortReceiver {
             fields: [
                 "event": Self.diagnosticName(for: event),
                 "previous_state": "\(previousState)",
-                "state": "\(lifecycle.state)",
-                "reset_generation": "\(lifecycle.resetGeneration)"
+                "state": "\(state)",
+                "reset_generation": "\(generation)"
             ]
         )
     }
 
     public func enterSilentRebuffer() {
         lock.lock()
-        defer { lock.unlock() }
         jitter?.enterSilentRebuffer()
         session.enterSilentRebuffer()
         lifecycle.enterSilentRebuffer()
         renderRing.reset()
+        let phase = session.phase
+        let state = lifecycle.state
+        lock.unlock()
         diagnostics.log(
             .info,
             category: .audio,
             message: "silent_rebuffer_entered",
             fields: [
                 "event": "silent_rebuffer_entered",
-                "phase": "\(session.phase)",
-                "state": "\(lifecycle.state)"
+                "phase": "\(phase)",
+                "state": "\(state)"
             ]
         )
     }
@@ -301,12 +318,20 @@ public final class HearPortReceiver {
     public func renderFrames(_ frameCount: Int) -> [Float] {
         guard frameCount > 0 else { return [] }
         guard lock.try() else {
+            realtimeMetrics.recordRenderLockMiss()
             return Array(repeating: 0, count: frameCount * 2)
         }
         defer { lock.unlock() }
         let wasSilent = lifecycle.shouldRenderSilence
+        let underflowBefore = renderRing.underflowFrames
+        let overflowBefore = renderRing.overflowFrames
         pumpLocked(minimumFrames: frameCount)
         let output = renderRing.pop(frames: frameCount)
+        realtimeMetrics.recordRenderBuffer(
+            fillFrames: renderRing.fillFrames,
+            underflowFrames: renderRing.underflowFrames - underflowBefore,
+            overflowFrames: renderRing.overflowFrames - overflowBefore
+        )
         if let buffer = jitter,
            renderRing.fillFrames == 0,
            buffer.fillPackets == 0,
@@ -330,6 +355,7 @@ public final class HearPortReceiver {
                 renderRing.push(Self.decodePCM(packet.pcm))
             } else if buffer.hasFuturePacket,
                       let concealed = buffer.concealMissing() {
+                realtimeMetrics.recordConcealment()
                 renderRing.push(Self.decodePCM(concealed))
             } else {
                 break
@@ -339,6 +365,67 @@ public final class HearPortReceiver {
         if buffer.mode == .running {
             lifecycle.handle(.audioAvailable)
         }
+    }
+
+    private func startRealtimeReporter() {
+        let timer = DispatchSource.makeTimerSource(queue: realtimeReporterQueue)
+        timer.schedule(deadline: .now() + .seconds(1), repeating: .seconds(1))
+        timer.setEventHandler { [weak self] in
+            self?.emitRealtimeDiagnostics()
+        }
+        timer.resume()
+        realtimeReporter = timer
+    }
+
+    func emitRealtimeDiagnosticsForTesting() {
+        emitRealtimeDiagnostics()
+    }
+
+    private func emitRealtimeDiagnostics() {
+        guard lock.try() else {
+            realtimeMetrics.recordReporterSkipped()
+            return
+        }
+        let phase = session.phase
+        let shouldReport = jitter != nil || phase != .awaitingConnect
+        guard shouldReport else {
+            lock.unlock()
+            return
+        }
+        let buffer = jitter
+        let streamID = buffer?.streamID ?? session.activeStreamID ?? session.pendingStreamID
+        let lastSequence = lastReceivedSequence
+        let expectedSequence = buffer?.expectedSequence
+        let mode = buffer?.mode
+        let targetPackets = buffer?.startupPackets ?? startupPacketTarget
+        let jitterFillPackets = buffer?.fillPackets ?? 0
+        let renderFill = renderRing.fillFrames
+        let lifecycleState = lifecycle.state
+        let route = outputRoute
+        let sampleRate = outputSampleRate
+        lock.unlock()
+
+        let diagnosticsDropped = diagnostics.snapshot().asyncDroppedCount
+        let snapshot = realtimeMetrics.snapshotAndReset(
+            streamID: streamID,
+            lastSequence: lastSequence,
+            expectedSequence: expectedSequence,
+            jitterMode: mode,
+            jitterTargetPackets: targetPackets,
+            jitterFillPackets: jitterFillPackets,
+            renderFillFrames: renderFill,
+            sessionPhase: phase,
+            lifecycleState: lifecycleState,
+            outputRoute: route,
+            sampleRate: sampleRate,
+            diagnosticsDropped: diagnosticsDropped
+        )
+        _ = diagnostics.logAsync(
+            .debug,
+            category: .realtime,
+            message: "realtime_summary",
+            fields: snapshot.fields
+        )
     }
 
     private static func decodePCM(_ pcm: Data) -> [Float] {
@@ -408,7 +495,6 @@ public final class HearPortQuicTransport {
     private var controlStream: NWConnection?
     private var controlReady = false
     private var datagramReady = false
-    private var audioDatagramDiagnosticWindow = AudioDatagramDiagnosticWindow()
     private var loggedFirstDatagram = false
 
     public init(diagnostics: HearPortDiagnostics = .shared) {
@@ -572,11 +658,8 @@ public final class HearPortQuicTransport {
             if let data {
                 let isFirst = !self.loggedFirstDatagram
                 self.loggedFirstDatagram = true
-                let summaryFields = self.audioDatagramDiagnosticWindow.record(
-                    byteCount: data.count
-                )
                 if isFirst {
-                    self.diagnostics.log(
+                    _ = self.diagnostics.logAsync(
                         .debug,
                         category: .audio,
                         message: "datagram_read",
@@ -586,12 +669,6 @@ public final class HearPortQuicTransport {
                             "is_complete": "\(isComplete)"
                         ]
                     )
-                }
-                if let summaryFields {
-                    self.diagnostics.log(.debug,
-                                         category: .audio,
-                                         message: "datagram_summary",
-                                         fields: summaryFields)
                 }
                 self.onAudioDatagram?(data)
             }
@@ -630,7 +707,6 @@ public final class HearPortQuicTransport {
         group = nil
         controlReady = false
         datagramReady = false
-        audioDatagramDiagnosticWindow = AudioDatagramDiagnosticWindow()
         loggedFirstDatagram = false
         diagnostics.log(
             .info,
