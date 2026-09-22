@@ -6,12 +6,14 @@ on:
       - "ios/HearPortReceiver/**"
       - "ios/HearPortApp/**"
       - "security/spake2-provider/**"
+      - "tests/integration/**"
       - ".github/workflows/ios-receiver.yml"
   pull_request:
     paths:
       - "ios/HearPortReceiver/**"
       - "ios/HearPortApp/**"
       - "security/spake2-provider/**"
+      - "tests/integration/**"
       - ".github/workflows/ios-receiver.yml"
   workflow_dispatch:
 
@@ -22,9 +24,22 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v5
 
-      - name: Run Swift package tests
-        working-directory: ios/HearPortReceiver
-        run: swift test
+      - name: Run Swift package tests with QUIC interoperability
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/quic-test"
+          "$RUNNER_TEMP/quic-test/bin/pip" install aioquic==1.3.0
+          "$RUNNER_TEMP/quic-test/bin/python" -u tests/integration/quic_echo_server.py > "$RUNNER_TEMP/quic-server.log" 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true; cat "$RUNNER_TEMP/quic-server.log"' EXIT
+          for attempt in {1..50}; do
+            if grep -q quic_test_server_ready "$RUNNER_TEMP/quic-server.log"; then break; fi
+            sleep 0.1
+          done
+          grep -q quic_test_server_ready "$RUNNER_TEMP/quic-server.log"
+          cd ios/HearPortReceiver
+          HEARPORT_QUIC_INTEGRATION=1 swift test
 
   ios-unsigned-ipa:
     needs: swift-package
