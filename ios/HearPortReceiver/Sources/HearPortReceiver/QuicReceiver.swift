@@ -403,7 +403,8 @@ public final class HearPortQuicTransport {
         let quicOptions = NWProtocolQUIC.Options(alpn: [Self.alpn])
         quicOptions.direction = .bidirectional
         quicOptions.isDatagram = true
-        quicOptions.maxDatagramFrameSize = AudioDatagram.byteCount
+        // The transport limit includes the QUIC frame header, not just audio bytes.
+        quicOptions.maxDatagramFrameSize = 65_535
         sec_protocol_options_set_tls_resumption_enabled(
             quicOptions.securityProtocolOptions,
             false
@@ -457,6 +458,7 @@ public final class HearPortQuicTransport {
         let multiplex = NWMultiplexGroup(to: endpoint)
         let connectionGroup = NWConnectionGroup(with: multiplex,
                                                  using: parameters)
+        // Stream options must preserve the tunnel's TLS and transport parameters.
         let controlOptions = parameters.copy().defaultProtocolStack.transportProtocol as! NWProtocolQUIC.Options
         controlOptions.direction = .bidirectional
         controlOptions.isDatagram = false
