@@ -1,6 +1,7 @@
 /plans
 /build/
 /out/
+/.artifacts/
 /.vs/
 /.swiftpm/
 /security/spake2-provider/target/
