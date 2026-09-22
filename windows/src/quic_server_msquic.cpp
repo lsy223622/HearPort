@@ -363,9 +363,6 @@ class MsQuicServer final : public QuicServer {
       const auto connection = connection_;
       api_->ConnectionShutdown(connection, QUIC_CONNECTION_SHUTDOWN_FLAG_NONE,
                                0);
-      // The shutdown callback also takes mutex_. Release it while waiting so
-      // that QUIC can publish connection_ = nullptr and signal the predicate.
-      lock.unlock();
       shutdown_condition_.wait(lock, [this, connection] {
         return connection_ != connection;
       });

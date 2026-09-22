@@ -67,7 +67,7 @@ PcmNormalizer::PcmNormalizer(PcmFormat source_format)
 }
 
 std::vector<float> PcmNormalizer::Convert(
-    std::span<const std::byte> source_bytes) const {
+    std::span<const std::byte> source_bytes) {
   const auto bytes_per_sample = BytesPerSample(source_format_.sample_format);
   const auto bytes_per_frame = bytes_per_sample * source_format_.channels;
   if (source_bytes.size() % bytes_per_frame != 0) {
@@ -88,29 +88,52 @@ std::vector<float> PcmNormalizer::Convert(
     stereo.push_back(right);
   }
 
-  if (source_format_.sample_rate_hz == 48000 || source_frames == 0) {
+  if (source_frames == 0) {
     return stereo;
   }
 
-  const auto output_frames = static_cast<std::size_t>(std::max(
-      1.0, std::round(static_cast<double>(source_frames) * 48000.0 /
-                       source_format_.sample_rate_hz)));
+  if (source_format_.sample_rate_hz == 48000) {
+    previous_frame_[0] = stereo[stereo.size() - 2];
+    previous_frame_[1] = stereo[stereo.size() - 1];
+    has_previous_frame_ = true;
+    source_position_ = 0.0;
+    return stereo;
+  }
+
+  const auto step = static_cast<double>(source_format_.sample_rate_hz) / 48000.0;
+  constexpr double kExactFraction = 1e-9;
+
   std::vector<float> resampled;
-  resampled.reserve(output_frames * 2);
-  for (std::size_t output_frame = 0; output_frame < output_frames;
-       ++output_frame) {
-    const auto position = static_cast<double>(output_frame) *
-                          source_format_.sample_rate_hz / 48000.0;
-    const auto left_index = std::min<std::size_t>(
-        static_cast<std::size_t>(position), source_frames - 1);
-    const auto right_index = std::min(left_index + 1, source_frames - 1);
-    const auto fraction = static_cast<float>(position - std::floor(position));
+  resampled.reserve(static_cast<std::size_t>(std::ceil(
+                        (static_cast<double>(source_frames) + 1.0) / step)) *
+                    2);
+  auto position = source_position_;
+  while (position < static_cast<double>(source_frames - 1) ||
+         std::abs(position - static_cast<double>(source_frames - 1)) <
+             kExactFraction) {
+    const auto lower_index = static_cast<std::int64_t>(std::floor(position));
+    const auto fraction = static_cast<float>(position - lower_index);
     for (std::size_t channel = 0; channel < 2; ++channel) {
-      const auto left = stereo[left_index * 2 + channel];
-      const auto right = stereo[right_index * 2 + channel];
+      const auto left = lower_index < 0
+                            ? (has_previous_frame_ ? previous_frame_[channel]
+                                                   : stereo[channel])
+                            : stereo[static_cast<std::size_t>(lower_index) * 2 +
+                                     channel];
+      const auto upper_index = lower_index + 1;
+      const auto right = upper_index < 0 ||
+                                 upper_index >=
+                                     static_cast<std::int64_t>(source_frames)
+                             ? left
+                             : stereo[static_cast<std::size_t>(upper_index) * 2 +
+                                      channel];
       resampled.push_back(left + (right - left) * fraction);
     }
+    position += step;
   }
+  source_position_ = position - static_cast<double>(source_frames);
+  previous_frame_[0] = stereo[stereo.size() - 2];
+  previous_frame_[1] = stereo[stereo.size() - 1];
+  has_previous_frame_ = true;
   return resampled;
 }
 

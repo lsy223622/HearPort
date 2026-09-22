@@ -21,6 +21,12 @@ std::array<std::byte, 9> MonoInt24() {
           std::byte{0x00}, std::byte{0x00}, std::byte{0x80}};
 }
 
+std::vector<std::byte> MonoFloat(const std::vector<float>& frames) {
+  std::vector<std::byte> bytes(frames.size() * sizeof(float));
+  std::memcpy(bytes.data(), frames.data(), bytes.size());
+  return bytes;
+}
+
 }  // namespace
 
 int main() {
@@ -40,6 +46,16 @@ int main() {
   for (std::size_t frame = 0; frame < 3; ++frame) {
     assert(resampled[frame * 2] == resampled[frame * 2 + 1]);
   }
+
+  hearport::windows::PcmNormalizer streaming_resampler(
+      {44100, 1, hearport::windows::SampleFormat::float32_le});
+  std::vector<float> first_block(441, 1.0f);
+  std::vector<float> second_block(441, 2.0f);
+  const auto first_output = streaming_resampler.Convert(MonoFloat(first_block));
+  const auto second_output = streaming_resampler.Convert(MonoFloat(second_block));
+  assert(first_output.size() == 958);
+  assert(second_output.size() == 960);
+  assert(second_output[0] > 1.0f && second_output[0] < 2.0f);
 
   hearport::windows::AudioPacketizer packetizer(9);
   std::vector<float> samples(121 * 2, 0.25f);
