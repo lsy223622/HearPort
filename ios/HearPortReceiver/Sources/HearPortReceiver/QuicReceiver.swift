@@ -456,6 +456,8 @@ public final class HearPortQuicTransport {
         let multiplex = NWMultiplexGroup(to: endpoint)
         let connectionGroup = NWConnectionGroup(with: multiplex,
                                                  using: parameters)
+        let controlOptions = NWProtocolQUIC.Options(alpn: [Self.alpn])
+        controlOptions.direction = .bidirectional
         group = connectionGroup
         state = .connecting
         diagnostics.log(
@@ -477,7 +479,11 @@ public final class HearPortQuicTransport {
                     message: "datagram_group_ready",
                     fields: ["event": "datagram_group_ready"]
                 )
-                self.openControlStream(connectionGroup: connectionGroup)
+                self.openControlStream(
+                    connectionGroup: connectionGroup,
+                    endpoint: endpoint,
+                    options: controlOptions
+                )
             case let .waiting(error):
                 self.diagnostics.log(
                     .warning,
@@ -570,8 +576,22 @@ public final class HearPortQuicTransport {
         updateState(.closed)
     }
 
-    private func openControlStream(connectionGroup: NWConnectionGroup) {
-        guard let control = NWConnection(from: connectionGroup) else {
+    private func openControlStream(
+        connectionGroup: NWConnectionGroup,
+        endpoint: NWEndpoint,
+        options: NWProtocolQUIC.Options
+    ) {
+        diagnostics.log(
+            .debug,
+            category: .control,
+            message: "control_stream_open_requested",
+            fields: ["event": "control_stream_open_requested", "direction": "bidirectional"]
+        )
+        guard let control = NWConnection(
+            from: connectionGroup,
+            to: endpoint,
+            using: options
+        ) else {
             diagnostics.log(
                 .error,
                 category: .transport,
@@ -593,6 +613,7 @@ public final class HearPortQuicTransport {
                     message: "control_flow_ready",
                     fields: ["event": "control_flow_ready"]
                 )
+                self.onControlStreamCreated?()
                 self.updateReadyIfPossible()
             case let .waiting(error):
                 self.diagnostics.log(
@@ -627,7 +648,6 @@ public final class HearPortQuicTransport {
             message: "control_stream_created",
             fields: ["event": "control_stream_created"]
         )
-        onControlStreamCreated?()
     }
 
     private func updateReadyIfPossible() {
