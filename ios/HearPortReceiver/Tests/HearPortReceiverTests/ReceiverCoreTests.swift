@@ -104,7 +104,7 @@ final class ReceiverCoreTests: XCTestCase {
     }
 
     func testJitterBufferReordersDropsDuplicatesLateAndConcealsLoss() throws {
-        var jitter = JitterBuffer(streamID: 1, targetPackets: 2)
+        var jitter = JitterBuffer(streamID: 1, targetPackets: 3)
         let packet10 = try AudioDatagram(streamID: 1, sequence: 10,
                                          pcm: Data(repeating: 1, count: AudioDatagram.pcmByteCount))
         let packet11 = try AudioDatagram(streamID: 1, sequence: 11,
