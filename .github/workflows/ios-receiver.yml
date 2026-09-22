@@ -48,8 +48,13 @@ jobs:
           mkdir -p ios/HearPortApp/ThirdParty
           cp security/spake2-provider/target/aarch64-apple-ios/release/libhearport_spake2_provider.a \
             ios/HearPortApp/ThirdParty/
-          grep -a -F -m 1 "hearport_spake2_begin" \
-            ios/HearPortApp/ThirdParty/libhearport_spake2_provider.a
+          nm_output="$(nm -arch arm64 -gU \
+            ios/HearPortApp/ThirdParty/libhearport_spake2_provider.a 2>&1 || true)"
+          printf '%s\n' "$nm_output"
+          case "$nm_output" in
+            *hearport_spake2_begin*) ;;
+            *) echo "SPAKE2 provider symbol not found" >&2; exit 1 ;;
+          esac
 
       - name: Generate Xcode project
         working-directory: ios/HearPortApp
