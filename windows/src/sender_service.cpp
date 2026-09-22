@@ -1,6 +1,7 @@
 #include "hearport/windows/sender_service.h"
 
 #include <algorithm>
+#include <iostream>
 #include <utility>
 
 #include "hearport/wire/audio_datagram.h"
@@ -64,6 +65,11 @@ bool SenderService::Start() {
     std::lock_guard lock(queue_mutex_);
     stop_worker_ = false;
     capture_reset_pending_ = false;
+    audio_summary_started_ = std::chrono::steady_clock::now();
+    audio_captured_window_ = 0;
+    audio_sent_window_ = 0;
+    audio_dropped_window_ = 0;
+    audio_send_failures_window_ = 0;
   }
   control_decoder_.Reset();
   audio_thread_ = std::thread([this] { AudioWorker(); });
@@ -161,12 +167,16 @@ std::uint64_t SenderService::dropped_audio_packets() const noexcept {
 
 void SenderService::EnqueueAudio(const wire::AudioDatagram& packet) {
   std::lock_guard lock(queue_mutex_);
+  ++audio_captured_window_;
   if (audio_queue_.size() >= kAudioQueueCapacity) {
     ++dropped_audio_packets_;
+    ++audio_dropped_window_;
+    LogAudioSummaryIfDueLocked();
     return;
   }
   audio_queue_.push_back(packet);
   queue_condition_.notify_one();
+  LogAudioSummaryIfDueLocked();
 }
 
 void SenderService::AudioWorker() {
@@ -190,14 +200,23 @@ void SenderService::AudioWorker() {
       packet = audio_queue_.front();
       audio_queue_.pop_front();
       if (!datagram_ready_) {
+        ++dropped_audio_packets_;
+        ++audio_dropped_window_;
+        LogAudioSummaryIfDueLocked();
         continue;
       }
     }
     const auto encoded = wire::EncodeAudioDatagram(packet);
-    if (!quic_->SendAudio(encoded)) {
-      std::lock_guard lock(queue_mutex_);
+    const bool sent = quic_->SendAudio(encoded);
+    std::lock_guard lock(queue_mutex_);
+    if (sent) {
+      ++audio_sent_window_;
+    } else {
       ++dropped_audio_packets_;
+      ++audio_dropped_window_;
+      ++audio_send_failures_window_;
     }
+    LogAudioSummaryIfDueLocked();
   }
 }
 
@@ -242,6 +261,28 @@ void SenderService::HandleCaptureReset() {
     capture_reset_pending_ = true;
   }
   queue_condition_.notify_one();
+}
+
+void SenderService::LogAudioSummaryIfDueLocked() {
+  const auto now = std::chrono::steady_clock::now();
+  const auto elapsed = now - audio_summary_started_;
+  if (elapsed < std::chrono::seconds(1)) {
+    return;
+  }
+  const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+      elapsed);
+  std::cerr << "quic_audio_summary interval_ms=" << elapsed_ms.count()
+            << " captured_packets=" << audio_captured_window_
+            << " sent_packets=" << audio_sent_window_
+            << " dropped_packets=" << audio_dropped_window_
+            << " send_failures=" << audio_send_failures_window_
+            << " queue_depth=" << audio_queue_.size()
+            << " datagram_ready=" << datagram_ready_ << "\n";
+  audio_summary_started_ = now;
+  audio_captured_window_ = 0;
+  audio_sent_window_ = 0;
+  audio_dropped_window_ = 0;
+  audio_send_failures_window_ = 0;
 }
 
 }  // namespace hearport::windows

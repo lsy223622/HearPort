@@ -1,5 +1,32 @@
 import Foundation
 
+private struct AudioDatagramDiagnosticWindow {
+    private(set) var packetCount = 0
+    private(set) var byteCount = 0
+    private var startUptime = ProcessInfo.processInfo.systemUptime
+
+    mutating func record(byteCount: Int,
+                         now: TimeInterval = ProcessInfo.processInfo.systemUptime)
+        -> [String: String]? {
+        packetCount += 1
+        self.byteCount += byteCount
+        let elapsed = now - startUptime
+        guard elapsed >= 1.0 else { return nil }
+        let fields: [String: String] = [
+            "event": "datagram_summary",
+            "packet_count": "\(packetCount)",
+            "bytes": "\(self.byteCount)",
+            "elapsed_ms": "\(Int(elapsed * 1_000))",
+            "packets_per_second": "\(Double(packetCount) / elapsed)",
+            "bytes_per_second": "\(Double(self.byteCount) / elapsed)"
+        ]
+        packetCount = 0
+        self.byteCount = 0
+        startUptime = now
+        return fields
+    }
+}
+
 public final class HearPortReceiver {
     public let diagnostics: HearPortDiagnostics
     public let session = ReceiverSessionState()
@@ -9,6 +36,8 @@ public final class HearPortReceiver {
     private var jitter: JitterBuffer?
     private var renderRing: RenderRingBuffer
     private let lock = NSLock()
+    private var audioDiagnosticWindow = AudioDatagramDiagnosticWindow()
+    private var loggedFirstAudioDatagram = false
 
     public init(startupPackets: Int = 8,
                 renderCapacityFrames: Int = 4_800,
@@ -70,6 +99,8 @@ public final class HearPortReceiver {
         session.resetForConnection()
         jitter = nil
         renderRing.reset()
+        audioDiagnosticWindow = AudioDatagramDiagnosticWindow()
+        loggedFirstAudioDatagram = false
         diagnostics.log(
             .debug,
             category: .pairing,
@@ -94,6 +125,8 @@ public final class HearPortReceiver {
         jitter = JitterBuffer(streamID: streamID,
                               startupPackets: startupPacketTarget)
         renderRing.reset()
+        audioDiagnosticWindow = AudioDatagramDiagnosticWindow()
+        loggedFirstAudioDatagram = false
         diagnostics.log(
             .info,
             category: .realtime,
@@ -144,13 +177,15 @@ public final class HearPortReceiver {
 
     @discardableResult
     public func receiveDatagram(_ data: Data) -> AudioDisposition? {
-        lock.lock()
-        defer { lock.unlock() }
         let packet: AudioDatagram
         do {
             packet = try AudioDatagram(encoded: data)
         } catch {
+            var summaryFields: [String: String]?
+            lock.lock()
             invalidDatagrams += 1
+            summaryFields = audioDiagnosticWindow.record(byteCount: data.count)
+            lock.unlock()
             diagnostics.log(
                 .warning,
                 category: .audio,
@@ -161,44 +196,54 @@ public final class HearPortReceiver {
                     "reason": "\(error)"
                 ]
             )
+            if let summaryFields {
+                diagnostics.log(.debug,
+                                 category: .audio,
+                                 message: "datagram_summary",
+                                 fields: summaryFields)
+            }
             return nil
         }
-        let disposition = session.acceptAudio(packet)
-        guard disposition == .accepted,
-              var buffer = jitter else {
-            diagnostics.log(
-                .debug,
-                category: .audio,
-                message: "datagram_discarded",
-                fields: [
-                    "event": "datagram_discarded",
+
+        var firstFields: [String: String]?
+        var summaryFields: [String: String]?
+        var disposition: AudioDisposition
+        lock.lock()
+        disposition = session.acceptAudio(packet)
+        if disposition == .accepted, var buffer = jitter {
+            let insertResult = buffer.insert(packet)
+            let started = buffer.startIfReady()
+            jitter = buffer
+            if !loggedFirstAudioDatagram {
+                loggedFirstAudioDatagram = true
+                firstFields = [
+                    "event": "datagram_received",
                     "stream_id": "\(packet.streamID)",
                     "sequence": "\(packet.sequence)",
                     "audio_bytes": "\(packet.pcm.count)",
-                    "disposition": "\(disposition)"
+                    "jitter_result": "\(insertResult)",
+                    "jitter_mode": "\(buffer.mode)",
+                    "buffer_packets": "\(buffer.fillPackets)",
+                    "buffer_started": "\(started)"
                 ]
-            )
-            return disposition
+            }
         }
-        let insertResult = buffer.insert(packet)
-        let started = buffer.startIfReady()
-        jitter = buffer
-        diagnostics.log(
-            .debug,
-            category: .audio,
-            message: "datagram_received",
-            fields: [
-                "event": "datagram_received",
-                "stream_id": "\(packet.streamID)",
-                "sequence": "\(packet.sequence)",
-                "audio_bytes": "\(packet.pcm.count)",
-                "jitter_result": "\(insertResult)",
-                "jitter_mode": "\(buffer.mode)",
-                "buffer_packets": "\(buffer.fillPackets)",
-                "buffer_started": "\(started)"
-            ]
-        )
-        return .accepted
+        summaryFields = audioDiagnosticWindow.record(byteCount: data.count)
+        lock.unlock()
+
+        if let firstFields {
+            diagnostics.log(.debug,
+                             category: .audio,
+                             message: "datagram_received",
+                             fields: firstFields)
+        }
+        if let summaryFields {
+            diagnostics.log(.debug,
+                             category: .audio,
+                             message: "datagram_summary",
+                             fields: summaryFields)
+        }
+        return disposition
     }
 
     public func handleAudioLifecycle(_ event: AudioLifecycleEvent) {
@@ -363,6 +408,8 @@ public final class HearPortQuicTransport {
     private var controlStream: NWConnection?
     private var controlReady = false
     private var datagramReady = false
+    private var audioDatagramDiagnosticWindow = AudioDatagramDiagnosticWindow()
+    private var loggedFirstDatagram = false
 
     public init(diagnostics: HearPortDiagnostics = .shared) {
         self.diagnostics = diagnostics
@@ -523,16 +570,29 @@ public final class HearPortQuicTransport {
         ) { [weak self] _, data, isComplete in
             guard let self else { return }
             if let data {
-                self.diagnostics.log(
-                    .debug,
-                    category: .audio,
-                    message: "datagram_read",
-                    fields: [
-                        "event": "datagram_read",
-                        "bytes": "\(data.count)",
-                        "is_complete": "\(isComplete)"
-                    ]
+                let isFirst = !self.loggedFirstDatagram
+                self.loggedFirstDatagram = true
+                let summaryFields = self.audioDatagramDiagnosticWindow.record(
+                    byteCount: data.count
                 )
+                if isFirst {
+                    self.diagnostics.log(
+                        .debug,
+                        category: .audio,
+                        message: "datagram_read",
+                        fields: [
+                            "event": "datagram_read",
+                            "bytes": "\(data.count)",
+                            "is_complete": "\(isComplete)"
+                        ]
+                    )
+                }
+                if let summaryFields {
+                    self.diagnostics.log(.debug,
+                                         category: .audio,
+                                         message: "datagram_summary",
+                                         fields: summaryFields)
+                }
                 self.onAudioDatagram?(data)
             }
         }
@@ -570,6 +630,8 @@ public final class HearPortQuicTransport {
         group = nil
         controlReady = false
         datagramReady = false
+        audioDatagramDiagnosticWindow = AudioDatagramDiagnosticWindow()
+        loggedFirstDatagram = false
         diagnostics.log(
             .info,
             category: .transport,
