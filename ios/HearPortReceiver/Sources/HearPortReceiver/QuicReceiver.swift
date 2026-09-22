@@ -402,6 +402,7 @@ public final class HearPortQuicTransport {
         )
         let quicOptions = NWProtocolQUIC.Options(alpn: [Self.alpn])
         quicOptions.direction = .bidirectional
+        quicOptions.isDatagram = true
         quicOptions.maxDatagramFrameSize = AudioDatagram.byteCount
         sec_protocol_options_set_tls_resumption_enabled(
             quicOptions.securityProtocolOptions,
