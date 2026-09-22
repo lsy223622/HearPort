@@ -457,7 +457,7 @@ public final class HearPortQuicTransport {
         let multiplex = NWMultiplexGroup(to: endpoint)
         let connectionGroup = NWConnectionGroup(with: multiplex,
                                                  using: parameters)
-        let controlOptions = NWProtocolQUIC.Options()
+        let controlOptions = parameters.copy().defaultProtocolStack.transportProtocol as! NWProtocolQUIC.Options
         controlOptions.direction = .bidirectional
         controlOptions.isDatagram = false
         group = connectionGroup
