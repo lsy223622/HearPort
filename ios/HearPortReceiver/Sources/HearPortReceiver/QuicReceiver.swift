@@ -548,7 +548,7 @@ public final class HearPortQuicTransport {
         )
         controlStream.send(content: framed,
                            contentContext: .defaultMessage,
-                           isComplete: true,
+                           isComplete: false,
                            completion: .contentProcessed { error in
                                completion(error)
                            })
