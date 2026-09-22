@@ -206,10 +206,13 @@ public final class HearPortDiagnostics: @unchecked Sendable {
         let osVersion = "\(version.majorVersion).\(version.minorVersion).\(version.patchVersion)"
         let appVersion = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String)
             ?? "unknown"
+        let appBuild = (Bundle.main.infoDictionary?["CFBundleVersion"] as? String)
+            ?? "unknown"
         return [
             "platform=\(platformName)",
             "os_version=\(osVersion)",
-            "app_version=\(appVersion)"
+            "app_version=\(appVersion)",
+            "app_build=\(appBuild)"
         ]
     }
 
