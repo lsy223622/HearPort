@@ -167,8 +167,22 @@ public final class HearPortDiagnostics: @unchecked Sendable {
                                          withIntermediateDirectories: true)
         loadTail()
         asyncWriterQueue.async { [weak self] in
-            self?.runAsyncWriter()
+            Self.runAsyncWriter(
+                queue: self?.asyncQueue,
+                stop: self?.asyncWriterStop,
+                group: self?.asyncWriterGroup
+            ) { [weak self] event in
+                self?.log(event.level,
+                          category: event.category,
+                          message: event.message,
+                          fields: event.fields)
+            }
         }
+    }
+
+    deinit {
+        asyncWriterStop.exchange(1)
+        asyncQueue.close()
     }
 
     public var level: DiagnosticsLevel {
@@ -236,25 +250,25 @@ public final class HearPortDiagnostics: @unchecked Sendable {
         return asyncWriterGroup.wait(timeout: deadline) == .success
     }
 
-    private func runAsyncWriter() {
-        while asyncWriterStop.load() == 0 {
-            guard let event = asyncQueue.dequeue() else {
-                asyncQueue.wait()
+    private static func runAsyncWriter(
+        queue: DiagnosticsAsyncQueue<AsyncDiagnosticEvent>?,
+        stop: AtomicUInt64?,
+        group: DispatchGroup?,
+        write: @escaping (AsyncDiagnosticEvent) -> Void
+    ) {
+        guard let queue, let stop, let group else { return }
+        while stop.load() == 0 {
+            guard let event = queue.dequeue() else {
+                queue.wait()
                 continue
             }
-            log(event.level,
-                category: event.category,
-                message: event.message,
-                fields: event.fields)
-            asyncWriterGroup.leave()
+            write(event)
+            group.leave()
         }
 
-        while let event = asyncQueue.dequeue() {
-            log(event.level,
-                category: event.category,
-                message: event.message,
-                fields: event.fields)
-            asyncWriterGroup.leave()
+        while let event = queue.dequeue() {
+            write(event)
+            group.leave()
         }
     }
 
