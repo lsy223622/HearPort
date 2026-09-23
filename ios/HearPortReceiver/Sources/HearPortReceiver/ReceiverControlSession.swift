@@ -178,7 +178,9 @@ public final class ReceiverControlSession {
         guard !connectSent else { return }
         guard mode == .remembered || (mode == .pair || mode == .oneTime) else { return }
         let peerID = credential?.peerID ?? Data()
-        let envelope = ControlEnvelope(.connectRequest(authMode: mode, peerID: peerID))
+        let envelope = ControlEnvelope(.connectRequest(authMode: mode,
+                                                       peerID: peerID,
+                                                       features: 0))
         do {
             guard receiver.beginAuthentication(authMode: mode, peerID: peerID) else {
                 throw PairingSecurityError.providerFailure(-5)
@@ -364,7 +366,7 @@ public final class ReceiverControlSession {
             )
             rememberedResponseSent = true
             send(.authResponse(peerID: credential.peerID, mac: mac))
-        case .sessionReady:
+        case let .sessionReady(features):
             switch mode {
             case .remembered:
                 guard rememberedResponseSent else {
@@ -397,7 +399,11 @@ public final class ReceiverControlSession {
                 .info,
                 category: .control,
                 message: "session_ready",
-                fields: ["event": "session_ready", "auth_mode": "\(mode)"]
+                fields: [
+                    "event": "session_ready",
+                    "auth_mode": "\(mode)",
+                    "features": "\(features)"
+                ]
             )
             onReady?()
         case let .startStream(streamID):
@@ -447,7 +453,10 @@ public final class ReceiverControlSession {
             )
             onError?(message)
         case .connectRequest, .pairSpakeB, .pairConfirmB,
-             .authResponse, .startStreamAck:
+             .authResponse, .startStreamAck, .receiverReady,
+             .diagnosticsStart, .diagnosticsEnd,
+             .diagnosticsReportStart, .diagnosticsReportChunk,
+             .diagnosticsReportEnd, .diagnosticsReportReceived:
             throw PairingSecurityError.providerFailure(-4)
         }
     }

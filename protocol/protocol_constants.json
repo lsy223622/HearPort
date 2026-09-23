@@ -12,5 +12,9 @@
   "pcm_bytes_per_audio_datagram": 960,
   "audio_application_datagram_bytes": 968,
   "control_message_max_bytes": 65536,
+  "diagnostic_report_chunk_max_bytes": 61440,
+  "feature_bits": {
+    "diagnostics_upload": 1
+  },
   "audio_header_bytes": 8
 }

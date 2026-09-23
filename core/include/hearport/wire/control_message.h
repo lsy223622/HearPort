@@ -24,7 +24,17 @@ enum class ControlMessageType : std::uint8_t {
   auth_response,
   start_stream,
   start_stream_ack,
+  receiver_ready,
+  diagnostics_start,
+  diagnostics_end,
+  diagnostics_report_start,
+  diagnostics_report_chunk,
+  diagnostics_report_end,
+  diagnostics_report_received,
 };
+
+inline constexpr std::uint32_t kFeatureDiagnosticsUpload = 1u;
+inline constexpr std::size_t kDiagnosticReportChunkMaxBytes = 60u * 1024u;
 
 // This is the small, schema-shaped value used at the platform boundary. The
 // bytes fields map to the bytes fields of the canonical ControlEnvelope; the
@@ -37,6 +47,13 @@ struct ControlEnvelope {
   std::vector<std::byte> bytes1;
   std::vector<std::byte> bytes2;
   std::uint32_t stream_id = 0;
+  std::uint32_t feature_bits = 0;
+  std::uint32_t duration_seconds = 0;
+  std::uint32_t reason = 0;
+  std::uint32_t format_version = 0;
+  std::uint32_t total_bytes = 0;
+  std::uint32_t chunk_count = 0;
+  std::uint32_t chunk_index = 0;
 };
 
 std::vector<std::byte> EncodeControlEnvelope(const ControlEnvelope& envelope);
