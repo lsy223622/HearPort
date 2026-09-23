@@ -5,9 +5,10 @@ import SwiftUI
 
 public struct HearPortApp: View {
     private let diagnostics = HearPortDiagnostics.shared
-    @State private var host = ""
+    @AppStorage(ConnectionPreferences.lastHostKey) private var host = ""
     @State private var pin = ""
     @State private var authMode: AuthMode = .pair
+    @State private var didLoadRememberedCredential = false
     @State private var status = "Disconnected"
     @State private var receiver = HearPortReceiver()
     @State private var control: ReceiverControlSession?
@@ -41,6 +42,11 @@ public struct HearPortApp: View {
                         connect()
                     }
                     .disabled(host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    if control != nil || audioOutput != nil {
+                        Button("disconnect") {
+                            disconnect()
+                        }
+                    }
                     Text(status)
                         .foregroundStyle(.secondary)
                 }
@@ -115,6 +121,26 @@ public struct HearPortApp: View {
         }
         .onAppear {
             status = "Disconnected"
+            if !didLoadRememberedCredential {
+                didLoadRememberedCredential = true
+                do {
+                    let hasRememberedCredential = try KeychainRememberedCredentialStore().load() != nil
+                    authMode = ConnectionPreferences.defaultAuthMode(
+                        hasRememberedCredential: hasRememberedCredential
+                    )
+                } catch {
+                    authMode = .pair
+                    diagnostics.log(
+                        .warning,
+                        category: .security,
+                        message: "remembered_credential_load_failed",
+                        fields: [
+                            "event": "remembered_credential_load_failed",
+                            "error_type": "\(type(of: error))"
+                        ]
+                    )
+                }
+            }
             jitterBufferTargetPackets = JitterBufferConfiguration(
                 targetPackets: jitterBufferTargetPackets
             ).targetPackets
@@ -142,15 +168,14 @@ public struct HearPortApp: View {
             Button("Cancel", role: .cancel) {}
         }
         .onDisappear {
-            control?.cancel()
-            try? audioOutput?.stop()
-            audioOutput = nil
+            disconnect()
         }
     }
 
     private func connect() {
         let endpoint = host.trimmingCharacters(in: .whitespacesAndNewlines)
-        if authMode != .remembered && !PairingSecurity.validatePIN(pin) {
+        let requestedAuthMode = authMode
+        if requestedAuthMode != .remembered && !PairingSecurity.validatePIN(pin) {
             status = "Enter the 6-digit PIN shown on Windows"
             diagnostics.log(
                 .warning,
@@ -178,7 +203,7 @@ public struct HearPortApp: View {
             fields: [
                 "event": "ui_connect_requested",
                 "host": endpoint,
-                "auth_mode": "\(authMode)"
+                "auth_mode": "\(requestedAuthMode)"
             ]
         )
         let session = ReceiverControlSession(
@@ -205,6 +230,10 @@ public struct HearPortApp: View {
         }
         session.onReady = {
             DispatchQueue.main.async {
+                if requestedAuthMode == .pair {
+                    authMode = .remembered
+                    pin = ""
+                }
                 do {
                     let output = PlatformAudioOutputController(receiver: activeReceiver)
                     try output.start()
@@ -232,7 +261,25 @@ public struct HearPortApp: View {
             }
         }
         control = session
-        session.connect(host: endpoint, mode: authMode, pin: pin)
+        session.connect(host: endpoint, mode: requestedAuthMode, pin: pin)
+    }
+
+    private func disconnect() {
+        let hadActiveSession = control != nil || audioOutput != nil
+        control?.cancel()
+        control = nil
+        try? audioOutput?.stop()
+        audioOutput = nil
+        status = "Disconnected"
+        if hadActiveSession {
+            diagnostics.log(
+                .info,
+                category: .app,
+                message: "ui_disconnected",
+                fields: ["event": "ui_disconnected"]
+            )
+        }
+        refreshDiagnostics()
     }
 
     private func refreshDiagnostics() {
