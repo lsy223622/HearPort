@@ -51,6 +51,17 @@ AudioDisposition SessionState::AckWritten(std::uint32_t stream_id) noexcept {
   return AudioDisposition::accepted;
 }
 
+bool SessionState::EndStream(std::uint32_t stream_id) noexcept {
+  if (phase_ != SessionPhase::active ||
+      active_stream_id_.value_or(0) != stream_id || stream_id == 0) {
+    return false;
+  }
+  active_stream_id_.reset();
+  pending_stream_id_.reset();
+  phase_ = SessionPhase::ready;
+  return true;
+}
+
 AudioDisposition SessionState::AcceptAudio(
     const wire::AudioDatagram& packet) const noexcept {
   if (phase_ == SessionPhase::pending_stream) {

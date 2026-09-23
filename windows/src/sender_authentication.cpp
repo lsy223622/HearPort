@@ -1,7 +1,9 @@
 #include "hearport/windows/sender_authentication.h"
 
+#include <algorithm>
 #include <charconv>
 #include <limits>
+#include <sstream>
 #include <string_view>
 #include <utility>
 
@@ -30,10 +32,12 @@ std::uint32_t ReadU32(const std::array<std::byte, 4>& bytes) noexcept {
 SenderAuthentication::SenderAuthentication(
     SenderService& service,
     security::Bytes32 windows_spki_sha256,
-    ProtectedCredentialStore credential_store)
+    ProtectedCredentialStore credential_store,
+    std::filesystem::path report_root)
     : service_(service),
       windows_spki_sha256_(windows_spki_sha256),
-      credential_store_(std::move(credential_store)) {}
+      credential_store_(std::move(credential_store)),
+      report_store_(std::move(report_root)) {}
 
 bool SenderAuthentication::OpenPairingWindow() {
   std::lock_guard lock(mutex_);
@@ -102,6 +106,8 @@ bool SenderAuthentication::HandleConnect(
       !service_.ReceiveConnect(envelope.auth_mode, envelope.bytes1)) {
     return Fail(ErrorCode::protocol, "unexpected ConnectRequest");
   }
+  peer_supports_diagnostics_ =
+      (envelope.feature_bits & wire::kFeatureDiagnosticsUpload) != 0;
 
   if (envelope.auth_mode == AuthMode::remembered) {
     const auto credential = credential_store_.Load();
@@ -207,24 +213,141 @@ bool SenderAuthentication::CompleteAuthentication(bool remember) {
   if (!service_.MarkAuthenticated()) {
     return Fail(ErrorCode::protocol, "session authentication state rejected");
   }
+  if (service_.debug_duration().has_value() && !peer_supports_diagnostics_) {
+    service_.LogDiagnostic("debug_session_refused receiver_feature_missing=1");
+    return Fail(ErrorCode::protocol,
+                "Update HearPort on iPad to use timed diagnostics.");
+  }
   wire::ControlEnvelope ready;
   ready.type = wire::ControlMessageType::session_ready;
+  ready.feature_bits = peer_supports_diagnostics_
+                           ? wire::kFeatureDiagnosticsUpload
+                           : 0;
   if (!Send(ready)) return false;
   authenticated_ = true;
+  if (peer_supports_diagnostics_) {
+    flow_ = Flow::waiting_receiver_ready;
+    return true;
+  }
   return StartMediaStream();
 }
 
-bool SenderAuthentication::StartMediaStream() {
+bool SenderAuthentication::HandleReceiverReady() {
+  if (flow_ == Flow::debug_complete) return true;
+  if (flow_ != Flow::waiting_receiver_ready) {
+    return Fail(ErrorCode::protocol, "unexpected ReceiverReady");
+  }
+  return StartMediaStream(service_.debug_duration().has_value());
+}
+
+bool SenderAuthentication::StartMediaStream(bool diagnostic) {
   std::array<std::byte, 4> random{};
   if (!security::RandomBytes(random)) return false;
   stream_id_ = ReadU32(random);
   if (stream_id_ == 0) stream_id_ = 1;
-  if (!service_.BeginStream(stream_id_)) return false;
+  if (diagnostic) {
+    if (!security::RandomBytes(MutableSpan(debug_session_id_))) return false;
+    if (!service_.BeginStream(stream_id_, Span(debug_session_id_))) return false;
+    const auto duration = service_.debug_duration();
+    if (!duration.has_value()) return false;
+    wire::ControlEnvelope diagnostics_start;
+    diagnostics_start.type = wire::ControlMessageType::diagnostics_start;
+    diagnostics_start.bytes1.assign(debug_session_id_.begin(),
+                                    debug_session_id_.end());
+    diagnostics_start.stream_id = stream_id_;
+    diagnostics_start.duration_seconds =
+        static_cast<std::uint32_t>(duration->count());
+    if (!Send(diagnostics_start)) return false;
+  } else if (!service_.BeginStream(stream_id_)) {
+    return false;
+  }
   wire::ControlEnvelope start;
   start.type = wire::ControlMessageType::start_stream;
   start.stream_id = stream_id_;
-  flow_ = Flow::stream_ack;
+  flow_ = diagnostic ? Flow::debug_stream_ack : Flow::stream_ack;
   return Send(start);
+}
+
+bool SenderAuthentication::HandleReportStart(
+    const wire::ControlEnvelope& envelope) {
+  if (report_upload_active_ ||
+      (flow_ != Flow::waiting_receiver_ready &&
+       flow_ != Flow::awaiting_debug_report)) {
+    return Fail(ErrorCode::protocol, "unexpected diagnostic report start");
+  }
+  const auto result = report_store_.Begin(
+      envelope.bytes1, envelope.format_version, envelope.total_bytes,
+      envelope.chunk_count);
+  if (result == DebugReportBeginResult::rejected) {
+    return Fail(ErrorCode::protocol, "invalid diagnostic report metadata");
+  }
+  std::copy(envelope.bytes1.begin(), envelope.bytes1.end(),
+            report_upload_session_id_.begin());
+  report_upload_active_ = true;
+  return true;
+}
+
+bool SenderAuthentication::HandleReportChunk(
+    const wire::ControlEnvelope& envelope) {
+  if (!report_upload_active_ || envelope.bytes1.size() !=
+                                    report_upload_session_id_.size() ||
+      !std::equal(envelope.bytes1.begin(), envelope.bytes1.end(),
+                  report_upload_session_id_.begin()) ||
+      !report_store_.WriteChunk(envelope.bytes1, envelope.chunk_index,
+                                envelope.bytes2)) {
+    return Fail(ErrorCode::protocol, "invalid diagnostic report chunk");
+  }
+  return true;
+}
+
+bool SenderAuthentication::HandleReportEnd(
+    const wire::ControlEnvelope& envelope) {
+  if (!report_upload_active_ || envelope.bytes1.size() !=
+                                    report_upload_session_id_.size() ||
+      !std::equal(envelope.bytes1.begin(), envelope.bytes1.end(),
+                  report_upload_session_id_.begin()) ||
+      !report_store_.Commit(envelope.bytes1)) {
+    return Fail(ErrorCode::protocol, "incomplete diagnostic report");
+  }
+
+  const bool completing_debug =
+      flow_ == Flow::awaiting_debug_report &&
+      envelope.bytes1.size() == debug_session_id_.size() &&
+      std::equal(envelope.bytes1.begin(), envelope.bytes1.end(),
+                 debug_session_id_.begin());
+  const auto report_directory = report_store_.SessionDirectory(envelope.bytes1);
+  wire::ControlEnvelope received;
+  received.type = wire::ControlMessageType::diagnostics_report_received;
+  received.bytes1 = envelope.bytes1;
+  report_upload_active_ = false;
+  report_upload_session_id_.fill(std::byte{0});
+  if (completing_debug) flow_ = Flow::debug_complete;
+  std::ostringstream message;
+  message << "ipad_diagnostic_report_committed path="
+          << report_directory.string();
+  service_.LogDiagnostic(message.str());
+  if (!Send(received)) return false;
+  if (completing_debug) {
+    service_.MarkDebugReportCommitted(envelope.bytes1);
+  }
+  return true;
+}
+
+void SenderAuthentication::OnDebugSessionEnded(
+    std::array<std::byte, 16> session_id, std::uint32_t reason) {
+  std::lock_guard lock(mutex_);
+  if (flow_ != Flow::debug_stream_active || session_id != debug_session_id_) {
+    service_.LogDiagnostic("debug_session_end_control_skipped state_mismatch=1");
+    return;
+  }
+  wire::ControlEnvelope end;
+  end.type = wire::ControlMessageType::diagnostics_end;
+  end.bytes1.assign(session_id.begin(), session_id.end());
+  end.reason = reason;
+  flow_ = Flow::awaiting_debug_report;
+  if (!Send(end)) {
+    service_.LogDiagnostic("debug_session_end_control_failed");
+  }
 }
 
 bool SenderAuthentication::HandleControlPayload(
@@ -243,12 +366,22 @@ bool SenderAuthentication::HandleControlPayload(
       return HandlePairConfirmB(*envelope);
     case wire::ControlMessageType::auth_response:
       return HandleAuthResponse(*envelope);
+    case wire::ControlMessageType::receiver_ready:
+      return HandleReceiverReady();
+    case wire::ControlMessageType::diagnostics_report_start:
+      return HandleReportStart(*envelope);
+    case wire::ControlMessageType::diagnostics_report_chunk:
+      return HandleReportChunk(*envelope);
+    case wire::ControlMessageType::diagnostics_report_end:
+      return HandleReportEnd(*envelope);
     case wire::ControlMessageType::start_stream_ack:
-      if (flow_ != Flow::stream_ack ||
+      if ((flow_ != Flow::stream_ack && flow_ != Flow::debug_stream_ack) ||
           !service_.MarkStartStreamAckWritten(envelope->stream_id)) {
         return Fail(ErrorCode::stream_state, "unexpected StartStreamAck");
       }
-      flow_ = Flow::idle;
+      flow_ = flow_ == Flow::debug_stream_ack
+                  ? Flow::debug_stream_active
+                  : Flow::idle;
       return true;
     default:
       return Fail(ErrorCode::protocol, "unexpected control message");
@@ -264,9 +397,16 @@ void SenderAuthentication::OnCaptureReset() {
 
 void SenderAuthentication::Reset() noexcept {
   std::lock_guard lock(mutex_);
+  if (report_upload_active_) {
+    report_store_.Abort(report_upload_session_id_);
+  }
   flow_ = Flow::idle;
   authenticated_ = false;
   remember_pairing_ = false;
+  peer_supports_diagnostics_ = false;
+  report_upload_active_ = false;
+  report_upload_session_id_.fill(std::byte{0});
+  debug_session_id_.fill(std::byte{0});
   spake_session_.reset();
   spake_result_.reset();
   remembered_verifier_.reset();

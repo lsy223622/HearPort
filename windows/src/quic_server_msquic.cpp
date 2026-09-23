@@ -9,6 +9,7 @@
 #include <cstring>
 #include <iostream>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -22,6 +23,10 @@ constexpr std::size_t kAudioDatagramBytes = 968;
 struct SendBufferContext {
   std::vector<std::uint8_t> storage;
   QUIC_BUFFER buffer{};
+  std::function<void(std::uint32_t, std::uint32_t, DebugSendState)>
+      on_send_state;
+  std::uint32_t stream_id = 0;
+  std::uint32_t sequence = 0;
 
   explicit SendBufferContext(std::span<const std::byte> bytes)
       : storage(bytes.size()) {
@@ -30,13 +35,38 @@ struct SendBufferContext {
     buffer.Buffer = storage.data();
   }
 
-  explicit SendBufferContext(const wire::EncodedAudioDatagram& datagram)
+  SendBufferContext(const wire::EncodedAudioDatagram& datagram,
+                    std::uint32_t audio_stream_id,
+                    std::uint32_t audio_sequence)
       : storage(datagram.size()) {
+    stream_id = audio_stream_id;
+    sequence = audio_sequence;
     std::memcpy(storage.data(), datagram.data(), datagram.size());
     buffer.Length = static_cast<std::uint32_t>(storage.size());
     buffer.Buffer = storage.data();
   }
 };
+
+std::uint32_t ReadLittleEndian32(const wire::EncodedAudioDatagram& bytes,
+                                 std::size_t offset) {
+  return std::to_integer<std::uint32_t>(bytes[offset]) |
+         (std::to_integer<std::uint32_t>(bytes[offset + 1]) << 8) |
+         (std::to_integer<std::uint32_t>(bytes[offset + 2]) << 16) |
+         (std::to_integer<std::uint32_t>(bytes[offset + 3]) << 24);
+}
+
+DebugSendState ConvertSendState(QUIC_DATAGRAM_SEND_STATE state) {
+  switch (state) {
+    case QUIC_DATAGRAM_SEND_SENT: return DebugSendState::sent;
+    case QUIC_DATAGRAM_SEND_LOST_SUSPECT: return DebugSendState::lost_suspect;
+    case QUIC_DATAGRAM_SEND_LOST_DISCARDED: return DebugSendState::lost_discarded;
+    case QUIC_DATAGRAM_SEND_ACKNOWLEDGED: return DebugSendState::acknowledged;
+    case QUIC_DATAGRAM_SEND_ACKNOWLEDGED_SPURIOUS:
+      return DebugSendState::acknowledged_spurious;
+    case QUIC_DATAGRAM_SEND_CANCELED: return DebugSendState::canceled;
+    default: return DebugSendState::unknown;
+  }
+}
 
 class MsQuicServer final : public QuicServer {
  public:
@@ -50,7 +80,7 @@ class MsQuicServer final : public QuicServer {
     }
     options_ = options;
     callbacks_ = std::move(callbacks);
-    std::cerr << "quic_start port=" << options_.port << "\n";
+    Log("quic_start port=" + std::to_string(options_.port));
 
     if (QUIC_FAILED(MsQuicOpen2(&api_))) {
       api_ = nullptr;
@@ -116,24 +146,28 @@ class MsQuicServer final : public QuicServer {
     std::lock_guard lock(mutex_);
     if (!started_ || control_stream_ == nullptr || api_ == nullptr ||
         framed_bytes.empty()) {
-      std::cerr << "quic_control_send_skipped started=" << started_
-                << " has_control_stream=" << (control_stream_ != nullptr)
-                << " has_api=" << (api_ != nullptr)
-                << " bytes=" << framed_bytes.size() << "\n";
+      std::ostringstream line;
+      line << "quic_control_send_skipped started=" << started_
+           << " has_control_stream=" << (control_stream_ != nullptr)
+           << " has_api=" << (api_ != nullptr)
+           << " bytes=" << framed_bytes.size();
+      Log(line.str());
       return false;
     }
     auto* context = new SendBufferContext(framed_bytes);
     const auto status = api_->StreamSend(
         control_stream_, &context->buffer, 1, QUIC_SEND_FLAG_NONE, context);
     if (QUIC_FAILED(status)) {
-      std::cerr << "quic_control_send_failed status="
-                << static_cast<unsigned long>(status)
-                << " bytes=" << framed_bytes.size() << "\n";
+      std::ostringstream line;
+      line << "quic_control_send_failed status="
+           << static_cast<unsigned long>(status)
+           << " bytes=" << framed_bytes.size();
+      Log(line.str());
       delete context;
       return false;
     }
-    std::cerr << "quic_control_send_queued bytes=" << framed_bytes.size()
-              << "\n";
+    Log("quic_control_send_queued bytes=" +
+        std::to_string(framed_bytes.size()));
     return true;
   }
 
@@ -143,7 +177,10 @@ class MsQuicServer final : public QuicServer {
         !datagram_ready_) {
       return false;
     }
-    auto* context = new SendBufferContext(datagram);
+    auto* context = new SendBufferContext(
+        datagram, ReadLittleEndian32(datagram, 0),
+        ReadLittleEndian32(datagram, 4));
+    context->on_send_state = callbacks_.on_datagram_send_state;
     const auto status = api_->DatagramSend(
         connection_, &context->buffer, 1, QUIC_SEND_FLAG_NONE, context);
     if (QUIC_FAILED(status)) {
@@ -167,13 +204,21 @@ class MsQuicServer final : public QuicServer {
   }
 
  private:
+  void Log(const std::string& line) const {
+    if (options_.diagnostic_log) {
+      options_.diagnostic_log(line);
+    } else {
+      std::cerr << line << '\n';
+    }
+  }
+
   static QUIC_STATUS QUIC_API ListenerCallback(
       HQUIC, void* context, QUIC_LISTENER_EVENT* event) {
     auto* server = static_cast<MsQuicServer*>(context);
     if (event->Type != QUIC_LISTENER_EVENT_NEW_CONNECTION) {
       return QUIC_STATUS_SUCCESS;
     }
-    std::cerr << "quic_listener_new_connection\n";
+    server->Log("quic_listener_new_connection");
     server->api_->SetCallbackHandler(
         event->NEW_CONNECTION.Connection,
         reinterpret_cast<void*>(ConnectionCallback), server);
@@ -198,8 +243,8 @@ class MsQuicServer final : public QuicServer {
             accepted = true;
           }
         }
-        std::cerr << "quic_connection_connected accepted=" << accepted
-                  << "\n";
+        server->Log(std::string("quic_connection_connected accepted=") +
+                    (accepted ? "1" : "0"));
         if (!accepted) {
           if (api != nullptr) {
             api->ConnectionShutdown(connection,
@@ -228,10 +273,12 @@ class MsQuicServer final : public QuicServer {
             accepted = true;
           }
         }
-        std::cerr << "quic_peer_stream_started flags="
-                  << static_cast<unsigned long>(flags)
-                  << " unidirectional=" << unidirectional
-                  << " accepted=" << accepted << "\n";
+        std::ostringstream line;
+        line << "quic_peer_stream_started flags="
+             << static_cast<unsigned long>(flags)
+             << " unidirectional=" << unidirectional
+             << " accepted=" << accepted;
+        server->Log(line.str());
         if (api != nullptr) {
           if (accepted) {
             api->SetCallbackHandler(stream,
@@ -260,9 +307,11 @@ class MsQuicServer final : public QuicServer {
             on_unavailable = server->callbacks_.on_datagram_unavailable;
           }
         }
-        std::cerr << "quic_datagram_state send_enabled=" << send_enabled
-                  << " max_send_length=" << max_send_length
-                  << " ready=" << ready << "\n";
+        std::ostringstream line;
+        line << "quic_datagram_state send_enabled=" << send_enabled
+             << " max_send_length=" << max_send_length
+             << " ready=" << ready;
+        server->Log(line.str());
         if (ready) {
           if (on_ready) {
             on_ready(max_send_length);
@@ -273,12 +322,19 @@ class MsQuicServer final : public QuicServer {
         break;
       }
       case QUIC_CONNECTION_EVENT_DATAGRAM_SEND_STATE_CHANGED:
-        if (event->DATAGRAM_SEND_STATE_CHANGED.ClientContext != nullptr &&
-            QUIC_DATAGRAM_SEND_STATE_IS_FINAL(
-                event->DATAGRAM_SEND_STATE_CHANGED.State)) {
-          delete static_cast<SendBufferContext*>(
+        if (event->DATAGRAM_SEND_STATE_CHANGED.ClientContext != nullptr) {
+          auto* send_context = static_cast<SendBufferContext*>(
               event->DATAGRAM_SEND_STATE_CHANGED.ClientContext);
-          event->DATAGRAM_SEND_STATE_CHANGED.ClientContext = nullptr;
+          const auto state = event->DATAGRAM_SEND_STATE_CHANGED.State;
+          if (send_context->stream_id != 0 && send_context->on_send_state) {
+            send_context->on_send_state(
+                send_context->stream_id, send_context->sequence,
+                ConvertSendState(state));
+          }
+          if (QUIC_DATAGRAM_SEND_STATE_IS_FINAL(state)) {
+            delete send_context;
+            event->DATAGRAM_SEND_STATE_CHANGED.ClientContext = nullptr;
+          }
         }
         break;
       case QUIC_CONNECTION_EVENT_SHUTDOWN_COMPLETE:
@@ -297,8 +353,8 @@ class MsQuicServer final : public QuicServer {
               on_closed = server->callbacks_.on_closed;
             }
           }
-          std::cerr << "quic_connection_shutdown tracked=" << tracked
-                    << "\n";
+          server->Log(std::string("quic_connection_shutdown tracked=") +
+                      (tracked ? "1" : "0"));
           if (api != nullptr) {
             api->ConnectionClose(connection);
           }
@@ -327,11 +383,12 @@ class MsQuicServer final : public QuicServer {
             std::lock_guard lock(server->mutex_);
             on_control_bytes = server->callbacks_.on_control_bytes;
           }
-          std::cerr << "quic_control_receive buffers="
-                    << event->RECEIVE.BufferCount
-                    << " bytes=" << event->RECEIVE.TotalBufferLength
-                    << " handler=" << static_cast<bool>(on_control_bytes)
-                    << "\n";
+          std::ostringstream line;
+          line << "quic_control_receive buffers="
+               << event->RECEIVE.BufferCount
+               << " bytes=" << event->RECEIVE.TotalBufferLength
+               << " handler=" << static_cast<bool>(on_control_bytes);
+          server->Log(line.str());
           if (!on_control_bytes) {
             break;
           }
@@ -343,16 +400,17 @@ class MsQuicServer final : public QuicServer {
               keep_connection = on_control_bytes(std::span<const std::byte>(
                   reinterpret_cast<const std::byte*>(buffer.Buffer),
                   buffer.Length));
-              std::cerr << "quic_control_receive_handled bytes="
-                        << buffer.Length
-                        << " keep_connection=" << keep_connection << "\n";
+              std::ostringstream line;
+              line << "quic_control_receive_handled bytes=" << buffer.Length
+                   << " keep_connection=" << keep_connection;
+              server->Log(line.str());
               if (!keep_connection) break;
             }
           }
         }
         break;
       case QUIC_STREAM_EVENT_SEND_COMPLETE:
-        std::cerr << "quic_control_send_complete\n";
+        server->Log("quic_control_send_complete");
         delete static_cast<SendBufferContext*>(
             event->SEND_COMPLETE.ClientContext);
         break;
