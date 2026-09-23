@@ -149,6 +149,18 @@ bool ExactLength(const std::vector<std::byte>& value, std::size_t length) {
   return value.size() == length;
 }
 
+bool NoDiagnosticFields(const ControlEnvelope& envelope) noexcept {
+  return envelope.duration_seconds == 0 && envelope.reason == 0 &&
+         envelope.format_version == 0 && envelope.total_bytes == 0 &&
+         envelope.chunk_count == 0 && envelope.chunk_index == 0;
+}
+
+bool NoControlHeaderFields(const ControlEnvelope& envelope) noexcept {
+  return envelope.auth_mode == AuthMode::unspecified &&
+         envelope.error_code == ErrorCode::unspecified &&
+         envelope.error_message.empty() && envelope.feature_bits == 0;
+}
+
 bool ValidateEnvelope(const ControlEnvelope& envelope) noexcept {
   switch (envelope.type) {
     case ControlMessageType::connect_request:
@@ -157,41 +169,85 @@ bool ValidateEnvelope(const ControlEnvelope& envelope) noexcept {
                ExactLength(envelope.bytes1, 16)) ||
               (envelope.auth_mode != AuthMode::remembered &&
                envelope.bytes1.empty())) &&
+             envelope.error_code == ErrorCode::unspecified &&
              envelope.bytes2.empty() && envelope.error_message.empty() &&
-             envelope.stream_id == 0;
+             envelope.stream_id == 0 && NoDiagnosticFields(envelope);
     case ControlMessageType::session_ready:
       return envelope.auth_mode == AuthMode::unspecified &&
              envelope.error_code == ErrorCode::unspecified &&
              envelope.error_message.empty() && envelope.bytes1.empty() &&
-             envelope.bytes2.empty() && envelope.stream_id == 0;
+             envelope.bytes2.empty() && envelope.stream_id == 0 &&
+             NoDiagnosticFields(envelope);
     case ControlMessageType::error:
       return IsValidErrorCode(envelope.error_code) &&
              envelope.auth_mode == AuthMode::unspecified &&
              envelope.bytes1.empty() && envelope.bytes2.empty() &&
-             envelope.stream_id == 0;
+             envelope.stream_id == 0 && envelope.feature_bits == 0 &&
+             NoDiagnosticFields(envelope);
     case ControlMessageType::pair_spake_a:
     case ControlMessageType::pair_spake_b:
-      return ExactLength(envelope.bytes1, 65) && envelope.bytes2.empty() &&
+      return NoControlHeaderFields(envelope) && NoDiagnosticFields(envelope) &&
+             ExactLength(envelope.bytes1, 65) && envelope.bytes2.empty() &&
              envelope.stream_id == 0;
     case ControlMessageType::pair_confirm_a:
     case ControlMessageType::pair_confirm_b:
-      return ExactLength(envelope.bytes1, 32) && envelope.bytes2.empty() &&
+      return NoControlHeaderFields(envelope) && NoDiagnosticFields(envelope) &&
+             ExactLength(envelope.bytes1, 32) && envelope.bytes2.empty() &&
              envelope.stream_id == 0;
     case ControlMessageType::pair_credential:
-      return ExactLength(envelope.bytes1, 16) &&
+      return NoControlHeaderFields(envelope) && NoDiagnosticFields(envelope) &&
+             ExactLength(envelope.bytes1, 16) &&
              ExactLength(envelope.bytes2, 32) && envelope.stream_id == 0;
     case ControlMessageType::auth_challenge:
-      return ExactLength(envelope.bytes1, 32) && envelope.bytes2.empty() &&
+      return NoControlHeaderFields(envelope) && NoDiagnosticFields(envelope) &&
+             ExactLength(envelope.bytes1, 32) && envelope.bytes2.empty() &&
              envelope.stream_id == 0;
     case ControlMessageType::auth_response:
-      return ExactLength(envelope.bytes1, 16) &&
+      return NoControlHeaderFields(envelope) && NoDiagnosticFields(envelope) &&
+             ExactLength(envelope.bytes1, 16) &&
              ExactLength(envelope.bytes2, 32) && envelope.stream_id == 0;
     case ControlMessageType::start_stream:
     case ControlMessageType::start_stream_ack:
-      return envelope.stream_id != 0 && envelope.auth_mode == AuthMode::unspecified &&
-             envelope.error_code == ErrorCode::unspecified &&
-             envelope.error_message.empty() && envelope.bytes1.empty() &&
+      return envelope.stream_id != 0 && NoControlHeaderFields(envelope) &&
+             NoDiagnosticFields(envelope) && envelope.bytes1.empty() &&
              envelope.bytes2.empty();
+    case ControlMessageType::receiver_ready:
+      return NoControlHeaderFields(envelope) && NoDiagnosticFields(envelope) &&
+             envelope.stream_id == 0 && envelope.bytes1.empty() &&
+             envelope.bytes2.empty();
+    case ControlMessageType::diagnostics_start:
+      return NoControlHeaderFields(envelope) &&
+             envelope.reason == 0 && envelope.format_version == 0 &&
+             envelope.total_bytes == 0 && envelope.chunk_count == 0 &&
+             envelope.chunk_index == 0 && ExactLength(envelope.bytes1, 16) &&
+             envelope.bytes2.empty() && envelope.stream_id != 0 &&
+             envelope.duration_seconds >= 60 &&
+             envelope.duration_seconds <= 600;
+    case ControlMessageType::diagnostics_end:
+      return NoControlHeaderFields(envelope) && envelope.duration_seconds == 0 &&
+             envelope.reason != 0 && envelope.format_version == 0 &&
+             envelope.total_bytes == 0 && envelope.chunk_count == 0 &&
+             envelope.chunk_index == 0 && ExactLength(envelope.bytes1, 16) &&
+             envelope.bytes2.empty() && envelope.stream_id == 0;
+    case ControlMessageType::diagnostics_report_start:
+      return NoControlHeaderFields(envelope) && envelope.duration_seconds == 0 &&
+             envelope.reason == 0 && envelope.format_version != 0 &&
+             envelope.total_bytes != 0 && envelope.chunk_count != 0 &&
+             envelope.chunk_index == 0 && ExactLength(envelope.bytes1, 16) &&
+             envelope.bytes2.empty() && envelope.stream_id == 0;
+    case ControlMessageType::diagnostics_report_chunk:
+      return NoControlHeaderFields(envelope) && envelope.duration_seconds == 0 &&
+             envelope.reason == 0 && envelope.format_version == 0 &&
+             envelope.total_bytes == 0 && envelope.chunk_count == 0 &&
+             ExactLength(envelope.bytes1, 16) &&
+             !envelope.bytes2.empty() &&
+             envelope.bytes2.size() <= kDiagnosticReportChunkMaxBytes &&
+             envelope.stream_id == 0;
+    case ControlMessageType::diagnostics_report_end:
+    case ControlMessageType::diagnostics_report_received:
+      return NoControlHeaderFields(envelope) && NoDiagnosticFields(envelope) &&
+             ExactLength(envelope.bytes1, 16) && envelope.bytes2.empty() &&
+             envelope.stream_id == 0;
   }
   return false;
 }
@@ -212,11 +268,151 @@ bool ParseConnect(std::span<const std::byte> bytes,
       auth_seen = true;
     } else if (field == 2 && wire_type == 2) {
       if (!reader.ReadBytes(envelope.bytes1)) return false;
+    } else if (field == 3 && wire_type == 0) {
+      if (!reader.ReadVarint(envelope.feature_bits)) return false;
     } else if (!reader.Skip(wire_type)) {
       return false;
     }
   }
   return auth_seen;
+}
+
+bool ParseBytes1(std::span<const std::byte> bytes,
+                 ControlEnvelope& envelope) noexcept;
+
+bool ParseSessionReady(std::span<const std::byte> bytes,
+                       ControlEnvelope& envelope) noexcept {
+  Reader reader(bytes);
+  while (!reader.AtEnd()) {
+    std::uint32_t field = 0;
+    std::uint8_t wire_type = 0;
+    if (!reader.ReadTag(field, wire_type)) return false;
+    if (field == 1 && wire_type == 0) {
+      if (!reader.ReadVarint(envelope.feature_bits)) return false;
+    } else if (!reader.Skip(wire_type)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool ParseDiagnosticsStart(std::span<const std::byte> bytes,
+                           ControlEnvelope& envelope) noexcept {
+  Reader reader(bytes);
+  bool session_seen = false;
+  bool stream_seen = false;
+  bool duration_seen = false;
+  while (!reader.AtEnd()) {
+    std::uint32_t field = 0;
+    std::uint8_t wire_type = 0;
+    if (!reader.ReadTag(field, wire_type)) return false;
+    if (field == 1 && wire_type == 2) {
+      if (!reader.ReadBytes(envelope.bytes1)) return false;
+      session_seen = true;
+    } else if (field == 2 && wire_type == 0) {
+      if (!reader.ReadVarint(envelope.stream_id)) return false;
+      stream_seen = true;
+    } else if (field == 3 && wire_type == 0) {
+      if (!reader.ReadVarint(envelope.duration_seconds)) return false;
+      duration_seen = true;
+    } else if (!reader.Skip(wire_type)) {
+      return false;
+    }
+  }
+  return session_seen && stream_seen && duration_seen;
+}
+
+bool ParseDiagnosticsEnd(std::span<const std::byte> bytes,
+                         ControlEnvelope& envelope) noexcept {
+  Reader reader(bytes);
+  bool session_seen = false;
+  bool reason_seen = false;
+  while (!reader.AtEnd()) {
+    std::uint32_t field = 0;
+    std::uint8_t wire_type = 0;
+    if (!reader.ReadTag(field, wire_type)) return false;
+    if (field == 1 && wire_type == 2) {
+      if (!reader.ReadBytes(envelope.bytes1)) return false;
+      session_seen = true;
+    } else if (field == 2 && wire_type == 0) {
+      if (!reader.ReadVarint(envelope.reason)) return false;
+      reason_seen = true;
+    } else if (!reader.Skip(wire_type)) {
+      return false;
+    }
+  }
+  return session_seen && reason_seen;
+}
+
+bool ParseDiagnosticsReportStart(std::span<const std::byte> bytes,
+                                 ControlEnvelope& envelope) noexcept {
+  Reader reader(bytes);
+  bool session_seen = false;
+  bool format_seen = false;
+  bool total_seen = false;
+  bool chunks_seen = false;
+  while (!reader.AtEnd()) {
+    std::uint32_t field = 0;
+    std::uint8_t wire_type = 0;
+    if (!reader.ReadTag(field, wire_type)) return false;
+    if (field == 1 && wire_type == 2) {
+      if (!reader.ReadBytes(envelope.bytes1)) return false;
+      session_seen = true;
+    } else if (field == 2 && wire_type == 0) {
+      if (!reader.ReadVarint(envelope.format_version)) return false;
+      format_seen = true;
+    } else if (field == 3 && wire_type == 0) {
+      if (!reader.ReadVarint(envelope.total_bytes)) return false;
+      total_seen = true;
+    } else if (field == 4 && wire_type == 0) {
+      if (!reader.ReadVarint(envelope.chunk_count)) return false;
+      chunks_seen = true;
+    } else if (!reader.Skip(wire_type)) {
+      return false;
+    }
+  }
+  return session_seen && format_seen && total_seen && chunks_seen;
+}
+
+bool ParseDiagnosticsReportChunk(std::span<const std::byte> bytes,
+                                 ControlEnvelope& envelope) noexcept {
+  Reader reader(bytes);
+  bool session_seen = false;
+  bool index_seen = false;
+  bool data_seen = false;
+  while (!reader.AtEnd()) {
+    std::uint32_t field = 0;
+    std::uint8_t wire_type = 0;
+    if (!reader.ReadTag(field, wire_type)) return false;
+    if (field == 1 && wire_type == 2) {
+      if (!reader.ReadBytes(envelope.bytes1)) return false;
+      session_seen = true;
+    } else if (field == 2 && wire_type == 0) {
+      if (!reader.ReadVarint(envelope.chunk_index)) return false;
+      index_seen = true;
+    } else if (field == 3 && wire_type == 2) {
+      if (!reader.ReadBytes(envelope.bytes2)) return false;
+      data_seen = true;
+    } else if (!reader.Skip(wire_type)) {
+      return false;
+    }
+  }
+  return session_seen && index_seen && data_seen;
+}
+
+bool ParseDiagnosticsReportSession(std::span<const std::byte> bytes,
+                                   ControlEnvelope& envelope) noexcept {
+  return ParseBytes1(bytes, envelope);
+}
+
+bool ParseEmpty(std::span<const std::byte> bytes) noexcept {
+  Reader reader(bytes);
+  while (!reader.AtEnd()) {
+    std::uint32_t field = 0;
+    std::uint8_t wire_type = 0;
+    if (!reader.ReadTag(field, wire_type) || !reader.Skip(wire_type)) return false;
+  }
+  return true;
 }
 
 bool ParseError(std::span<const std::byte> bytes,
@@ -314,8 +510,16 @@ std::vector<std::byte> EncodeControlEnvelope(const ControlEnvelope& envelope) {
       AppendTag(1, 0, submessage);
       AppendVarint(static_cast<std::uint32_t>(envelope.auth_mode), submessage);
       if (!envelope.bytes1.empty()) AppendBytes(2, envelope.bytes1, submessage);
+      if (envelope.feature_bits != 0) {
+        AppendTag(3, 0, submessage);
+        AppendVarint(envelope.feature_bits, submessage);
+      }
       break;
     case ControlMessageType::session_ready:
+      if (envelope.feature_bits != 0) {
+        AppendTag(1, 0, submessage);
+        AppendVarint(envelope.feature_bits, submessage);
+      }
       break;
     case ControlMessageType::error:
       AppendTag(1, 0, submessage);
@@ -343,6 +547,39 @@ std::vector<std::byte> EncodeControlEnvelope(const ControlEnvelope& envelope) {
       AppendTag(1, 0, submessage);
       AppendVarint(envelope.stream_id, submessage);
       break;
+    case ControlMessageType::receiver_ready:
+      break;
+    case ControlMessageType::diagnostics_start:
+      AppendBytes(1, envelope.bytes1, submessage);
+      AppendTag(2, 0, submessage);
+      AppendVarint(envelope.stream_id, submessage);
+      AppendTag(3, 0, submessage);
+      AppendVarint(envelope.duration_seconds, submessage);
+      break;
+    case ControlMessageType::diagnostics_end:
+      AppendBytes(1, envelope.bytes1, submessage);
+      AppendTag(2, 0, submessage);
+      AppendVarint(envelope.reason, submessage);
+      break;
+    case ControlMessageType::diagnostics_report_start:
+      AppendBytes(1, envelope.bytes1, submessage);
+      AppendTag(2, 0, submessage);
+      AppendVarint(envelope.format_version, submessage);
+      AppendTag(3, 0, submessage);
+      AppendVarint(envelope.total_bytes, submessage);
+      AppendTag(4, 0, submessage);
+      AppendVarint(envelope.chunk_count, submessage);
+      break;
+    case ControlMessageType::diagnostics_report_chunk:
+      AppendBytes(1, envelope.bytes1, submessage);
+      AppendTag(2, 0, submessage);
+      AppendVarint(envelope.chunk_index, submessage);
+      AppendBytes(3, envelope.bytes2, submessage);
+      break;
+    case ControlMessageType::diagnostics_report_end:
+    case ControlMessageType::diagnostics_report_received:
+      AppendBytes(1, envelope.bytes1, submessage);
+      break;
   }
 
   const std::uint32_t envelope_field = [&] {
@@ -359,6 +596,13 @@ std::vector<std::byte> EncodeControlEnvelope(const ControlEnvelope& envelope) {
       case ControlMessageType::auth_response: return 21u;
       case ControlMessageType::start_stream: return 30u;
       case ControlMessageType::start_stream_ack: return 31u;
+      case ControlMessageType::receiver_ready: return 32u;
+      case ControlMessageType::diagnostics_start: return 33u;
+      case ControlMessageType::diagnostics_end: return 34u;
+      case ControlMessageType::diagnostics_report_start: return 35u;
+      case ControlMessageType::diagnostics_report_chunk: return 36u;
+      case ControlMessageType::diagnostics_report_end: return 37u;
+      case ControlMessageType::diagnostics_report_received: return 38u;
     }
     return 0u;
   }();
@@ -385,7 +629,8 @@ std::optional<ControlEnvelope> DecodeControlEnvelope(
     const bool known_field =
         field == 1 || field == 2 || field == 3 || field == 10 ||
         field == 11 || field == 12 || field == 13 || field == 14 ||
-        field == 20 || field == 21 || field == 30 || field == 31;
+        field == 20 || field == 21 || field == 30 || field == 31 ||
+        (field >= 32 && field <= 38);
     if (!known_field || wire_type != 2) {
       if (!reader.Skip(wire_type)) return std::nullopt;
       continue;
@@ -405,19 +650,7 @@ std::optional<ControlEnvelope> DecodeControlEnvelope(
       break;
     case 2:
       envelope.type = ControlMessageType::session_ready;
-      {
-        Reader nested(selected_submessage);
-        parsed = true;
-        while (!nested.AtEnd()) {
-          std::uint32_t nested_field = 0;
-          std::uint8_t nested_wire_type = 0;
-          if (!nested.ReadTag(nested_field, nested_wire_type) ||
-              !nested.Skip(nested_wire_type)) {
-            parsed = false;
-            break;
-          }
-        }
-      }
+      parsed = ParseSessionReady(selected_submessage, envelope);
       break;
     case 3:
       envelope.type = ControlMessageType::error;
@@ -458,6 +691,34 @@ std::optional<ControlEnvelope> DecodeControlEnvelope(
     case 31:
       envelope.type = ControlMessageType::start_stream_ack;
       parsed = ParseStream(selected_submessage, envelope);
+      break;
+    case 32:
+      envelope.type = ControlMessageType::receiver_ready;
+      parsed = ParseEmpty(selected_submessage);
+      break;
+    case 33:
+      envelope.type = ControlMessageType::diagnostics_start;
+      parsed = ParseDiagnosticsStart(selected_submessage, envelope);
+      break;
+    case 34:
+      envelope.type = ControlMessageType::diagnostics_end;
+      parsed = ParseDiagnosticsEnd(selected_submessage, envelope);
+      break;
+    case 35:
+      envelope.type = ControlMessageType::diagnostics_report_start;
+      parsed = ParseDiagnosticsReportStart(selected_submessage, envelope);
+      break;
+    case 36:
+      envelope.type = ControlMessageType::diagnostics_report_chunk;
+      parsed = ParseDiagnosticsReportChunk(selected_submessage, envelope);
+      break;
+    case 37:
+      envelope.type = ControlMessageType::diagnostics_report_end;
+      parsed = ParseDiagnosticsReportSession(selected_submessage, envelope);
+      break;
+    case 38:
+      envelope.type = ControlMessageType::diagnostics_report_received;
+      parsed = ParseDiagnosticsReportSession(selected_submessage, envelope);
       break;
   }
   return parsed && ValidateEnvelope(envelope)

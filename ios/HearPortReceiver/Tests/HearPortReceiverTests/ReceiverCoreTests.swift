@@ -4,7 +4,7 @@ import XCTest
 
 final class ReceiverCoreTests: XCTestCase {
     func testControlEnvelopeVectorsMatchCanonicalProtoFields() throws {
-        let connect = ControlEnvelope(.connectRequest(authMode: .pair, peerID: Data()))
+        let connect = ControlEnvelope(.connectRequest(authMode: .pair, peerID: Data(), features: 0))
         XCTAssertEqual(try connect.encoded(), Data([0x0a, 0x02, 0x08, 0x02]))
         XCTAssertEqual(try ControlEnvelope.decode(connect.encoded()), connect)
 
@@ -17,13 +17,13 @@ final class ReceiverCoreTests: XCTestCase {
         let withUnknown = Data([0x10, 0x01, 0x0a, 0x02, 0x08, 0x02])
         XCTAssertEqual(
             try ControlEnvelope.decode(withUnknown),
-            ControlEnvelope(.connectRequest(authMode: .pair, peerID: Data()))
+            ControlEnvelope(.connectRequest(authMode: .pair, peerID: Data(), features: 0))
         )
 
         let duplicate = Data([0x0a, 0x04, 0x08, 0x01, 0x08, 0x02])
         XCTAssertEqual(
             try ControlEnvelope.decode(duplicate),
-            ControlEnvelope(.connectRequest(authMode: .pair, peerID: Data()))
+            ControlEnvelope(.connectRequest(authMode: .pair, peerID: Data(), features: 0))
         )
 
         let wrongWireAfterValid = Data([0x0a, 0x02, 0x08, 0x02,
@@ -31,7 +31,7 @@ final class ReceiverCoreTests: XCTestCase {
                                         0x00, 0x00, 0x00, 0x00])
         XCTAssertEqual(
             try ControlEnvelope.decode(wrongWireAfterValid),
-            ControlEnvelope(.connectRequest(authMode: .pair, peerID: Data()))
+            ControlEnvelope(.connectRequest(authMode: .pair, peerID: Data(), features: 0))
         )
 
         XCTAssertThrowsError(try ControlEnvelope.decode(Data([0xfa, 0x01, 0x02, 0x08, 0x00])))

@@ -32,9 +32,46 @@ message ConnectRequest {
   // Required and exactly 16 bytes for AUTH_MODE_REMEMBERED.
   // MUST be empty for AUTH_MODE_PAIR and AUTH_MODE_ONE_TIME.
   bytes peer_id = 2;
+  uint32 features = 3;          // Optional feature bitset; unknown bits are ignored.
 }
 
-message SessionReady {}
+message SessionReady {
+  uint32 features = 1;          // Optional feature bitset; unknown bits are ignored.
+}
+
+message ReceiverReady {}
+
+message DiagnosticsStart {
+  bytes session_id = 1;         // exactly 16 bytes
+  uint32 stream_id = 2;         // non-zero
+  uint32 duration_seconds = 3;  // 60 through 600
+}
+
+message DiagnosticsEnd {
+  bytes session_id = 1;         // exactly 16 bytes
+  uint32 reason = 2;            // non-zero end-reason code
+}
+
+message DiagnosticsReportStart {
+  bytes session_id = 1;         // exactly 16 bytes
+  uint32 format_version = 2;    // non-zero
+  uint32 total_bytes = 3;       // non-zero UTF-8 report length
+  uint32 chunk_count = 4;       // non-zero
+}
+
+message DiagnosticsReportChunk {
+  bytes session_id = 1;         // exactly 16 bytes
+  uint32 chunk_index = 2;       // zero-based
+  bytes chunk_data = 3;         // 1 through 60 KiB
+}
+
+message DiagnosticsReportEnd {
+  bytes session_id = 1;         // exactly 16 bytes
+}
+
+message DiagnosticsReportReceived {
+  bytes session_id = 1;         // exactly 16 bytes
+}
 
 // SPAKE2 first-pair / one-time flow.
 message PairSpakeA {
@@ -99,5 +136,13 @@ message ControlEnvelope {
 
     StartStream start_stream = 30;
     StartStreamAck start_stream_ack = 31;
+
+    ReceiverReady receiver_ready = 32;
+    DiagnosticsStart diagnostics_start = 33;
+    DiagnosticsEnd diagnostics_end = 34;
+    DiagnosticsReportStart diagnostics_report_start = 35;
+    DiagnosticsReportChunk diagnostics_report_chunk = 36;
+    DiagnosticsReportEnd diagnostics_report_end = 37;
+    DiagnosticsReportReceived diagnostics_report_received = 38;
   }
 }

@@ -20,9 +20,15 @@ public enum ErrorCode: UInt32, Equatable, Sendable {
     case internalError = 7
 }
 
+public enum ControlFeature {
+    public static let diagnosticsUpload: UInt32 = 1
+}
+
+private let diagnosticReportChunkMaxBytes = 60 * 1024
+
 public enum ControlMessage: Equatable, Sendable {
-    case connectRequest(authMode: AuthMode, peerID: Data)
-    case sessionReady
+    case connectRequest(authMode: AuthMode, peerID: Data, features: UInt32)
+    case sessionReady(features: UInt32)
     case error(code: ErrorCode, message: String)
     case pairSpakeA(Data)
     case pairSpakeB(Data)
@@ -33,6 +39,14 @@ public enum ControlMessage: Equatable, Sendable {
     case authResponse(peerID: Data, mac: Data)
     case startStream(UInt32)
     case startStreamAck(UInt32)
+    case receiverReady
+    case diagnosticsStart(sessionID: Data, streamID: UInt32, durationSeconds: UInt32)
+    case diagnosticsEnd(sessionID: Data, reason: UInt32)
+    case diagnosticsReportStart(sessionID: Data, formatVersion: UInt32,
+                                totalBytes: UInt32, chunkCount: UInt32)
+    case diagnosticsReportChunk(sessionID: Data, index: UInt32, bytes: Data)
+    case diagnosticsReportEnd(sessionID: Data)
+    case diagnosticsReportReceived(sessionID: Data)
 
     public var diagnosticName: String {
         switch self {
@@ -48,6 +62,13 @@ public enum ControlMessage: Equatable, Sendable {
         case .authResponse: return "auth_response"
         case .startStream: return "start_stream"
         case .startStreamAck: return "start_stream_ack"
+        case .receiverReady: return "receiver_ready"
+        case .diagnosticsStart: return "diagnostics_start"
+        case .diagnosticsEnd: return "diagnostics_end"
+        case .diagnosticsReportStart: return "diagnostics_report_start"
+        case .diagnosticsReportChunk: return "diagnostics_report_chunk"
+        case .diagnosticsReportEnd: return "diagnostics_report_end"
+        case .diagnosticsReportReceived: return "diagnostics_report_received"
         }
     }
 }
@@ -63,7 +84,7 @@ public struct ControlEnvelope: Equatable, Sendable {
         let body: Data
         let field: UInt32
         switch message {
-        case let .connectRequest(authMode, peerID):
+        case let .connectRequest(authMode, peerID, features):
             guard (authMode == .remembered && peerID.count == 16) ||
                     (authMode != .remembered && peerID.isEmpty) else {
                 throw ControlMessageError.invalidMessage
@@ -71,10 +92,13 @@ public struct ControlEnvelope: Equatable, Sendable {
             var writer = ProtoWriter()
             writer.writeVarintField(1, value: authMode.rawValue)
             if !peerID.isEmpty { writer.writeBytesField(2, value: peerID) }
+            if features != 0 { writer.writeVarintField(3, value: features) }
             body = writer.data
             field = 1
-        case .sessionReady:
-            body = Data()
+        case let .sessionReady(features):
+            var writer = ProtoWriter()
+            if features != 0 { writer.writeVarintField(1, value: features) }
+            body = writer.data
             field = 2
         case let .error(code, message):
             var writer = ProtoWriter()
@@ -132,6 +156,60 @@ public struct ControlEnvelope: Equatable, Sendable {
             writer.writeVarintField(1, value: streamID)
             body = writer.data
             field = 31
+        case .receiverReady:
+            body = Data()
+            field = 32
+        case let .diagnosticsStart(sessionID, streamID, durationSeconds):
+            guard sessionID.count == 16, streamID != 0,
+                  (60...600).contains(durationSeconds) else {
+                throw ControlMessageError.invalidMessage
+            }
+            var writer = ProtoWriter()
+            writer.writeBytesField(1, value: sessionID)
+            writer.writeVarintField(2, value: streamID)
+            writer.writeVarintField(3, value: durationSeconds)
+            body = writer.data
+            field = 33
+        case let .diagnosticsEnd(sessionID, reason):
+            guard sessionID.count == 16, reason != 0 else {
+                throw ControlMessageError.invalidMessage
+            }
+            var writer = ProtoWriter()
+            writer.writeBytesField(1, value: sessionID)
+            writer.writeVarintField(2, value: reason)
+            body = writer.data
+            field = 34
+        case let .diagnosticsReportStart(sessionID, formatVersion, totalBytes, chunkCount):
+            guard sessionID.count == 16, formatVersion != 0,
+                  totalBytes != 0, chunkCount != 0 else {
+                throw ControlMessageError.invalidMessage
+            }
+            var writer = ProtoWriter()
+            writer.writeBytesField(1, value: sessionID)
+            writer.writeVarintField(2, value: formatVersion)
+            writer.writeVarintField(3, value: totalBytes)
+            writer.writeVarintField(4, value: chunkCount)
+            body = writer.data
+            field = 35
+        case let .diagnosticsReportChunk(sessionID, index, bytes):
+            guard sessionID.count == 16, !bytes.isEmpty,
+                  bytes.count <= diagnosticReportChunkMaxBytes else {
+                throw ControlMessageError.invalidMessage
+            }
+            var writer = ProtoWriter()
+            writer.writeBytesField(1, value: sessionID)
+            writer.writeVarintField(2, value: index)
+            writer.writeBytesField(3, value: bytes)
+            body = writer.data
+            field = 36
+        case let .diagnosticsReportEnd(sessionID):
+            guard sessionID.count == 16 else { throw ControlMessageError.invalidMessage }
+            body = Self.singleBytesBody(sessionID)
+            field = 37
+        case let .diagnosticsReportReceived(sessionID):
+            guard sessionID.count == 16 else { throw ControlMessageError.invalidMessage }
+            body = Self.singleBytesBody(sessionID)
+            field = 38
         }
         var writer = ProtoWriter()
         writer.writeBytesField(field, value: body)
@@ -154,7 +232,7 @@ public struct ControlEnvelope: Equatable, Sendable {
                 continue
             }
             switch outer.field {
-            case 1, 2, 3, 10, 11, 12, 13, 14, 20, 21, 30, 31:
+            case 1, 2, 3, 10, 11, 12, 13, 14, 20, 21, 30, 31, 32...38:
                 selected = (outer.field, body)
             default:
                 lastUnknownField = outer.field
@@ -166,7 +244,7 @@ public struct ControlEnvelope: Equatable, Sendable {
         let message: ControlMessage
         switch selected.field {
         case 1: message = try parseConnect(selected.body)
-        case 2: message = try parseEmpty(selected.body, .sessionReady)
+        case 2: message = try parseSessionReady(selected.body)
         case 3: message = try parseError(selected.body)
         case 10: message = try parseSingleBytes(selected.body, expectedLength: 65, make: ControlMessage.pairSpakeA)
         case 11: message = try parseSingleBytes(selected.body, expectedLength: 65, make: ControlMessage.pairSpakeB)
@@ -177,6 +255,13 @@ public struct ControlEnvelope: Equatable, Sendable {
         case 21: message = try parseCredential(selected.body, make: ControlMessage.authResponse)
         case 30: message = try parseStream(selected.body, make: ControlMessage.startStream)
         case 31: message = try parseStream(selected.body, make: ControlMessage.startStreamAck)
+        case 32: message = try parseEmpty(selected.body, .receiverReady)
+        case 33: message = try parseDiagnosticsStart(selected.body)
+        case 34: message = try parseDiagnosticsEnd(selected.body)
+        case 35: message = try parseDiagnosticsReportStart(selected.body)
+        case 36: message = try parseDiagnosticsReportChunk(selected.body)
+        case 37: message = try parseSessionMessage(selected.body, make: ControlMessage.diagnosticsReportEnd)
+        case 38: message = try parseSessionMessage(selected.body, make: ControlMessage.diagnosticsReportReceived)
         default: throw ControlMessageError.unknownField(selected.field)
         }
         return ControlEnvelope(message)
@@ -219,7 +304,28 @@ public struct ControlEnvelope: Equatable, Sendable {
                 (mode != .remembered && peerID.isEmpty) else {
             throw ControlMessageError.invalidMessage
         }
-        return .connectRequest(authMode: mode, peerID: peerID)
+        let features: UInt32
+        if case let .varint(value)? = fields[3] {
+            features = value
+        } else if fields[3] == nil {
+            features = 0
+        } else {
+            throw ControlMessageError.invalidMessage
+        }
+        return .connectRequest(authMode: mode, peerID: peerID, features: features)
+    }
+
+    private static func parseSessionReady(_ data: Data) throws -> ControlMessage {
+        let fields = try parseFields(data)
+        let features: UInt32
+        if case let .varint(value)? = fields[1] {
+            features = value
+        } else if fields[1] == nil {
+            features = 0
+        } else {
+            throw ControlMessageError.invalidMessage
+        }
+        return .sessionReady(features: features)
     }
 
     private static func parseEmpty(_ data: Data, _ message: ControlMessage) throws -> ControlMessage {
@@ -282,6 +388,63 @@ public struct ControlEnvelope: Equatable, Sendable {
             throw ControlMessageError.invalidMessage
         }
         return make(streamID)
+    }
+
+    private static func parseDiagnosticsStart(_ data: Data) throws -> ControlMessage {
+        let fields = try parseFields(data)
+        guard case let .bytes(sessionID)? = fields[1], sessionID.count == 16,
+              case let .varint(streamID)? = fields[2], streamID != 0,
+              case let .varint(durationSeconds)? = fields[3],
+              (60...600).contains(durationSeconds) else {
+            throw ControlMessageError.invalidMessage
+        }
+        return .diagnosticsStart(sessionID: sessionID, streamID: streamID,
+                                 durationSeconds: durationSeconds)
+    }
+
+    private static func parseDiagnosticsEnd(_ data: Data) throws -> ControlMessage {
+        let fields = try parseFields(data)
+        guard case let .bytes(sessionID)? = fields[1], sessionID.count == 16,
+              case let .varint(reason)? = fields[2], reason != 0 else {
+            throw ControlMessageError.invalidMessage
+        }
+        return .diagnosticsEnd(sessionID: sessionID, reason: reason)
+    }
+
+    private static func parseDiagnosticsReportStart(_ data: Data) throws -> ControlMessage {
+        let fields = try parseFields(data)
+        guard case let .bytes(sessionID)? = fields[1], sessionID.count == 16,
+              case let .varint(formatVersion)? = fields[2], formatVersion != 0,
+              case let .varint(totalBytes)? = fields[3], totalBytes != 0,
+              case let .varint(chunkCount)? = fields[4], chunkCount != 0 else {
+            throw ControlMessageError.invalidMessage
+        }
+        return .diagnosticsReportStart(sessionID: sessionID,
+                                       formatVersion: formatVersion,
+                                       totalBytes: totalBytes,
+                                       chunkCount: chunkCount)
+    }
+
+    private static func parseDiagnosticsReportChunk(_ data: Data) throws -> ControlMessage {
+        let fields = try parseFields(data)
+        guard case let .bytes(sessionID)? = fields[1], sessionID.count == 16,
+              case let .varint(index)? = fields[2],
+              case let .bytes(bytes)? = fields[3], !bytes.isEmpty,
+              bytes.count <= diagnosticReportChunkMaxBytes else {
+            throw ControlMessageError.invalidMessage
+        }
+        return .diagnosticsReportChunk(sessionID: sessionID, index: index, bytes: bytes)
+    }
+
+    private static func parseSessionMessage(
+        _ data: Data,
+        make: (Data) -> ControlMessage
+    ) throws -> ControlMessage {
+        let fields = try parseFields(data)
+        guard case let .bytes(sessionID)? = fields[1], sessionID.count == 16 else {
+            throw ControlMessageError.invalidMessage
+        }
+        return make(sessionID)
     }
 }
 
