@@ -37,6 +37,107 @@ final class ReceiverCoreTests: XCTestCase {
         XCTAssertThrowsError(try ControlEnvelope.decode(Data([0xfa, 0x01, 0x02, 0x08, 0x00])))
     }
 
+    func testDiagnosticControlMessagesRoundTripCanonicalBytes() throws {
+        let sessionID = [UInt8](repeating: 0x11, count: 16)
+        let connect = envelope(1, body: varintField(1, 2) + varintField(3, 1))
+        let ready = envelope(2, body: varintField(1, 1))
+        let receiverReady = envelope(32, body: [])
+        let diagnosticsStart = envelope(
+            33,
+            body: bytesField(1, sessionID) + varintField(2, 7) + varintField(3, 60)
+        )
+        let diagnosticsEnd = envelope(
+            34,
+            body: bytesField(1, sessionID) + varintField(2, 1)
+        )
+        let reportStart = envelope(
+            35,
+            body: bytesField(1, sessionID) + varintField(2, 1) +
+                varintField(3, 123) + varintField(4, 2)
+        )
+        let reportChunk = envelope(
+            36,
+            body: bytesField(1, sessionID) + varintField(2, 0) +
+                bytesField(3, [0x61, 0x62, 0x63])
+        )
+        let reportEnd = envelope(37, body: bytesField(1, sessionID))
+        let reportReceived = envelope(38, body: bytesField(1, sessionID))
+
+        let vectors: [(Data, String)] = [
+            (connect, "connect_request"),
+            (ready, "session_ready"),
+            (receiverReady, "receiver_ready"),
+            (diagnosticsStart, "diagnostics_start"),
+            (diagnosticsEnd, "diagnostics_end"),
+            (reportStart, "diagnostics_report_start"),
+            (reportChunk, "diagnostics_report_chunk"),
+            (reportEnd, "diagnostics_report_end"),
+            (reportReceived, "diagnostics_report_received")
+        ]
+        for (bytes, expectedName) in vectors {
+            let decoded = try ControlEnvelope.decode(bytes)
+            XCTAssertEqual(decoded.message.diagnosticName, expectedName)
+            XCTAssertEqual(try decoded.encoded(), bytes)
+        }
+    }
+
+    func testDiagnosticReportChunkEnforcesSizeAndSessionID() throws {
+        let sessionID = [UInt8](repeating: 0x11, count: 16)
+        let maximumChunk = envelope(
+            36,
+            body: bytesField(1, sessionID) + varintField(2, 0) +
+                bytesField(3, [UInt8](repeating: 0xa5, count: 60 * 1024))
+        )
+        let decoded = try ControlEnvelope.decode(maximumChunk)
+        XCTAssertEqual(try decoded.encoded(), maximumChunk)
+
+        let oversizedChunk = envelope(
+            36,
+            body: bytesField(1, sessionID) + varintField(2, 0) +
+                bytesField(3, [UInt8](repeating: 0xa5, count: 60 * 1024 + 1))
+        )
+        XCTAssertThrowsError(try ControlEnvelope.decode(oversizedChunk)) { error in
+            XCTAssertEqual(error as? ControlMessageError, .invalidMessage)
+        }
+
+        let invalidSession = envelope(
+            33,
+            body: bytesField(1, Array(sessionID.dropLast())) +
+                varintField(2, 7) + varintField(3, 60)
+        )
+        XCTAssertThrowsError(try ControlEnvelope.decode(invalidSession)) { error in
+            XCTAssertEqual(error as? ControlMessageError, .invalidMessage)
+        }
+    }
+
+    private func varintField(_ field: UInt32, _ value: UInt32) -> [UInt8] {
+        var encoded = varint((field << 3) | 0)
+        encoded += varint(value)
+        return encoded
+    }
+
+    private func bytesField(_ field: UInt32, _ value: [UInt8]) -> [UInt8] {
+        var encoded = varint((field << 3) | 2)
+        encoded += varint(UInt32(value.count))
+        encoded += value
+        return encoded
+    }
+
+    private func envelope(_ field: UInt32, body: [UInt8]) -> Data {
+        Data(bytesField(field, body))
+    }
+
+    private func varint(_ value: UInt32) -> [UInt8] {
+        var remaining = value
+        var encoded: [UInt8] = []
+        while remaining >= 0x80 {
+            encoded.append(UInt8(remaining & 0x7f) | 0x80)
+            remaining >>= 7
+        }
+        encoded.append(UInt8(remaining))
+        return encoded
+    }
+
     func testControlFramingUsesBigEndianAndHandlesFragmentation() throws {
         let payload = Data([0x01, 0x02, 0x03])
         let encoded = try ControlFraming.encode(payload)
