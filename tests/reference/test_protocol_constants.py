@@ -37,6 +37,14 @@ class ProtocolConstantsTests(unittest.TestCase):
             8 + pcm_bytes, constants["audio_application_datagram_bytes"]
         )
 
+    def test_diagnostic_transfer_constants_are_fixed(self):
+        constants_path = ROOT / "protocol" / "protocol_constants.json"
+        with constants_path.open(encoding="utf-8") as handle:
+            constants = json.load(handle)
+
+        self.assertEqual(constants["diagnostic_report_chunk_max_bytes"], 60 * 1024)
+        self.assertEqual(constants["feature_bits"]["diagnostics_upload"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()
