@@ -89,7 +89,8 @@ public final class DebugReportTransfer: @unchecked Sendable {
         return try readPendingReportLocked()
     }
 
-    public func makeChunks(maxBytes: Int = diagnosticReportChunkMaxBytes) throws -> [Data] {
+    public func makeChunks(maxBytes requestedMaxBytes: Int? = nil) throws -> [Data] {
+        let maxBytes = requestedMaxBytes ?? diagnosticReportChunkMaxBytes
         guard maxBytes > 0, maxBytes <= diagnosticReportChunkMaxBytes else {
             throw DebugReportTransferError.invalidChunkSize
         }
