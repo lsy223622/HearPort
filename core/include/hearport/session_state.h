@@ -34,6 +34,7 @@ class SessionState {
   bool MarkAuthenticated() noexcept;
   bool BeginStream(std::uint32_t stream_id) noexcept;
   AudioDisposition AckWritten(std::uint32_t stream_id) noexcept;
+  bool EndStream(std::uint32_t stream_id) noexcept;
   AudioDisposition AcceptAudio(const wire::AudioDatagram& packet) const noexcept;
   bool ResetStream(std::uint32_t stream_id) noexcept;
 

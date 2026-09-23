@@ -26,5 +26,10 @@ int main() {
   assert(session.AckWritten(8) == hearport::AudioDisposition::accepted);
   assert(session.AcceptAudio(packet) ==
          hearport::AudioDisposition::old_stream_discarded);
+  assert(session.EndStream(8));
+  assert(session.phase() == hearport::SessionPhase::ready);
+  assert(session.AcceptAudio(packet) ==
+         hearport::AudioDisposition::old_stream_discarded);
+  assert(!session.EndStream(8));
   return 0;
 }

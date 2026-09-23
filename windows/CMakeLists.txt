@@ -19,7 +19,11 @@ find_library(HEARPORT_MSQUIC_LIBRARY NAMES msquic MsQuic)
 add_library(hearport_windows_platform STATIC
   src/audio_metrics.cpp
   src/credential_store.cpp
+  src/debug_session_trace.cpp
+  src/debug_report_store.cpp
+  src/diagnostic_logger.cpp
   src/quic_server_msquic.cpp
+  src/sender_options.cpp
   src/sender_authentication.cpp
   src/sender_service.cpp
   src/wasapi_capture.cpp
@@ -44,6 +48,24 @@ add_executable(hearport_sender src/main.cpp)
 target_link_libraries(hearport_sender PRIVATE hearport_windows_platform)
 
 if(BUILD_TESTING)
+  add_executable(hearport_debug_session_trace_tests
+    tests/debug_session_trace_tests.cpp)
+  target_link_libraries(hearport_debug_session_trace_tests PRIVATE hearport_windows_platform)
+  add_test(NAME hearport_debug_session_trace_tests
+           COMMAND hearport_debug_session_trace_tests)
+
+  add_executable(hearport_sender_options_tests tests/sender_options_tests.cpp)
+  target_link_libraries(hearport_sender_options_tests PRIVATE hearport_windows_platform)
+  add_test(NAME hearport_sender_options_tests COMMAND hearport_sender_options_tests)
+
+  add_executable(hearport_diagnostic_logger_tests tests/diagnostic_logger_tests.cpp)
+  target_link_libraries(hearport_diagnostic_logger_tests PRIVATE hearport_windows_platform)
+  add_test(NAME hearport_diagnostic_logger_tests COMMAND hearport_diagnostic_logger_tests)
+
+  add_executable(hearport_debug_report_store_tests tests/debug_report_store_tests.cpp)
+  target_link_libraries(hearport_debug_report_store_tests PRIVATE hearport_windows_platform)
+  add_test(NAME hearport_debug_report_store_tests COMMAND hearport_debug_report_store_tests)
+
   add_executable(hearport_windows_audio_metrics_tests tests/audio_metrics_tests.cpp)
   target_link_libraries(hearport_windows_audio_metrics_tests PRIVATE hearport_windows_platform)
   add_test(NAME hearport_windows_audio_metrics_tests

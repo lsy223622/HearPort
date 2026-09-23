@@ -6,8 +6,10 @@
 #include <functional>
 #include <memory>
 #include <span>
+#include <string_view>
 
 #include "hearport/wire/audio_datagram.h"
+#include "hearport/windows/debug_session_trace.h"
 
 namespace hearport::windows {
 
@@ -17,6 +19,7 @@ struct QuicServerOptions {
   bool has_certificate_sha1 = false;
   std::array<std::byte, 32> certificate_spki_sha256{};
   bool has_certificate_spki_sha256 = false;
+  std::function<void(std::string_view)> diagnostic_log;
 };
 
 struct QuicServerCallbacks {
@@ -24,6 +27,8 @@ struct QuicServerCallbacks {
   std::function<bool(std::span<const std::byte>)> on_control_bytes;
   std::function<void(std::size_t)> on_datagram_ready;
   std::function<void()> on_datagram_unavailable;
+  std::function<void(std::uint32_t, std::uint32_t, DebugSendState)>
+      on_datagram_send_state;
   std::function<void()> on_closed;
 };
 
