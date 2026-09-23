@@ -2,6 +2,7 @@ import Foundation
 
 public final class HearPortReceiver {
     public let diagnostics: HearPortDiagnostics
+    let debugSessionDiagnostics: DebugSessionDiagnostics
     public let session = ReceiverSessionState()
     public let lifecycle: AudioLifecycleController
     public private(set) var invalidDatagrams = 0
@@ -22,13 +23,19 @@ public final class HearPortReceiver {
 
     public init(bufferTargetPackets: Int = 8,
                 renderCapacityFrames: Int = 4_800,
-                diagnostics: HearPortDiagnostics = .shared) {
+                diagnostics: HearPortDiagnostics = .shared,
+                debugSessionDiagnostics: DebugSessionDiagnostics? = nil) {
         precondition(renderCapacityFrames > 0)
         self.diagnostics = diagnostics
+        let normalizedBufferTarget = JitterBufferConfiguration(targetPackets: bufferTargetPackets)
+            .targetPackets
+        self.debugSessionDiagnostics = debugSessionDiagnostics ?? DebugSessionDiagnostics(
+            bufferTargetPackets: normalizedBufferTarget,
+            diagnostics: diagnostics
+        )
         lifecycle = AudioLifecycleController(diagnostics: diagnostics)
         renderRing = RenderRingBuffer(capacityFrames: renderCapacityFrames)
-        jitterTargetPackets = JitterBufferConfiguration(targetPackets: bufferTargetPackets)
-            .targetPackets
+        jitterTargetPackets = normalizedBufferTarget
         diagnostics.log(
             .info,
             category: .realtime,
@@ -190,6 +197,7 @@ public final class HearPortReceiver {
     @discardableResult
     public func receiveDatagram(_ data: Data) -> AudioDisposition? {
         realtimeMetrics.recordDatagram(byteCount: data.count)
+        let receivedAt = DispatchTime.now().uptimeNanoseconds
         let packet: AudioDatagram
         do {
             packet = try AudioDatagram(encoded: data)
@@ -213,6 +221,8 @@ public final class HearPortReceiver {
 
         var firstFields: [String: String]?
         var transitionFields: [String: String]?
+        var jitterResult: JitterInsertResult?
+        var fillPackets = 0
         var disposition: AudioDisposition
         lock.lock()
         disposition = session.acceptAudio(packet)
@@ -224,9 +234,11 @@ public final class HearPortReceiver {
             let previousMode = buffer.mode
             let previousTrimmedPackets = buffer.stats.trimmedPackets
             let insertResult = buffer.insert(packet)
+            jitterResult = insertResult
             let started = buffer.startIfReady()
             let trimmedPackets = buffer.stats.trimmedPackets - previousTrimmedPackets
             jitter = buffer
+            fillPackets = buffer.fillPackets
             realtimeMetrics.recordJitterResult(insertResult,
                                                fillPackets: buffer.fillPackets,
                                                trimmedPackets: trimmedPackets)
@@ -255,6 +267,15 @@ public final class HearPortReceiver {
             }
         }
         lock.unlock()
+
+        debugSessionDiagnostics.recordPacket(
+            streamID: packet.streamID,
+            sequence: packet.sequence,
+            receivedAt: receivedAt,
+            disposition: disposition,
+            jitterResult: jitterResult,
+            fillPackets: fillPackets
+        )
 
         if let firstFields {
             _ = diagnostics.logAsync(.debug,
@@ -432,8 +453,9 @@ public final class HearPortReceiver {
             sampleRate: sampleRate,
             diagnosticsDropped: diagnosticsDropped
         )
+        let level: DiagnosticsLevel = debugSessionDiagnostics.isRecording ? .info : .debug
         _ = diagnostics.logAsync(
-            .debug,
+            level,
             category: .realtime,
             message: "realtime_summary",
             fields: snapshot.fields

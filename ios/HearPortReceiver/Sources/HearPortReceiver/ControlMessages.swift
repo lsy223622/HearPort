@@ -24,7 +24,7 @@ public enum ControlFeature {
     public static let diagnosticsUpload: UInt32 = 1
 }
 
-private let diagnosticReportChunkMaxBytes = 60 * 1024
+let diagnosticReportChunkMaxBytes = 60 * 1024
 
 public enum ControlMessage: Equatable, Sendable {
     case connectRequest(authMode: AuthMode, peerID: Data, features: UInt32)

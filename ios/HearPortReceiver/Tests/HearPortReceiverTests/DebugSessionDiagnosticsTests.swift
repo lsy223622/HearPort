@@ -29,8 +29,9 @@ final class DebugSessionDiagnosticsTests: XCTestCase {
             )
         }
 
-        let reportURL = try capture.finish(reason: "duration_expired", diagnostics: diagnostics)
-        let report = try String(contentsOf: reportURL, encoding: .utf8)
+        _ = try capture.finish(reason: "duration_expired", diagnostics: diagnostics)
+        let pendingReport = try XCTUnwrap(transfer.pendingReport())
+        let report = try XCTUnwrap(String(data: pendingReport.data, encoding: .utf8))
 
         XCTAssertTrue(report.contains("format_version=1"))
         XCTAssertTrue(report.contains("session_id=000102030405060708090a0b0c0d0e0f"))
@@ -46,7 +47,6 @@ final class DebugSessionDiagnosticsTests: XCTestCase {
         XCTAssertFalse(report.contains("12\taccepted"))
         XCTAssertFalse(report.contains("AudioDatagram.pcm"))
         XCTAssertFalse(report.contains("a5a5a5"))
-        XCTAssertNotNil(try transfer.pendingReport())
     }
 
     func testDisconnectPersistsPartialReportForLaterUpload() throws {
@@ -70,12 +70,51 @@ final class DebugSessionDiagnosticsTests: XCTestCase {
             fillPackets: 0
         )
 
-        let reportURL = try capture.persistPartial(reason: "connection_lost")
-        let report = try String(contentsOf: reportURL, encoding: .utf8)
+        _ = try capture.persistPartial(reason: "connection_lost")
+        let pendingReport = try XCTUnwrap(transfer.pendingReport())
+        let report = try XCTUnwrap(String(data: pendingReport.data, encoding: .utf8))
 
         XCTAssertTrue(report.contains("end_reason=connection_lost"))
         XCTAssertTrue(report.contains("trace_records=1"))
-        XCTAssertNotNil(try transfer.pendingReport())
+    }
+
+    func testReceiverAddsDecodedPacketAndJitterDispositionToCapture() throws {
+        let directory = try temporaryDirectory("DebugSessionReceiver")
+        let diagnostics = HearPortDiagnostics(directory: directory.appendingPathComponent("logs"))
+        let transfer = DebugReportTransfer(directory: directory.appendingPathComponent("reports"))
+        let capture = DebugSessionDiagnostics(
+            capacity: 8,
+            bufferTargetPackets: 1,
+            reportTransfer: transfer,
+            diagnostics: diagnostics
+        )
+        let receiver = HearPortReceiver(
+            bufferTargetPackets: 1,
+            diagnostics: diagnostics,
+            debugSessionDiagnostics: capture
+        )
+        let sessionID = Data(repeating: 0x55, count: 16)
+        let pcm = Data(repeating: 0xa5, count: AudioDatagram.pcmByteCount)
+
+        XCTAssertTrue(receiver.beginAuthentication(authMode: .oneTime, peerID: Data()))
+        XCTAssertTrue(receiver.markAuthenticated())
+        capture.begin(sessionID: sessionID, streamID: 7, durationSeconds: 60)
+        XCTAssertTrue(receiver.beginStream(7))
+        XCTAssertTrue(receiver.acknowledgeStartStream(7))
+        let packet = try AudioDatagram(streamID: 7, sequence: 10, pcm: pcm)
+        XCTAssertEqual(receiver.receiveDatagram(packet.encoded), .accepted)
+        XCTAssertEqual(receiver.receiveDatagram(packet.encoded), .accepted)
+
+        _ = try capture.finish(reason: "duration_expired", diagnostics: diagnostics)
+        let pendingReport = try XCTUnwrap(transfer.pendingReport())
+        let report = try XCTUnwrap(String(data: pendingReport.data, encoding: .utf8))
+        let packetRows = report.components(separatedBy: "\n")
+            .filter { $0.contains("\t7\t10\t") }
+
+        XCTAssertEqual(packetRows.count, 2)
+        XCTAssertTrue(packetRows[0].contains("accepted\tinserted"))
+        XCTAssertTrue(packetRows[1].contains("accepted\tduplicate"))
+        XCTAssertFalse(report.contains("a5a5a5"))
     }
 
     private func temporaryDirectory(_ prefix: String) throws -> URL {

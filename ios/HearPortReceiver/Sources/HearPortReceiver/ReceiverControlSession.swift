@@ -13,6 +13,12 @@ public final class ReceiverControlSession {
 
     private let provider: any Spake2Provider
     private let keychain: KeychainRememberedCredentialStore
+    private let debugSessionDiagnostics: DebugSessionDiagnostics
+    private let debugReportTransfer: DebugReportTransfer
+    private let debugQueue = DispatchQueue(
+        label: "com.hearport.receiver.debug-report",
+        qos: .utility
+    )
     private var decoder = ControlFrameDecoder()
     private var mode: AuthMode = .oneTime
     private var pin: String?
@@ -22,6 +28,11 @@ public final class ReceiverControlSession {
     private var spakeOutput: Spake2Output?
     private var connectSent = false
     private var ready = false
+    private var receiverReadyNotified = false
+    private var peerFeatures: UInt32 = 0
+    private var activeDebugSessionID: Data?
+    private var activeDebugStreamID: UInt32?
+    private var pendingReportSessionID: Data?
     private var pairConfirmationVerified = false
     private var rememberedResponseSent = false
 
@@ -36,6 +47,8 @@ public final class ReceiverControlSession {
         diagnostics = receiver.diagnostics
         self.provider = provider
         self.keychain = keychain
+        debugSessionDiagnostics = receiver.debugSessionDiagnostics
+        debugReportTransfer = receiver.debugSessionDiagnostics.reportTransfer
         self.transport.onAudioDatagram = { [weak receiver] data in
             _ = receiver?.receiveDatagram(data)
         }
@@ -57,10 +70,23 @@ public final class ReceiverControlSession {
             if state == .ready {
                 self.sendConnectIfPossible()
             } else if state == .failed || state == .closed {
+                if self.debugSessionDiagnostics.isRecording {
+                    let reason = state == .closed ? "connection_closed" : "connection_failed"
+                    self.debugQueue.async { [weak self] in
+                        guard let self, self.debugSessionDiagnostics.isRecording else { return }
+                        do {
+                            _ = try self.debugSessionDiagnostics.persistPartial(reason: reason)
+                        } catch {
+                            self.logDebugReportFailure(error, event: "partial_report_persist_failed")
+                        }
+                    }
+                }
                 self.ready = false
                 self.connectSent = false
                 self.pairConfirmationVerified = false
                 self.rememberedResponseSent = false
+                self.activeDebugSessionID = nil
+                self.activeDebugStreamID = nil
                 self.receiver.resetForConnection()
             }
         }
@@ -83,6 +109,11 @@ public final class ReceiverControlSession {
         self.pin = pin
         self.connectSent = false
         self.ready = false
+        self.receiverReadyNotified = false
+        self.peerFeatures = 0
+        self.activeDebugSessionID = nil
+        self.activeDebugStreamID = nil
+        self.pendingReportSessionID = nil
         self.decoder = ControlFrameDecoder()
         self.spakeOutput = nil
         self.pendingCredential = nil
@@ -180,7 +211,7 @@ public final class ReceiverControlSession {
         let peerID = credential?.peerID ?? Data()
         let envelope = ControlEnvelope(.connectRequest(authMode: mode,
                                                        peerID: peerID,
-                                                       features: 0))
+                                                       features: ControlFeature.diagnosticsUpload))
         do {
             guard receiver.beginAuthentication(authMode: mode, peerID: peerID) else {
                 throw PairingSecurityError.providerFailure(-5)
@@ -395,6 +426,7 @@ public final class ReceiverControlSession {
                 )
             }
             ready = true
+            peerFeatures = features
             diagnostics.log(
                 .info,
                 category: .control,
@@ -405,8 +437,29 @@ public final class ReceiverControlSession {
                     "features": "\(features)"
                 ]
             )
-            onReady?()
+            if (features & ControlFeature.diagnosticsUpload) != 0 {
+                debugQueue.async { [weak self] in
+                    guard let self else { return }
+                    do {
+                        guard let report = try self.debugReportTransfer.pendingReport() else {
+                            self.sendReceiverReady()
+                            return
+                        }
+                        let chunks = try self.debugReportTransfer.makeChunks()
+                        self.beginReportUpload(report, chunks: chunks)
+                    } catch {
+                        self.logDebugReportFailure(error, event: "pending_report_prepare_failed")
+                        self.onError?("Unable to prepare the pending diagnostic report")
+                    }
+                }
+            } else {
+                receiverReadyNotified = true
+                onReady?()
+            }
         case let .startStream(streamID):
+            if activeDebugSessionID != nil, activeDebugStreamID != streamID {
+                throw PairingSecurityError.providerFailure(-12)
+            }
             diagnostics.log(
                 .info,
                 category: .realtime,
@@ -452,13 +505,161 @@ public final class ReceiverControlSession {
                 ]
             )
             onError?(message)
+        case let .diagnosticsStart(sessionID, streamID, durationSeconds):
+            guard (peerFeatures & ControlFeature.diagnosticsUpload) != 0,
+                  activeDebugSessionID == nil,
+                  pendingReportSessionID == nil else {
+                throw PairingSecurityError.providerFailure(-9)
+            }
+            debugSessionDiagnostics.begin(
+                sessionID: sessionID,
+                streamID: streamID,
+                durationSeconds: durationSeconds
+            )
+            activeDebugSessionID = sessionID
+            activeDebugStreamID = streamID
+            _ = diagnostics.logAsync(
+                .info,
+                category: .realtime,
+                message: "debug_capture_armed",
+                fields: [
+                    "event": "debug_capture_armed",
+                    "session_id": Self.hex(sessionID),
+                    "stream_id": "\(streamID)",
+                    "duration_seconds": "\(durationSeconds)"
+                ]
+            )
+        case let .diagnosticsEnd(sessionID, reason):
+            guard activeDebugSessionID == sessionID, activeDebugStreamID != nil else {
+                throw PairingSecurityError.providerFailure(-10)
+            }
+            activeDebugStreamID = nil
+            let endReason = reason == 1 ? "duration_expired" : "sender_reason_\(reason)"
+            debugQueue.async { [weak self] in
+                guard let self else { return }
+                do {
+                    _ = try self.debugSessionDiagnostics.finish(
+                        reason: endReason,
+                        diagnostics: self.diagnostics
+                    )
+                    guard let report = try self.debugReportTransfer.pendingReport(),
+                          report.sessionID == sessionID else {
+                        throw DebugReportTransferError.noPendingReport
+                    }
+                    let chunks = try self.debugReportTransfer.makeChunks()
+                    self.beginReportUpload(report, chunks: chunks)
+                } catch {
+                    self.logDebugReportFailure(error, event: "final_report_prepare_failed")
+                    self.onError?("Unable to prepare the diagnostic report")
+                }
+            }
+        case let .diagnosticsReportReceived(sessionID):
+            guard pendingReportSessionID == sessionID else {
+                throw PairingSecurityError.providerFailure(-11)
+            }
+            debugQueue.async { [weak self] in
+                guard let self else { return }
+                do {
+                    try self.debugReportTransfer.acknowledge(sessionID: sessionID)
+                    self.pendingReportSessionID = nil
+                    if self.activeDebugSessionID == sessionID {
+                        self.activeDebugSessionID = nil
+                        self.activeDebugStreamID = nil
+                    }
+                    self.sendReceiverReady()
+                } catch {
+                    self.logDebugReportFailure(error, event: "report_acknowledgement_failed")
+                    self.onError?("Unable to confirm the diagnostic report")
+                }
+            }
         case .connectRequest, .pairSpakeB, .pairConfirmB,
              .authResponse, .startStreamAck, .receiverReady,
-             .diagnosticsStart, .diagnosticsEnd,
              .diagnosticsReportStart, .diagnosticsReportChunk,
-             .diagnosticsReportEnd, .diagnosticsReportReceived:
+             .diagnosticsReportEnd:
             throw PairingSecurityError.providerFailure(-4)
         }
+    }
+
+    private func beginReportUpload(_ report: PendingDiagnosticReport, chunks: [Data]) {
+        guard report.data.count <= Int(UInt32.max),
+              !chunks.isEmpty, chunks.count <= Int(UInt32.max) else {
+            logDebugReportFailure(DebugReportTransferError.reportTooLarge,
+                                  event: "report_upload_rejected")
+            onError?("The diagnostic report is too large to send")
+            return
+        }
+        pendingReportSessionID = report.sessionID
+        send(
+            .diagnosticsReportStart(
+                sessionID: report.sessionID,
+                formatVersion: report.formatVersion,
+                totalBytes: UInt32(report.data.count),
+                chunkCount: UInt32(chunks.count)
+            ),
+            completion: { [weak self] error in
+                guard let self else { return }
+                if let error {
+                    self.logDebugReportFailure(error, event: "report_start_send_failed")
+                    self.onError?("Unable to start the diagnostic report upload")
+                    return
+                }
+                self.sendReportChunk(sessionID: report.sessionID, chunks: chunks, index: 0)
+            }
+        )
+    }
+
+    private func sendReportChunk(sessionID: Data, chunks: [Data], index: Int) {
+        guard index < chunks.count else {
+            send(.diagnosticsReportEnd(sessionID: sessionID), completion: { [weak self] error in
+                guard let self, let error else { return }
+                self.logDebugReportFailure(error, event: "report_end_send_failed")
+                self.onError?("Unable to finish the diagnostic report upload")
+            })
+            return
+        }
+        send(
+            .diagnosticsReportChunk(
+                sessionID: sessionID,
+                index: UInt32(index),
+                bytes: chunks[index]
+            ),
+            completion: { [weak self] error in
+                guard let self else { return }
+                if let error {
+                    self.logDebugReportFailure(error, event: "report_chunk_send_failed")
+                    self.onError?("Unable to send the diagnostic report")
+                    return
+                }
+                self.sendReportChunk(sessionID: sessionID, chunks: chunks, index: index + 1)
+            }
+        )
+    }
+
+    private func sendReceiverReady() {
+        send(.receiverReady, completion: { [weak self] error in
+            guard let self else { return }
+            if let error {
+                self.logDebugReportFailure(error, event: "receiver_ready_send_failed")
+                self.onError?("Unable to resume the audio session")
+                return
+            }
+            guard !self.receiverReadyNotified else { return }
+            self.receiverReadyNotified = true
+            self.onReady?()
+        })
+    }
+
+    private func logDebugReportFailure(_ error: Error, event: String) {
+        diagnostics.log(
+            .error,
+            category: .control,
+            message: event,
+            fields: ["event": event, "error_type": "\(type(of: error))"]
+        )
+    }
+
+    private static func hex(_ data: Data) -> String {
+        data.map { String(format: "%02x", $0) }.joined()
     }
 
     private func handlePairSpakeA(_ peerPoint: Data) throws {
