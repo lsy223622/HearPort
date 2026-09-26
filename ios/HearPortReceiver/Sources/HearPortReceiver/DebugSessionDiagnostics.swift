@@ -19,6 +19,19 @@ private struct DebugSessionMetadata {
     let startedAt: UInt64
 }
 
+enum DebugJitterDecision: String {
+    case concealed
+    case trimmed
+}
+
+private struct DebugJitterDecisionRecord {
+    let at: UInt64
+    let streamID: UInt32
+    let sequence: UInt32
+    let decision: DebugJitterDecision
+    let fillPackets: UInt32
+}
+
 public final class DebugSessionDiagnostics: @unchecked Sendable {
     public static let defaultCapacity = 240_000
     public let reportTransfer: DebugReportTransfer
@@ -31,6 +44,7 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
     private let dropped = AtomicUInt64()
     private var session: DebugSessionMetadata?
     private var records: [DebugPacketTraceRecord] = []
+    private var jitterDecisions: [DebugJitterDecisionRecord] = []
 
     public init(capacity: Int = DebugSessionDiagnostics.defaultCapacity,
                 bufferTargetPackets: Int = 8,
@@ -49,6 +63,8 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
         lock.lock()
         records.removeAll(keepingCapacity: true)
         records.reserveCapacity(capacity)
+        jitterDecisions.removeAll(keepingCapacity: true)
+        jitterDecisions.reserveCapacity(capacity)
         dropped.store(0)
         session = DebugSessionMetadata(
             sessionID: sessionID,
@@ -85,7 +101,7 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
         }
         defer { lock.unlock() }
         guard recording.load() != 0, session != nil else { return }
-        guard records.count < capacity else {
+        guard records.count + jitterDecisions.count < capacity else {
             dropped.increment()
             return
         }
@@ -95,6 +111,31 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
             sequence: sequence,
             disposition: Self.dispositionCode(disposition),
             jitterResult: Self.jitterCode(jitterResult),
+            fillPackets: UInt32(clamping: max(0, fillPackets))
+        ))
+    }
+
+    func recordJitterDecision(streamID: UInt32,
+                              sequence: UInt32,
+                              decision: DebugJitterDecision,
+                              at: UInt64,
+                              fillPackets: Int) {
+        guard recording.load() != 0 else { return }
+        guard lock.try() else {
+            dropped.increment()
+            return
+        }
+        defer { lock.unlock() }
+        guard recording.load() != 0, session != nil else { return }
+        guard records.count + jitterDecisions.count < capacity else {
+            dropped.increment()
+            return
+        }
+        jitterDecisions.append(DebugJitterDecisionRecord(
+            at: at,
+            streamID: streamID,
+            sequence: sequence,
+            decision: decision,
             fillPackets: UInt32(clamping: max(0, fillPackets))
         ))
     }
@@ -112,6 +153,7 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
     private func finalize(reason: String, diagnostics: HearPortDiagnostics) throws -> URL {
         let metadata: DebugSessionMetadata
         let capturedRecords: [DebugPacketTraceRecord]
+        let capturedJitterDecisions: [DebugJitterDecisionRecord]
         let dropCount: UInt64
         lock.lock()
         guard recording.load() != 0, let current = session else {
@@ -121,6 +163,7 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
         recording.store(0)
         metadata = current
         capturedRecords = records
+        capturedJitterDecisions = jitterDecisions
         dropCount = dropped.load()
         lock.unlock()
 
@@ -131,6 +174,7 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
             let report = Self.makeReport(
                 metadata: metadata,
                 records: capturedRecords,
+                jitterDecisions: capturedJitterDecisions,
                 dropCount: dropCount,
                 reason: reason,
                 safeDiagnostics: safeDiagnostics,
@@ -145,6 +189,7 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
             lock.lock()
             if session?.sessionID == metadata.sessionID {
                 records.removeAll(keepingCapacity: true)
+                jitterDecisions.removeAll(keepingCapacity: true)
                 session = nil
             }
             lock.unlock()
@@ -169,6 +214,7 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
 
     private static func makeReport(metadata: DebugSessionMetadata,
                                    records: [DebugPacketTraceRecord],
+                                   jitterDecisions: [DebugJitterDecisionRecord],
                                    dropCount: UInt64,
                                    reason: String,
                                    safeDiagnostics: String,
@@ -176,6 +222,7 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
         let finishedAt = DispatchTime.now().uptimeNanoseconds
         let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
         let appBuild = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "unknown"
+        let appBuildID = Bundle.main.infoDictionary?["HearPortBuildID"] as? String ?? "unknown"
         let osVersion = ProcessInfo.processInfo.operatingSystemVersion
         let device = deviceModel()
         var lines = [
@@ -186,6 +233,7 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
             "duration_seconds=\(metadata.durationSeconds)",
             "app_version=\(safeField(appVersion))",
             "app_build=\(safeField(appBuild))",
+            "app_build_id=\(safeField(appBuildID))",
             "device=\(safeField(device))",
             "os_version=\(osVersion.majorVersion).\(osVersion.minorVersion).\(osVersion.patchVersion)",
             "buffer_target_packets=\(bufferTargetPackets)",
@@ -194,12 +242,13 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
             "elapsed_ns=\(finishedAt &- metadata.startedAt)",
             "end_reason=\(safeField(reason))",
             "trace_records=\(records.count)",
+            "jitter_decision_records=\(jitterDecisions.count)",
             "trace_dropped=\(dropCount)",
             "",
             "packet_trace_v1",
             "received_at_ns\tstream_id\tsequence\tdisposition\tjitter_result\tfill_packets"
         ]
-        lines.reserveCapacity(records.count + 24)
+        lines.reserveCapacity(records.count + jitterDecisions.count + 26)
         for record in records {
             lines.append([
                 String(record.receivedAt),
@@ -208,6 +257,17 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
                 dispositionName(record.disposition),
                 jitterName(record.jitterResult),
                 String(record.fillPackets)
+            ].joined(separator: "\t"))
+        }
+        lines.append("\njitter_decision_trace_v1")
+        lines.append("at_ns\tstream_id\tsequence\tdecision\tfill_packets")
+        for decision in jitterDecisions {
+            lines.append([
+                String(decision.at),
+                String(decision.streamID),
+                String(decision.sequence),
+                decision.decision.rawValue,
+                String(decision.fillPackets)
             ].joined(separator: "\t"))
         }
         lines.append("\napp_diagnostics_v1")

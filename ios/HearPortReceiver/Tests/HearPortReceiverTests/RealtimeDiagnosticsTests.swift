@@ -3,6 +3,45 @@ import XCTest
 @testable import HearPortReceiver
 
 final class RealtimeDiagnosticsTests: XCTestCase {
+    func testRenderLockMissSilencedFramesAreCountedAndReset() {
+        let metrics = RealtimeAudioMetrics()
+        metrics.recordRenderLockMiss(silencedFrames: 256)
+        let firstSnapshot = metrics.snapshotAndReset(
+            streamID: nil,
+            lastSequence: nil,
+            expectedSequence: nil,
+            jitterMode: nil,
+            jitterTargetPackets: 8,
+            jitterFillPackets: 0,
+            renderFillFrames: 0,
+            sessionPhase: .awaitingConnect,
+            lifecycleState: .idle,
+            outputRoute: "test",
+            sampleRate: 48_000,
+            diagnosticsDropped: 0
+        )
+
+        XCTAssertEqual(firstSnapshot.fields["render_lock_misses"], "1")
+        XCTAssertEqual(firstSnapshot.fields["render_lock_miss_frames"], "256")
+
+        let secondSnapshot = metrics.snapshotAndReset(
+            streamID: nil,
+            lastSequence: nil,
+            expectedSequence: nil,
+            jitterMode: nil,
+            jitterTargetPackets: 8,
+            jitterFillPackets: 0,
+            renderFillFrames: 0,
+            sessionPhase: .awaitingConnect,
+            lifecycleState: .idle,
+            outputRoute: "test",
+            sampleRate: 48_000,
+            diagnosticsDropped: 0
+        )
+        XCTAssertEqual(secondSnapshot.fields["render_lock_misses"], "0")
+        XCTAssertEqual(secondSnapshot.fields["render_lock_miss_frames"], "0")
+    }
+
     func testJitterConfigurationSupportsAllSixTargets() {
         XCTAssertEqual(
             JitterBufferConfiguration.supportedTargetPacketCounts.map {
@@ -74,6 +113,7 @@ final class RealtimeDiagnosticsTests: XCTestCase {
         XCTAssertEqual(jitter.expectedSequence, UInt32(1))
         XCTAssertEqual(jitter.consumeNext()?.sequence, UInt32(1))
         XCTAssertEqual(jitter.stats.trimmedPackets, 1)
+        XCTAssertEqual(jitter.takeTrimmedSequences(), [UInt32(0)])
     }
 
     func testRunningJitterBufferCanTrimAtItsMaximumCapacity() throws {

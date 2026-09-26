@@ -222,6 +222,7 @@ public final class HearPortReceiver {
         var firstFields: [String: String]?
         var transitionFields: [String: String]?
         var jitterResult: JitterInsertResult?
+        var trimmedSequences: [UInt32] = []
         var fillPackets = 0
         var disposition: AudioDisposition
         lock.lock()
@@ -237,6 +238,7 @@ public final class HearPortReceiver {
             jitterResult = insertResult
             let started = buffer.startIfReady()
             let trimmedPackets = buffer.stats.trimmedPackets - previousTrimmedPackets
+            trimmedSequences = buffer.takeTrimmedSequences()
             jitter = buffer
             fillPackets = buffer.fillPackets
             realtimeMetrics.recordJitterResult(insertResult,
@@ -276,6 +278,15 @@ public final class HearPortReceiver {
             jitterResult: jitterResult,
             fillPackets: fillPackets
         )
+        for sequence in trimmedSequences {
+            debugSessionDiagnostics.recordJitterDecision(
+                streamID: packet.streamID,
+                sequence: sequence,
+                decision: .trimmed,
+                at: receivedAt,
+                fillPackets: fillPackets
+            )
+        }
 
         if let firstFields {
             _ = diagnostics.logAsync(.debug,
@@ -351,7 +362,7 @@ public final class HearPortReceiver {
     public func renderFrames(_ frameCount: Int) -> [Float] {
         guard frameCount > 0 else { return [] }
         guard lock.try() else {
-            realtimeMetrics.recordRenderLockMiss()
+            realtimeMetrics.recordRenderLockMiss(silencedFrames: frameCount)
             return Array(repeating: 0, count: frameCount * 2)
         }
         defer { lock.unlock() }
@@ -387,8 +398,16 @@ public final class HearPortReceiver {
             if let packet = buffer.consumeNext() {
                 renderRing.push(Self.decodePCM(packet.pcm))
             } else if buffer.hasFuturePacket,
+                      let sequence = buffer.expectedSequence,
                       let concealed = buffer.concealMissing() {
                 realtimeMetrics.recordConcealment()
+                debugSessionDiagnostics.recordJitterDecision(
+                    streamID: buffer.streamID,
+                    sequence: sequence,
+                    decision: .concealed,
+                    at: DispatchTime.now().uptimeNanoseconds,
+                    fillPackets: buffer.fillPackets
+                )
                 renderRing.push(Self.decodePCM(concealed))
             } else {
                 break

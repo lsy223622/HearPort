@@ -6,6 +6,7 @@
 #include <string_view>
 
 #include "hearport/windows/debug_session_trace.h"
+#include "hearport/wire/audio_datagram.h"
 
 #undef assert
 #define assert(condition)                                      \
@@ -52,6 +53,31 @@ int main() {
          "lost_suspect");
   assert(hearport::windows::DebugSendStateName(DebugSendState::canceled) ==
          "canceled");
+
+  hearport::wire::AudioDatagram identity_packet{};
+  identity_packet.stream_id = 0x01020304u;
+  identity_packet.sequence = 0x00012345u;
+  const auto identity_bytes =
+      hearport::wire::EncodeAudioDatagram(identity_packet);
+  const auto identity =
+      hearport::wire::DecodeAudioDatagram(identity_bytes);
+  assert(identity.has_value());
+
+  DebugSessionTrace callback_before_packet(
+      DebugSessionTrace::kMaximumPackets);
+  assert(callback_before_packet.Begin(session_id, identity->stream_id));
+  assert(callback_before_packet.RecordSendState(
+      identity->stream_id, identity->sequence,
+      DebugSendState::acknowledged, 40));
+  assert(callback_before_packet.RecordPacket(
+      identity->sequence, 10, 20, 30, true));
+  const auto identity_report = callback_before_packet.Finish("test");
+  assert(identity_report.find("\"stream_id\":16909060") !=
+         std::string::npos);
+  assert(identity_report.find("\"sequence\":74565") !=
+         std::string::npos);
+  assert(identity_report.find("\"send_state\":\"acknowledged\"") !=
+         std::string::npos);
 
   DebugSessionTrace maximum(DebugSessionTrace::kMaximumPackets);
   assert(maximum.Begin(session_id, 88));

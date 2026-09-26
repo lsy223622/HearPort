@@ -91,10 +91,9 @@ bool SenderService::Start() {
   callbacks.on_datagram_send_state =
       [this](std::uint32_t stream_id, std::uint32_t sequence,
              DebugSendState state) {
-        if (debug_trace_.RecordSendState(stream_id, sequence, state,
-                                         MonotonicNanoseconds())) {
-          CompleteDebugSend();
-        }
+        debug_trace_.RecordSendState(stream_id, sequence, state,
+                                     MonotonicNanoseconds());
+        if (IsFinalDebugSendState(state)) CompleteDebugSend(stream_id);
       };
   callbacks.on_closed = [this] {
     {
@@ -414,7 +413,7 @@ void SenderService::AudioWorker() {
                                 queued.captured_at_ns,
                                 queued.queued_at_ns,
                                 send_at_ns, sent);
-      if (!sent) CompleteDebugSend();
+      if (!sent) CompleteDebugSend(queued.packet.stream_id);
     }
     if (sent) {
       audio_metrics_.record_sent();
@@ -576,9 +575,13 @@ void SenderService::EndDebugSession(std::uint32_t reason) {
   if (handler) handler(session_id, reason);
 }
 
-void SenderService::CompleteDebugSend() noexcept {
+void SenderService::CompleteDebugSend(std::uint32_t stream_id) noexcept {
   std::lock_guard lock(debug_mutex_);
-  if (outstanding_debug_sends_ != 0) --outstanding_debug_sends_;
+  if (!debug_trace_.IsActive() || stream_id != active_debug_stream_id_ ||
+      outstanding_debug_sends_ == 0) {
+    return;
+  }
+  --outstanding_debug_sends_;
   debug_condition_.notify_all();
 }
 

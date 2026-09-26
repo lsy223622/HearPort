@@ -47,14 +47,6 @@ struct SendBufferContext {
   }
 };
 
-std::uint32_t ReadLittleEndian32(const wire::EncodedAudioDatagram& bytes,
-                                 std::size_t offset) {
-  return std::to_integer<std::uint32_t>(bytes[offset]) |
-         (std::to_integer<std::uint32_t>(bytes[offset + 1]) << 8) |
-         (std::to_integer<std::uint32_t>(bytes[offset + 2]) << 16) |
-         (std::to_integer<std::uint32_t>(bytes[offset + 3]) << 24);
-}
-
 DebugSendState ConvertSendState(QUIC_DATAGRAM_SEND_STATE state) {
   switch (state) {
     case QUIC_DATAGRAM_SEND_SENT: return DebugSendState::sent;
@@ -177,9 +169,10 @@ class MsQuicServer final : public QuicServer {
         !datagram_ready_) {
       return false;
     }
-    auto* context = new SendBufferContext(
-        datagram, ReadLittleEndian32(datagram, 0),
-        ReadLittleEndian32(datagram, 4));
+    const auto packet = wire::DecodeAudioDatagram(datagram);
+    if (!packet) return false;
+    auto* context = new SendBufferContext(datagram, packet->stream_id,
+                                         packet->sequence);
     context->on_send_state = callbacks_.on_datagram_send_state;
     const auto status = api_->DatagramSend(
         connection_, &context->buffer, 1, QUIC_SEND_FLAG_NONE, context);
