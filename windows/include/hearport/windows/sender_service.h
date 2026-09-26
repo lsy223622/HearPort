@@ -81,7 +81,7 @@ class SenderService {
   void DiagnosticsWorker();
   void LogAudioSummary();
   void EndDebugSession(std::uint32_t reason);
-  void CompleteDebugSend() noexcept;
+  void CompleteDebugSend(std::uint32_t stream_id) noexcept;
   void WriteDebugTrace(std::span<const std::byte> session_id,
                        std::string_view contents);
 

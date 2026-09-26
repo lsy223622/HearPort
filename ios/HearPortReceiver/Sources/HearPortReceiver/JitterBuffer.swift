@@ -33,6 +33,7 @@ public struct JitterBuffer {
     public let maximumPackets: Int
     private var packets: [UInt32: AudioDatagram] = [:]
     private var nextSequence: UInt32?
+    private var unreportedTrimmedSequences: [UInt32] = []
 
     public init(streamID: UInt32, targetPackets: Int = 4, maximumPackets: Int = 256) {
         precondition(streamID != 0)
@@ -69,7 +70,14 @@ public struct JitterBuffer {
         mode = .startup
         packets.removeAll(keepingCapacity: true)
         nextSequence = nil
+        unreportedTrimmedSequences.removeAll(keepingCapacity: true)
         stats = JitterStats()
+    }
+
+    mutating func takeTrimmedSequences() -> [UInt32] {
+        let sequences = unreportedTrimmedSequences
+        unreportedTrimmedSequences.removeAll(keepingCapacity: true)
+        return sequences
     }
 
     public mutating func insert(_ packet: AudioDatagram) -> JitterInsertResult {
@@ -137,6 +145,7 @@ public struct JitterBuffer {
                 ($0 &- expected) < ($1 &- expected)
             }) else { break }
             packets.removeValue(forKey: oldestSequence)
+            unreportedTrimmedSequences.append(oldestSequence)
             stats.trimmedPackets += 1
         }
         nextSequence = packets.keys.min {

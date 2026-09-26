@@ -84,6 +84,8 @@ jobs:
           -destination 'generic/platform=iOS'
           -archivePath "$RUNNER_TEMP/HearPort.xcarchive"
           -derivedDataPath "$RUNNER_TEMP/HearPortDerivedData"
+          CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER"
+          HEARPORT_BUILD_ID="${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           CODE_SIGNING_ALLOWED=NO
           CODE_SIGNING_REQUIRED=NO
           archive
@@ -100,6 +102,10 @@ jobs:
           test "$executable" = "HearPort"
           package_type=$(/usr/libexec/PlistBuddy -c 'Print :CFBundlePackageType' "$app_path/Info.plist")
           test "$package_type" = "APPL"
+          app_build=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app_path/Info.plist")
+          build_id=$(/usr/libexec/PlistBuddy -c 'Print :HearPortBuildID' "$app_path/Info.plist")
+          test "$app_build" = "$GITHUB_RUN_NUMBER"
+          test "$build_id" = "${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           mkdir -p "$RUNNER_TEMP/Payload"
           cp -R "$app_path" "$RUNNER_TEMP/Payload/HearPort.app"
           ditto -c -k --sequesterRsrc --keepParent \
@@ -108,6 +114,10 @@ jobs:
             grep -F "Payload/HearPort.app/Info.plist"
           {
             echo "bundle_identifier=$bundle_id"
+            echo "app_build=$app_build"
+            echo "app_build_id=$build_id"
+            echo "github_run_id=$GITHUB_RUN_ID"
+            echo "github_run_attempt=$GITHUB_RUN_ATTEMPT"
             echo "archive_path=$RUNNER_TEMP/HearPort.xcarchive"
             echo "ipa_sha256=$(shasum -a 256 "$RUNNER_TEMP/HearPort-unsigned.ipa" | awk '{print $1}')"
             xcodebuild -version

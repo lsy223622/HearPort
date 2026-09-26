@@ -24,6 +24,7 @@ targets:
         PRODUCT_NAME: HearPort
         MARKETING_VERSION: 0.1.0
         CURRENT_PROJECT_VERSION: 13
+        HEARPORT_BUILD_ID: local
         SWIFT_VERSION: 5.9
         LIBRARY_SEARCH_PATHS:
           - "$(inherited)"

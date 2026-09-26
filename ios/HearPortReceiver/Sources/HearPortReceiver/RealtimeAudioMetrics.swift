@@ -25,6 +25,7 @@ final class RealtimeAudioMetrics: @unchecked Sendable {
     private let renderUnderflowFrames = AtomicUInt64()
     private let renderOverflowFrames = AtomicUInt64()
     private let renderLockMisses = AtomicUInt64()
+    private let renderLockMissFrames = AtomicUInt64()
     private let skippedSnapshots = AtomicUInt64()
     private let jitterMinFillPackets = AtomicUInt64(UInt64.max)
     private let jitterMaxFillPackets = AtomicUInt64()
@@ -112,8 +113,9 @@ final class RealtimeAudioMetrics: @unchecked Sendable {
         recordConversion(resamplerRatio: resamplerRatio, fillError: fillError)
     }
 
-    func recordRenderLockMiss() {
+    func recordRenderLockMiss(silencedFrames: Int) {
         renderLockMisses.increment()
+        renderLockMissFrames.increment(by: UInt64(max(0, silencedFrames)))
     }
 
     func recordConversion(resamplerRatio: Double, fillError: Double) {
@@ -170,6 +172,7 @@ final class RealtimeAudioMetrics: @unchecked Sendable {
             "render_underflow_frames": "\(renderUnderflowFrames.exchange(0))",
             "render_overflow_frames": "\(renderOverflowFrames.exchange(0))",
             "render_lock_misses": "\(renderLockMisses.exchange(0))",
+            "render_lock_miss_frames": "\(renderLockMissFrames.exchange(0))",
             "skipped_snapshots": "\(skippedSnapshots.exchange(0))",
             "resampler_ratio": "\(Double(bitPattern: resamplerRatio.load()))",
             "drift_fill_error": "\(Double(bitPattern: driftFillError.load()))",
@@ -190,7 +193,7 @@ final class RealtimeAudioMetrics: @unchecked Sendable {
             capacityDrops, bufferTrimmedPackets, lostPackets, concealedPackets, renderCallbacks,
             requestedRenderFrames, renderedFrames,
             renderUnderflowFrames, renderOverflowFrames,
-            renderLockMisses, skippedSnapshots
+            renderLockMisses, renderLockMissFrames, skippedSnapshots
         ]
     }
 
