@@ -231,41 +231,41 @@ public final class HearPortReceiver {
         if disposition == .accepted {
             lastReceivedSequence = packet.sequence
         }
-        if disposition == .accepted, var buffer = jitter {
-            let previousMode = buffer.mode
-            let previousTrimmedPackets = buffer.stats.trimmedPackets
-            let insertResult = buffer.insert(packet)
-            jitterResult = insertResult
-            let started = buffer.startIfReady()
-            let trimmedPackets = buffer.stats.trimmedPackets - previousTrimmedPackets
-            trimmedSequences = buffer.takeTrimmedSequences()
-            jitter = buffer
-            fillPackets = buffer.fillPackets
-            realtimeMetrics.recordJitterResult(insertResult,
-                                               fillPackets: buffer.fillPackets,
-                                               trimmedPackets: trimmedPackets)
-            if started && previousMode != buffer.mode {
-                transitionFields = [
-                    "event": "jitter_started",
-                    "stream_id": "\(packet.streamID)",
-                    "sequence": "\(packet.sequence)",
-                    "jitter_mode": "\(buffer.mode)",
-                    "target_packets": "\(buffer.targetPackets)",
-                    "buffer_packets": "\(buffer.fillPackets)"
-                ]
-            }
-            if !loggedFirstAudioDatagram {
-                loggedFirstAudioDatagram = true
-                firstFields = [
-                    "event": "datagram_received",
-                    "stream_id": "\(packet.streamID)",
-                    "sequence": "\(packet.sequence)",
-                    "audio_bytes": "\(packet.pcm.count)",
-                    "jitter_result": "\(insertResult)",
-                    "jitter_mode": "\(buffer.mode)",
-                    "buffer_packets": "\(buffer.fillPackets)",
-                    "buffer_started": "\(started)"
-                ]
+        if disposition == .accepted {
+            let previousMode = jitter?.mode
+            let previousTrimmedPackets = jitter?.stats.trimmedPackets ?? 0
+            if let insertResult = jitter?.insert(packet) {
+                jitterResult = insertResult
+                let started = jitter?.startIfReady() ?? false
+                let trimmedPackets = (jitter?.stats.trimmedPackets ?? 0) - previousTrimmedPackets
+                trimmedSequences = jitter?.takeTrimmedSequences() ?? []
+                fillPackets = jitter?.fillPackets ?? 0
+                realtimeMetrics.recordJitterResult(insertResult,
+                                                   fillPackets: fillPackets,
+                                                   trimmedPackets: trimmedPackets)
+                if started && previousMode != jitter?.mode {
+                    transitionFields = [
+                        "event": "jitter_started",
+                        "stream_id": "\(packet.streamID)",
+                        "sequence": "\(packet.sequence)",
+                        "jitter_mode": "\(jitter!.mode)",
+                        "target_packets": "\(jitter!.targetPackets)",
+                        "buffer_packets": "\(fillPackets)"
+                    ]
+                }
+                if !loggedFirstAudioDatagram {
+                    loggedFirstAudioDatagram = true
+                    firstFields = [
+                        "event": "datagram_received",
+                        "stream_id": "\(packet.streamID)",
+                        "sequence": "\(packet.sequence)",
+                        "audio_bytes": "\(packet.pcm.count)",
+                        "jitter_result": "\(insertResult)",
+                        "jitter_mode": "\(jitter!.mode)",
+                        "buffer_packets": "\(fillPackets)",
+                        "buffer_started": "\(started)"
+                    ]
+                }
             }
         }
         lock.unlock()
@@ -393,28 +393,27 @@ public final class HearPortReceiver {
     }
 
     private func pumpLocked(minimumFrames: Int) {
-        guard var buffer = jitter else { return }
+        guard jitter != nil else { return }
         while renderRing.fillFrames < minimumFrames {
-            if let packet = buffer.consumeNext() {
+            if let packet = jitter?.consumeNext() {
                 renderRing.push(Self.decodePCM(packet.pcm))
-            } else if buffer.hasFuturePacket,
-                      let sequence = buffer.expectedSequence,
-                      let concealed = buffer.concealMissing() {
+            } else if jitter?.hasFuturePacket == true,
+                      let sequence = jitter?.expectedSequence,
+                      let concealed = jitter?.concealMissing() {
                 realtimeMetrics.recordConcealment()
                 debugSessionDiagnostics.recordJitterDecision(
-                    streamID: buffer.streamID,
+                    streamID: jitter!.streamID,
                     sequence: sequence,
                     decision: .concealed,
                     at: DispatchTime.now().uptimeNanoseconds,
-                    fillPackets: buffer.fillPackets
+                    fillPackets: jitter!.fillPackets
                 )
                 renderRing.push(Self.decodePCM(concealed))
             } else {
                 break
             }
         }
-        jitter = buffer
-        if buffer.mode == .running {
+        if jitter?.mode == .running {
             lifecycle.handle(.audioAvailable)
         }
     }

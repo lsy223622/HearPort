@@ -140,16 +140,21 @@ public struct JitterBuffer {
         guard mode == .running, packets.count > targetPackets else { return }
         guard let expected = nextSequence else { return }
 
+        var oldestSequence = expected
         while packets.count > targetPackets {
-            guard let oldestSequence = packets.keys.min(by: {
-                ($0 &- expected) < ($1 &- expected)
-            }) else { break }
+            if packets[oldestSequence] == nil {
+                guard let nextOldest = packets.keys.min(by: {
+                    ($0 &- expected) < ($1 &- expected)
+                }) else { break }
+                oldestSequence = nextOldest
+            }
             packets.removeValue(forKey: oldestSequence)
             unreportedTrimmedSequences.append(oldestSequence)
             stats.trimmedPackets += 1
+            oldestSequence = SequenceNumber.next(oldestSequence)
         }
-        nextSequence = packets.keys.min {
-            ($0 &- expected) < ($1 &- expected)
-        }
+        nextSequence = packets[oldestSequence] != nil
+            ? oldestSequence
+            : packets.keys.min { ($0 &- expected) < ($1 &- expected) }
     }
 }

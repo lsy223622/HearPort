@@ -157,6 +157,23 @@ final class RealtimeDiagnosticsTests: XCTestCase {
         XCTAssertEqual(jitter.stats.trimmedPackets, 1)
     }
 
+    func testRunningJitterBufferTrimsAcrossMissingSequenceAtWrap() throws {
+        var jitter = JitterBuffer(streamID: 1, targetPackets: 2)
+        let pcm = Data(repeating: 0, count: AudioDatagram.pcmByteCount)
+        for sequence in [UInt32.max - 1, 0, 1, 2] {
+            let packet = try AudioDatagram(streamID: 1, sequence: sequence, pcm: pcm)
+            XCTAssertEqual(jitter.insert(packet), .inserted)
+            if sequence == 0 {
+                XCTAssertTrue(jitter.startIfReady())
+            }
+        }
+
+        XCTAssertEqual(jitter.takeTrimmedSequences(), [UInt32.max - 1, 0])
+        XCTAssertEqual(jitter.expectedSequence, 1)
+        XCTAssertEqual(jitter.consumeNext()?.sequence, 1)
+        XCTAssertEqual(jitter.consumeNext()?.sequence, 2)
+    }
+
     func testReceiverRealtimeSummaryContainsSafeTransportAndBufferFields() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("HearPortRealtimeMetrics-\(UUID().uuidString)",

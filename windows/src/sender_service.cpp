@@ -108,7 +108,8 @@ bool SenderService::Start() {
     }
     {
       std::lock_guard lock(debug_mutex_);
-      if (debug_duration_.has_value() && !debug_completed_) {
+      if (debug_duration_.has_value() && !debug_completed_ &&
+          debug_trace_.IsActive()) {
         debug_wait_failed_ = true;
       }
       if (debug_trace_.IsActive()) {
