@@ -915,6 +915,7 @@ public final class HearPortQuicTransport {
                     stream.cancel()
                     return
                 }
+                if isComplete { stream.cancel() }
                 for packet in packets { self.onAudioDatagram?(packet.encoded) }
                 if isComplete {
                     do {
@@ -924,7 +925,6 @@ public final class HearPortQuicTransport {
                             throw ReliableAudioRecordsError.incompleteRecord
                         }
                         if self.audioStream === stream { self.audioStream = nil }
-                        stream.cancel()
                         self.diagnostics.log(.warning, category: .transport,
                                              message: "reliable_audio_flow_interrupted",
                                              fields: ["event": "reliable_audio_flow_interrupted",
@@ -938,7 +938,6 @@ public final class HearPortQuicTransport {
                                              fields: ["event": "reliable_audio_flow_ended",
                                                       "generation": "\(self.audioGeneration)"])
                     }
-                    stream.cancel()
                     return
                 }
                 if let error {
