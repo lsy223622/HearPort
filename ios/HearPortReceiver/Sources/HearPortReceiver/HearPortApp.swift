@@ -14,6 +14,7 @@ public struct HearPortApp: View {
     @State private var control: ReceiverControlSession?
     @State private var audioOutput: PlatformAudioOutputController?
     @AppStorage("hearport.detailedLogging") private var detailedLogging = false
+    @AppStorage("hearport.audioTransportMode") private var audioTransportModeRaw = AudioTransportMode.datagram.rawValue
     @AppStorage("hearport.jitterStartupPackets") private var jitterBufferTargetPackets = 8
     @State private var diagnosticsSnapshot = HearPortDiagnostics.shared.snapshot()
     @State private var exportedDiagnosticsURL: URL?
@@ -51,20 +52,35 @@ public struct HearPortApp: View {
                         .foregroundStyle(.secondary)
                 }
 
-                Section("Jitter buffer") {
-                    Picker("Buffer target", selection: $jitterBufferTargetPackets) {
-                        ForEach(JitterBufferConfiguration.supportedTargetPacketCounts, id: \.self) { packets in
-                            let configuration = JitterBufferConfiguration(targetPackets: packets)
-                            Text("\(Self.jitterLabel(for: packets)) · \(packets) packets (\(configuration.targetLatencyMilliseconds) ms)")
-                                .tag(packets)
-                        }
+                Section("Audio transport") {
+                    Picker("Mode", selection: $audioTransportModeRaw) {
+                        Text("Low latency · DATAGRAM").tag(AudioTransportMode.datagram.rawValue)
+                        Text("Stability · reliable stream").tag(AudioTransportMode.reliable.rawValue)
                     }
-                    let configuration = JitterBufferConfiguration(targetPackets: jitterBufferTargetPackets)
-                    Text("Estimated buffer delay: \(configuration.targetLatencyMilliseconds) ms")
-                        .foregroundStyle(.secondary)
-                    Text("Larger buffers tolerate bursty delivery but increase playback delay.")
+                    Text("Applies on next connection.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
+                }
+
+                Section("Jitter buffer") {
+                    if audioTransportModeRaw == AudioTransportMode.reliable.rawValue {
+                        Text("Stability target: 64 packets (160 ms)")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Picker("Buffer target", selection: $jitterBufferTargetPackets) {
+                            ForEach(JitterBufferConfiguration.supportedTargetPacketCounts, id: \.self) { packets in
+                                let configuration = JitterBufferConfiguration(targetPackets: packets)
+                                Text("\(Self.jitterLabel(for: packets)) · \(packets) packets (\(configuration.targetLatencyMilliseconds) ms)")
+                                    .tag(packets)
+                            }
+                        }
+                        let configuration = JitterBufferConfiguration(targetPackets: jitterBufferTargetPackets)
+                        Text("Estimated buffer delay: \(configuration.targetLatencyMilliseconds) ms")
+                            .foregroundStyle(.secondary)
+                        Text("Larger buffers tolerate bursty delivery but increase playback delay.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
                     Text("Applies on next connection.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
@@ -189,8 +205,13 @@ public struct HearPortApp: View {
         control?.cancel()
         try? audioOutput?.stop()
         audioOutput = nil
-        let normalizedJitter = JitterBufferConfiguration(targetPackets: jitterBufferTargetPackets)
-        jitterBufferTargetPackets = normalizedJitter.targetPackets
+        let audioMode = AudioTransportMode(rawValue: audioTransportModeRaw) ?? .datagram
+        let normalizedJitter = JitterBufferConfiguration(
+            targetPackets: audioMode.bufferTargetPackets(selected: jitterBufferTargetPackets)
+        )
+        if audioMode == .datagram {
+            jitterBufferTargetPackets = normalizedJitter.targetPackets
+        }
         let activeReceiver = HearPortReceiver(
             bufferTargetPackets: normalizedJitter.targetPackets,
             diagnostics: diagnostics
@@ -203,11 +224,13 @@ public struct HearPortApp: View {
             fields: [
                 "event": "ui_connect_requested",
                 "host": endpoint,
-                "auth_mode": "\(requestedAuthMode)"
+                "auth_mode": "\(requestedAuthMode)",
+                "audio_mode": audioMode.rawValue
             ]
         )
         let session = ReceiverControlSession(
             receiver: activeReceiver,
+            audioMode: audioMode,
             provider: PairingSecurity.defaultSpake2Provider()
         )
         session.onTransportState = { newState in

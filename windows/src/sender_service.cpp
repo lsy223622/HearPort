@@ -96,6 +96,11 @@ bool SenderService::Start() {
         if (IsFinalDebugSendState(state)) CompleteDebugSend(stream_id);
       };
   callbacks.on_closed = [this] {
+    reliable_mode_.store(false);
+    {
+      std::lock_guard lock(reliable_mutex_);
+      reliable_generation_ = 0;
+    }
     {
       std::lock_guard lock(queue_mutex_);
       datagram_ready_ = false;
@@ -240,9 +245,16 @@ bool SenderService::BeginStream(
 
 bool SenderService::MarkStartStreamAckWritten(std::uint32_t stream_id) {
   std::lock_guard capture_lock(capture_mutex_);
+  std::lock_guard send_lock(audio_send_mutex_);
   std::lock_guard session_lock(session_mutex_);
   if (session_.AckWritten(stream_id) != AudioDisposition::accepted) {
     return false;
+  }
+  if (reliable_mode_.load()) {
+    if (!quic_->StartReliableAudio(stream_id, 1)) return false;
+    std::lock_guard reliable_lock(reliable_mutex_);
+    reliable_generation_ = 1;
+    reliable_lag_.Begin(stream_id, 1, ReliableAudioLag::Clock::now());
   }
   std::lock_guard debug_lock(debug_mutex_);
   if (pending_debug_session_) {
@@ -262,6 +274,51 @@ bool SenderService::MarkStartStreamAckWritten(std::uint32_t stream_id) {
     pending_debug_session_id_.fill(std::byte{0});
     diagnostics_condition_.notify_all();
   }
+  return true;
+}
+
+void SenderService::ConfigureReliableAudio(bool enabled) {
+  std::lock_guard send_lock(audio_send_mutex_);
+  reliable_mode_.store(enabled);
+  std::lock_guard reliable_lock(reliable_mutex_);
+  reliable_generation_ = 0;
+}
+
+bool SenderService::ObserveAudioProgress(
+    std::uint32_t stream_id, std::uint32_t generation,
+    std::optional<std::uint32_t> latest_received) {
+  std::lock_guard send_lock(audio_send_mutex_);
+  if (!reliable_mode_.load()) return false;
+  {
+    std::lock_guard reliable_lock(reliable_mutex_);
+    if (!reliable_lag_.Observe(stream_id, generation, latest_received,
+                               ReliableAudioLag::Clock::now())) {
+      return true;
+    }
+  }
+  const auto next_generation = generation == UINT32_MAX ? 1 : generation + 1;
+  {
+    std::lock_guard queue_lock(queue_mutex_);
+    const auto discarded = audio_queue_.size();
+    audio_queue_.clear();
+    dropped_audio_packets_ += discarded;
+    for (std::size_t index = 0; index < discarded; ++index) {
+      audio_metrics_.record_dropped(false);
+    }
+  }
+  if (!quic_->StartReliableAudio(stream_id, next_generation)) {
+    LogDiagnostic("reliable_audio_restart_failed");
+    return false;
+  }
+  {
+    std::lock_guard reliable_lock(reliable_mutex_);
+    reliable_generation_ = next_generation;
+    reliable_lag_.Begin(stream_id, next_generation,
+                        ReliableAudioLag::Clock::now());
+  }
+  LogDiagnostic("reliable_audio_live_edge_restart stream_id=" +
+                std::to_string(stream_id) + " generation=" +
+                std::to_string(next_generation));
   return true;
 }
 
@@ -380,7 +437,7 @@ void SenderService::AudioWorker() {
       audio_queue_.pop_front();
       audio_metrics_.set_queue_state(audio_queue_.size(), datagram_ready_,
                                      datagram_max_payload_);
-      if (!datagram_ready_) {
+      if (!datagram_ready_ && !reliable_mode_.load()) {
         ++dropped_audio_packets_;
         audio_metrics_.record_dropped(false);
         continue;
@@ -405,7 +462,7 @@ void SenderService::AudioWorker() {
       trace_this_packet =
           debug_trace_.IsActive() &&
           active_debug_stream_id_ == queued.packet.stream_id;
-      if (trace_this_packet) ++outstanding_debug_sends_;
+      if (trace_this_packet && !reliable_mode_.load()) ++outstanding_debug_sends_;
     }
     const auto send_at_ns = MonotonicNanoseconds();
     const bool sent = quic_->SendAudio(encoded);
@@ -414,7 +471,7 @@ void SenderService::AudioWorker() {
                                 queued.captured_at_ns,
                                 queued.queued_at_ns,
                                 send_at_ns, sent);
-      if (!sent) CompleteDebugSend(queued.packet.stream_id);
+      if (!sent && !reliable_mode_.load()) CompleteDebugSend(queued.packet.stream_id);
     }
     if (sent) {
       audio_metrics_.record_sent();
@@ -455,6 +512,10 @@ void SenderService::HandleCapturePacket(std::span<const std::byte> bytes,
       accepted = session_.AcceptAudio(packet) == AudioDisposition::accepted;
     }
     if (accepted) {
+      if (reliable_mode_.load()) {
+        std::lock_guard reliable_lock(reliable_mutex_);
+        reliable_lag_.Produced(packet.sequence);
+      }
       EnqueueAudio(packet, MonotonicNanoseconds());
     }
   });

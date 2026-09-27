@@ -22,6 +22,7 @@ public enum ErrorCode: UInt32, Equatable, Sendable {
 
 public enum ControlFeature {
     public static let diagnosticsUpload: UInt32 = 1
+    public static let reliableAudio: UInt32 = 2
 }
 
 let diagnosticReportChunkMaxBytes = 60 * 1024
@@ -47,6 +48,8 @@ public enum ControlMessage: Equatable, Sendable {
     case diagnosticsReportChunk(sessionID: Data, index: UInt32, bytes: Data)
     case diagnosticsReportEnd(sessionID: Data)
     case diagnosticsReportReceived(sessionID: Data)
+    case audioProgress(streamID: UInt32, generation: UInt32,
+                       latestReceivedSequence: UInt32?)
 
     public var diagnosticName: String {
         switch self {
@@ -69,6 +72,7 @@ public enum ControlMessage: Equatable, Sendable {
         case .diagnosticsReportChunk: return "diagnostics_report_chunk"
         case .diagnosticsReportEnd: return "diagnostics_report_end"
         case .diagnosticsReportReceived: return "diagnostics_report_received"
+        case .audioProgress: return "audio_progress"
         }
     }
 }
@@ -210,6 +214,18 @@ public struct ControlEnvelope: Equatable, Sendable {
             guard sessionID.count == 16 else { throw ControlMessageError.invalidMessage }
             body = Self.singleBytesBody(sessionID)
             field = 38
+        case let .audioProgress(streamID, generation, latestReceivedSequence):
+            guard streamID != 0, generation != 0 else {
+                throw ControlMessageError.invalidMessage
+            }
+            var writer = ProtoWriter()
+            writer.writeVarintField(1, value: streamID)
+            writer.writeVarintField(2, value: generation)
+            if let latestReceivedSequence {
+                writer.writeVarintField(3, value: latestReceivedSequence)
+            }
+            body = writer.data
+            field = 39
         }
         var writer = ProtoWriter()
         writer.writeBytesField(field, value: body)
@@ -232,7 +248,7 @@ public struct ControlEnvelope: Equatable, Sendable {
                 continue
             }
             switch outer.field {
-            case 1, 2, 3, 10, 11, 12, 13, 14, 20, 21, 30, 31, 32...38:
+            case 1, 2, 3, 10, 11, 12, 13, 14, 20, 21, 30, 31, 32...39:
                 selected = (outer.field, body)
             default:
                 lastUnknownField = outer.field
@@ -262,6 +278,7 @@ public struct ControlEnvelope: Equatable, Sendable {
         case 36: message = try parseDiagnosticsReportChunk(selected.body)
         case 37: message = try parseSessionMessage(selected.body, make: ControlMessage.diagnosticsReportEnd)
         case 38: message = try parseSessionMessage(selected.body, make: ControlMessage.diagnosticsReportReceived)
+        case 39: message = try parseAudioProgress(selected.body)
         default: throw ControlMessageError.unknownField(selected.field)
         }
         return ControlEnvelope(message)
@@ -445,6 +462,24 @@ public struct ControlEnvelope: Equatable, Sendable {
             throw ControlMessageError.invalidMessage
         }
         return make(sessionID)
+    }
+
+    private static func parseAudioProgress(_ data: Data) throws -> ControlMessage {
+        let fields = try parseFields(data)
+        guard case let .varint(streamID)? = fields[1], streamID != 0,
+              case let .varint(generation)? = fields[2], generation != 0 else {
+            throw ControlMessageError.invalidMessage
+        }
+        let latestReceivedSequence: UInt32?
+        if case let .varint(sequence)? = fields[3] {
+            latestReceivedSequence = sequence
+        } else if fields[3] == nil {
+            latestReceivedSequence = nil
+        } else {
+            throw ControlMessageError.invalidMessage
+        }
+        return .audioProgress(streamID: streamID, generation: generation,
+                              latestReceivedSequence: latestReceivedSequence)
     }
 }
 

@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <array>
+#include <atomic>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -20,6 +21,7 @@
 #include "hearport/windows/debug_session_trace.h"
 #include "hearport/windows/packetizer.h"
 #include "hearport/windows/quic_server.h"
+#include "hearport/windows/reliable_audio_lag.h"
 #include "hearport/windows/wasapi_capture.h"
 #include "hearport/wire/control_framing.h"
 
@@ -51,6 +53,9 @@ class SenderService {
   bool BeginStream(std::uint32_t stream_id,
                    std::span<const std::byte> debug_session_id = {});
   bool MarkStartStreamAckWritten(std::uint32_t stream_id);
+  void ConfigureReliableAudio(bool enabled);
+  bool ObserveAudioProgress(std::uint32_t stream_id, std::uint32_t generation,
+                            std::optional<std::uint32_t> latest_received);
   void ConfigureDebugDuration(std::optional<std::chrono::seconds> duration);
   std::optional<std::chrono::seconds> debug_duration() const;
   void SetDebugOutputDirectory(std::filesystem::path directory);
@@ -105,6 +110,10 @@ class SenderService {
   mutable std::mutex diagnostics_mutex_;
   std::condition_variable diagnostics_condition_;
   mutable std::mutex audio_send_mutex_;
+  mutable std::mutex reliable_mutex_;
+  ReliableAudioLag reliable_lag_;
+  std::atomic<bool> reliable_mode_ = false;
+  std::uint32_t reliable_generation_ = 0;
   DebugSessionTrace debug_trace_;
   mutable std::mutex debug_mutex_;
   std::condition_variable debug_condition_;

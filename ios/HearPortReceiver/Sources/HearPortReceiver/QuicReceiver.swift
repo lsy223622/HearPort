@@ -176,6 +176,34 @@ public final class HearPortReceiver {
         return accepted
     }
 
+    public func beginReliableGeneration(_ streamID: UInt32) -> Bool {
+        lock.lock()
+        guard session.activeStreamID == streamID || session.pendingStreamID == streamID else {
+            lock.unlock()
+            return false
+        }
+        jitter = JitterBuffer(streamID: streamID, targetPackets: jitterTargetPackets)
+        renderActiveAtomic.store(0)
+        jitterFillFramesAtomic.store(0)
+        renderRing.requestReset()
+        lifecycle.enterSilentRebuffer()
+        session.enterSilentRebuffer()
+        lastReceivedSequence = nil
+        loggedFirstAudioDatagram = false
+        lock.unlock()
+        _ = diagnostics.logAsync(.info, category: .audio,
+                                 message: "reliable_generation_rebuffer",
+                                 fields: ["event": "reliable_generation_rebuffer",
+                                          "stream_id": "\(streamID)"])
+        return true
+    }
+
+    public func reliableProgressSequence() -> UInt32? {
+        lock.lock()
+        defer { lock.unlock() }
+        return lastReceivedSequence
+    }
+
     @discardableResult
     public func markAuthenticated() -> Bool {
         lock.lock()
@@ -571,6 +599,7 @@ public final class HearPortQuicTransport {
     public private(set) var state: QuicReceiverState = .idle
     public var onControlData: DataHandler?
     public var onAudioDatagram: DataHandler?
+    public var onReliableAudioGeneration: ((UInt32, UInt32) -> Bool)?
     public var onStateChange: StateHandler?
     public var onControlStreamCreated: (() -> Void)?
 
@@ -581,9 +610,19 @@ public final class HearPortQuicTransport {
     private var controlReady = false
     private var datagramReady = false
     private var loggedFirstDatagram = false
+    private let audioMode: AudioTransportMode
+    private var reliableAccepted = false
+    private var expectedAudioStreamID: UInt32?
+    private var audioStream: NWConnection?
+    private var audioGeneration: UInt32 = 0
+    private var progressSequence: (() -> UInt32?)?
+    private var progressTimer: DispatchSourceTimer?
+    private var progressInFlight = false
 
-    public init(diagnostics: HearPortDiagnostics = .shared) {
+    public init(diagnostics: HearPortDiagnostics = .shared,
+                audioMode: AudioTransportMode = .datagram) {
         self.diagnostics = diagnostics
+        self.audioMode = audioMode
         diagnostics.log(
             .debug,
             category: .transport,
@@ -623,6 +662,9 @@ public final class HearPortQuicTransport {
         quicOptions.isDatagram = true
         // The transport limit includes the QUIC frame header, not just audio bytes.
         quicOptions.maxDatagramFrameSize = 65_535
+        if audioMode == .reliable {
+            quicOptions.initialMaxStreamsUnidirectional = 8
+        }
         sec_protocol_options_set_tls_resumption_enabled(
             quicOptions.securityProtocolOptions,
             false
@@ -732,8 +774,15 @@ public final class HearPortQuicTransport {
                 break
             }
         }
-        connectionGroup.newConnectionHandler = { connection in
-            connection.cancel()
+        connectionGroup.newConnectionHandler = { [weak self] connection in
+            guard let self, self.audioMode == .reliable,
+                  self.reliableAccepted, let streamID = self.expectedAudioStreamID else {
+                connection.cancel()
+                return
+            }
+            self.receiveAudio(on: connection,
+                              records: ReliableAudioRecords(expectedStreamID: streamID))
+            connection.start(queue: self.queue)
         }
         connectionGroup.setReceiveHandler(
             maximumMessageSize: AudioDatagram.byteCount,
@@ -755,7 +804,7 @@ public final class HearPortQuicTransport {
                         ]
                     )
                 }
-                self.onAudioDatagram?(data)
+                if self.audioMode == .datagram { self.onAudioDatagram?(data) }
             }
         }
         connectionGroup.start(queue: queue)
@@ -786,6 +835,15 @@ public final class HearPortQuicTransport {
     }
 
     public func cancel() {
+        progressTimer?.cancel()
+        progressTimer = nil
+        audioStream?.cancel()
+        audioStream = nil
+        expectedAudioStreamID = nil
+        audioGeneration = 0
+        progressSequence = nil
+        progressInFlight = false
+        reliableAccepted = false
         controlStream?.cancel()
         group?.cancel()
         controlStream = nil
@@ -800,6 +858,108 @@ public final class HearPortQuicTransport {
             fields: ["event": "transport_cancelled"]
         )
         updateState(.closed)
+    }
+
+    public func acceptReliableAudio() {
+        reliableAccepted = true
+    }
+
+    public func expectReliableAudio(streamID: UInt32,
+                                    latestReceivedSequence: @escaping () -> UInt32?) {
+        progressTimer?.cancel()
+        progressTimer = nil
+        audioStream?.cancel()
+        audioStream = nil
+        audioGeneration = 0
+        progressInFlight = false
+        expectedAudioStreamID = streamID
+        progressSequence = latestReceivedSequence
+    }
+
+    private func receiveAudio(on stream: NWConnection, records: ReliableAudioRecords) {
+        stream.receive(minimumIncompleteLength: 1, maximumLength: 65_540) {
+            [weak self] data, _, isComplete, error in
+            guard let self, self.group != nil else { return }
+            var records = records
+            do {
+                let packets = try records.append(data ?? Data())
+                if let generation = records.generation, generation > self.audioGeneration {
+                    self.audioStream?.cancel()
+                    guard self.onReliableAudioGeneration?(records.expectedStreamID,
+                                                          generation) == true else {
+                        throw ReliableAudioRecordsError.invalidPreface
+                    }
+                    self.audioStream = stream
+                    self.audioGeneration = generation
+                    self.startProgressTimer()
+                    _ = self.diagnostics.logAsync(
+                        .info, category: .transport, message: "reliable_audio_generation",
+                        fields: ["event": "reliable_audio_generation",
+                                 "stream_id": "\(records.expectedStreamID)",
+                                 "generation": "\(generation)"])
+                }
+                guard self.expectedAudioStreamID == records.expectedStreamID,
+                      self.audioStream === stream || records.generation == nil else {
+                    stream.cancel()
+                    return
+                }
+                for packet in packets { self.onAudioDatagram?(packet.encoded) }
+                if isComplete {
+                    try records.finish()
+                    if self.audioStream === stream {
+                        self.audioStream = nil
+                        self.progressTimer?.cancel()
+                        self.progressTimer = nil
+                    }
+                    return
+                }
+                if let error {
+                    if self.audioStream === stream {
+                        self.audioStream = nil
+                        self.progressTimer?.cancel()
+                        self.progressTimer = nil
+                    }
+                    self.diagnostics.log(.warning, category: .transport,
+                                         message: "reliable_audio_read_failed",
+                                         fields: ["event": "reliable_audio_read_failed",
+                                                  "error": "\(error)"])
+                    return
+                }
+                self.receiveAudio(on: stream, records: records)
+            } catch {
+                self.diagnostics.log(.error, category: .transport,
+                                     message: "reliable_audio_invalid",
+                                     fields: ["event": "reliable_audio_invalid",
+                                              "error": "\(error)"])
+                self.updateState(.failed)
+                self.cancel()
+            }
+        }
+    }
+
+    private func startProgressTimer() {
+        guard progressTimer == nil else { return }
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + .milliseconds(100),
+                       repeating: .milliseconds(100))
+        timer.setEventHandler { [weak self] in
+            guard let self, !self.progressInFlight,
+                  let streamID = self.expectedAudioStreamID,
+                  self.audioGeneration != 0 else { return }
+            do {
+                let message = ControlEnvelope(.audioProgress(
+                    streamID: streamID, generation: self.audioGeneration,
+                    latestReceivedSequence: self.progressSequence?()))
+                self.progressInFlight = true
+                try self.sendControl(message.encoded()) { [weak self] _ in
+                    self?.progressInFlight = false
+                }
+            } catch {
+                self.progressInFlight = false
+            }
+        }
+        progressTimer = timer
+        timer.resume()
     }
 
     private func openControlStream(

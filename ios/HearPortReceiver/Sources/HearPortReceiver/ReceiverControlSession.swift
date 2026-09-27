@@ -6,6 +6,7 @@ public final class ReceiverControlSession {
     public let receiver: HearPortReceiver
     public let transport: HearPortQuicTransport
     private let diagnostics: HearPortDiagnostics
+    private let audioMode: AudioTransportMode
 
     public var onReady: (() -> Void)?
     public var onError: ((String) -> Void)?
@@ -39,11 +40,14 @@ public final class ReceiverControlSession {
     public init(
         receiver: HearPortReceiver,
         transport: HearPortQuicTransport? = nil,
+        audioMode: AudioTransportMode = .datagram,
         provider: any Spake2Provider = UnavailableSpake2Provider(),
         keychain: KeychainRememberedCredentialStore = KeychainRememberedCredentialStore()
     ) {
         self.receiver = receiver
-        self.transport = transport ?? HearPortQuicTransport(diagnostics: receiver.diagnostics)
+        self.transport = transport ?? HearPortQuicTransport(diagnostics: receiver.diagnostics,
+                                                           audioMode: audioMode)
+        self.audioMode = audioMode
         diagnostics = receiver.diagnostics
         self.provider = provider
         self.keychain = keychain
@@ -51,6 +55,9 @@ public final class ReceiverControlSession {
         debugReportTransfer = receiver.debugSessionDiagnostics.reportTransfer
         self.transport.onAudioDatagram = { [weak receiver] data in
             _ = receiver?.receiveDatagram(data)
+        }
+        self.transport.onReliableAudioGeneration = { [weak receiver] streamID, _ in
+            receiver?.beginReliableGeneration(streamID) ?? false
         }
         self.transport.onControlData = { [weak self] data in
             self?.receiveControlBytes(data)
@@ -209,9 +216,11 @@ public final class ReceiverControlSession {
         guard !connectSent else { return }
         guard mode == .remembered || (mode == .pair || mode == .oneTime) else { return }
         let peerID = credential?.peerID ?? Data()
+        let features = ControlFeature.diagnosticsUpload |
+            (audioMode == .reliable ? ControlFeature.reliableAudio : 0)
         let envelope = ControlEnvelope(.connectRequest(authMode: mode,
                                                        peerID: peerID,
-                                                       features: ControlFeature.diagnosticsUpload))
+                                                       features: features))
         do {
             guard receiver.beginAuthentication(authMode: mode, peerID: peerID) else {
                 throw PairingSecurityError.providerFailure(-5)
@@ -398,6 +407,15 @@ public final class ReceiverControlSession {
             rememberedResponseSent = true
             send(.authResponse(peerID: credential.peerID, mac: mac))
         case let .sessionReady(features):
+            if audioMode == .reliable &&
+                (features & ControlFeature.reliableAudio) == 0 {
+                diagnostics.log(.error, category: .control,
+                                message: "reliable_audio_unsupported",
+                                fields: ["event": "reliable_audio_unsupported"])
+                transport.cancel()
+                onError?("This Windows sender does not support Stability mode. Update it or select Low latency.")
+                return
+            }
             switch mode {
             case .remembered:
                 guard rememberedResponseSent else {
@@ -427,6 +445,7 @@ public final class ReceiverControlSession {
             }
             ready = true
             peerFeatures = features
+            if audioMode == .reliable { transport.acceptReliableAudio() }
             diagnostics.log(
                 .info,
                 category: .control,
@@ -468,6 +487,12 @@ public final class ReceiverControlSession {
             )
             guard receiver.beginStream(streamID) else {
                 throw PairingSecurityError.providerFailure(-3)
+            }
+            if audioMode == .reliable {
+                transport.expectReliableAudio(streamID: streamID,
+                                              latestReceivedSequence: { [weak receiver = self.receiver] in
+                    receiver?.reliableProgressSequence()
+                })
             }
             send(.startStreamAck(streamID), completion: { [weak self] error in
                 guard let self else { return }
@@ -575,7 +600,7 @@ public final class ReceiverControlSession {
         case .connectRequest, .pairSpakeB, .pairConfirmB,
              .authResponse, .startStreamAck, .receiverReady,
              .diagnosticsReportStart, .diagnosticsReportChunk,
-             .diagnosticsReportEnd:
+             .diagnosticsReportEnd, .audioProgress:
             throw PairingSecurityError.providerFailure(-4)
         }
     }

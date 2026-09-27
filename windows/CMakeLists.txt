@@ -70,4 +70,10 @@ if(BUILD_TESTING)
   target_link_libraries(hearport_windows_audio_metrics_tests PRIVATE hearport_windows_platform)
   add_test(NAME hearport_windows_audio_metrics_tests
            COMMAND hearport_windows_audio_metrics_tests)
+
+  add_executable(hearport_reliable_audio_lag_tests
+    tests/reliable_audio_lag_tests.cpp)
+  target_link_libraries(hearport_reliable_audio_lag_tests PRIVATE hearport_windows_platform)
+  add_test(NAME hearport_reliable_audio_lag_tests
+           COMMAND hearport_reliable_audio_lag_tests)
 endif()
