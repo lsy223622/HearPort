@@ -917,7 +917,20 @@ public final class HearPortQuicTransport {
                 }
                 for packet in packets { self.onAudioDatagram?(packet.encoded) }
                 if isComplete {
-                    try records.finish()
+                    do {
+                        try records.finish()
+                    } catch ReliableAudioRecordsError.incompleteRecord {
+                        guard let generation = records.generation else {
+                            throw ReliableAudioRecordsError.incompleteRecord
+                        }
+                        if self.audioStream === stream { self.audioStream = nil }
+                        stream.cancel()
+                        self.diagnostics.log(.warning, category: .transport,
+                                             message: "reliable_audio_flow_interrupted",
+                                             fields: ["event": "reliable_audio_flow_interrupted",
+                                                      "generation": "\(generation)"])
+                        return
+                    }
                     if self.audioStream === stream {
                         self.audioStream = nil
                         self.diagnostics.log(.warning, category: .transport,
