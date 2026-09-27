@@ -5,6 +5,7 @@
 #include <msquic.h>
 
 #include <algorithm>
+#include <atomic>
 #include <condition_variable>
 #include <cstring>
 #include <iostream>
@@ -19,6 +20,7 @@ namespace {
 
 constexpr char kAlpnText[] = "hearport/1";
 constexpr std::size_t kAudioDatagramBytes = 968;
+constexpr std::size_t kMaxReliablePendingSends = 128;
 
 struct SendBufferContext {
   std::vector<std::uint8_t> storage;
@@ -27,6 +29,7 @@ struct SendBufferContext {
       on_send_state;
   std::uint32_t stream_id = 0;
   std::uint32_t sequence = 0;
+  std::uint64_t audio_epoch = 0;
 
   explicit SendBufferContext(std::span<const std::byte> bytes)
       : storage(bytes.size()) {
@@ -94,6 +97,9 @@ class MsQuicServer final : public QuicServer {
     settings.IsSet.ServerResumptionLevel = TRUE;
     settings.PeerBidiStreamCount = 1;
     settings.IsSet.PeerBidiStreamCount = TRUE;
+    // Keep unacknowledged stream bytes in bounded application-owned buffers.
+    settings.SendBufferingEnabled = FALSE;
+    settings.IsSet.SendBufferingEnabled = TRUE;
 
     const QUIC_BUFFER alpn{sizeof(kAlpnText) - 1,
                             reinterpret_cast<uint8_t*>(
@@ -169,12 +175,16 @@ class MsQuicServer final : public QuicServer {
       return false;
     }
     if (reliable_mode_) {
-      if (audio_stream_ == nullptr) return false;
+      if (audio_stream_ == nullptr ||
+          pending_reliable_sends_.load() >= kMaxReliablePendingSends) return false;
       auto* context = new SendBufferContext(
           std::span<const std::byte>(datagram.data(), datagram.size()));
+      context->audio_epoch = audio_epoch_.load();
+      pending_reliable_sends_.fetch_add(1);
       const auto status = api_->StreamSend(audio_stream_, &context->buffer, 1,
                                            QUIC_SEND_FLAG_NONE, context);
       if (QUIC_FAILED(status)) {
+        pending_reliable_sends_.fetch_sub(1);
         delete context;
         return false;
       }
@@ -201,6 +211,8 @@ class MsQuicServer final : public QuicServer {
     if (!started_ || api_ == nullptr || connection_ == nullptr ||
         stream_id == 0 || generation == 0) return false;
     reliable_mode_ = true;
+    audio_epoch_.fetch_add(1);
+    pending_reliable_sends_.store(0);
     if (audio_stream_ != nullptr) {
       api_->StreamShutdown(audio_stream_,
                            QUIC_STREAM_SHUTDOWN_FLAG_ABORT_SEND, 0);
@@ -225,9 +237,12 @@ class MsQuicServer final : public QuicServer {
       preface[index + 4] = std::byte(generation >> (24 - index * 8));
     }
     auto* context = new SendBufferContext(preface);
+    context->audio_epoch = audio_epoch_.load();
+    pending_reliable_sends_.fetch_add(1);
     const auto status = api_->StreamSend(stream, &context->buffer, 1,
                                          QUIC_SEND_FLAG_NONE, context);
     if (QUIC_FAILED(status)) {
+      pending_reliable_sends_.fetch_sub(1);
       delete context;
       audio_stream_ = nullptr;
       api_->StreamShutdown(stream, QUIC_STREAM_SHUTDOWN_FLAG_ABORT_SEND, 0);
@@ -399,6 +414,8 @@ class MsQuicServer final : public QuicServer {
               server->control_stream_ = nullptr;
               server->audio_stream_ = nullptr;
               server->reliable_mode_ = false;
+              server->audio_epoch_.fetch_add(1);
+              server->pending_reliable_sends_.store(0);
               server->datagram_ready_ = false;
               on_closed = server->callbacks_.on_closed;
             }
@@ -489,8 +506,13 @@ class MsQuicServer final : public QuicServer {
     auto* server = static_cast<MsQuicServer*>(context);
     switch (event->Type) {
       case QUIC_STREAM_EVENT_SEND_COMPLETE:
-        delete static_cast<SendBufferContext*>(
-            event->SEND_COMPLETE.ClientContext);
+        if (auto* send_context = static_cast<SendBufferContext*>(
+                event->SEND_COMPLETE.ClientContext)) {
+          if (send_context->audio_epoch == server->audio_epoch_.load()) {
+            server->pending_reliable_sends_.fetch_sub(1);
+          }
+          delete send_context;
+        }
         break;
       case QUIC_STREAM_EVENT_SHUTDOWN_COMPLETE: {
         const QUIC_API_TABLE* api = nullptr;
@@ -538,6 +560,8 @@ class MsQuicServer final : public QuicServer {
     }
     datagram_ready_ = false;
     reliable_mode_ = false;
+    audio_epoch_.fetch_add(1);
+    pending_reliable_sends_.store(0);
   }
 
   std::mutex mutex_;
@@ -553,6 +577,8 @@ class MsQuicServer final : public QuicServer {
   QuicServerCallbacks callbacks_{};
   bool datagram_ready_ = false;
   bool reliable_mode_ = false;
+  std::atomic<std::uint64_t> audio_epoch_ = 0;
+  std::atomic<std::size_t> pending_reliable_sends_ = 0;
   bool started_ = false;
 };
 
