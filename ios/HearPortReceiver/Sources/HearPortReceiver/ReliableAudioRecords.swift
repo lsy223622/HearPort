@@ -11,6 +11,10 @@ struct ReliableAudioRecords {
     private(set) var generation: UInt32?
     private var pending = Data()
 
+    init(expectedStreamID: UInt32) {
+        self.expectedStreamID = expectedStreamID
+    }
+
     mutating func append(_ bytes: Data) throws -> [AudioDatagram] {
         pending.append(bytes)
         if generation == nil {
