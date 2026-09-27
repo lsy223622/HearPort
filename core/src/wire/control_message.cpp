@@ -162,6 +162,11 @@ bool NoControlHeaderFields(const ControlEnvelope& envelope) noexcept {
 }
 
 bool ValidateEnvelope(const ControlEnvelope& envelope) noexcept {
+  if (envelope.type != ControlMessageType::audio_progress &&
+      (envelope.audio_generation != 0 || envelope.audio_sequence != 0 ||
+       envelope.has_audio_sequence)) {
+    return false;
+  }
   switch (envelope.type) {
     case ControlMessageType::connect_request:
       return IsValidAuthMode(envelope.auth_mode) &&
@@ -248,6 +253,11 @@ bool ValidateEnvelope(const ControlEnvelope& envelope) noexcept {
       return NoControlHeaderFields(envelope) && NoDiagnosticFields(envelope) &&
              ExactLength(envelope.bytes1, 16) && envelope.bytes2.empty() &&
              envelope.stream_id == 0;
+    case ControlMessageType::audio_progress:
+      return NoControlHeaderFields(envelope) && NoDiagnosticFields(envelope) &&
+             envelope.bytes1.empty() && envelope.bytes2.empty() &&
+             envelope.stream_id != 0 && envelope.audio_generation != 0 &&
+             (envelope.has_audio_sequence || envelope.audio_sequence == 0);
   }
   return false;
 }
@@ -498,6 +508,31 @@ bool ParseStream(std::span<const std::byte> bytes,
   return value_seen;
 }
 
+bool ParseAudioProgress(std::span<const std::byte> bytes,
+                        ControlEnvelope& envelope) noexcept {
+  Reader reader(bytes);
+  bool stream_seen = false;
+  bool generation_seen = false;
+  while (!reader.AtEnd()) {
+    std::uint32_t field = 0;
+    std::uint8_t wire_type = 0;
+    if (!reader.ReadTag(field, wire_type)) return false;
+    if (field == 1 && wire_type == 0) {
+      if (!reader.ReadVarint(envelope.stream_id)) return false;
+      stream_seen = true;
+    } else if (field == 2 && wire_type == 0) {
+      if (!reader.ReadVarint(envelope.audio_generation)) return false;
+      generation_seen = true;
+    } else if (field == 3 && wire_type == 0) {
+      if (!reader.ReadVarint(envelope.audio_sequence)) return false;
+      envelope.has_audio_sequence = true;
+    } else if (!reader.Skip(wire_type)) {
+      return false;
+    }
+  }
+  return stream_seen && generation_seen;
+}
+
 }  // namespace
 
 std::vector<std::byte> EncodeControlEnvelope(const ControlEnvelope& envelope) {
@@ -580,6 +615,16 @@ std::vector<std::byte> EncodeControlEnvelope(const ControlEnvelope& envelope) {
     case ControlMessageType::diagnostics_report_received:
       AppendBytes(1, envelope.bytes1, submessage);
       break;
+    case ControlMessageType::audio_progress:
+      AppendTag(1, 0, submessage);
+      AppendVarint(envelope.stream_id, submessage);
+      AppendTag(2, 0, submessage);
+      AppendVarint(envelope.audio_generation, submessage);
+      if (envelope.has_audio_sequence) {
+        AppendTag(3, 0, submessage);
+        AppendVarint(envelope.audio_sequence, submessage);
+      }
+      break;
   }
 
   const std::uint32_t envelope_field = [&] {
@@ -603,6 +648,7 @@ std::vector<std::byte> EncodeControlEnvelope(const ControlEnvelope& envelope) {
       case ControlMessageType::diagnostics_report_chunk: return 36u;
       case ControlMessageType::diagnostics_report_end: return 37u;
       case ControlMessageType::diagnostics_report_received: return 38u;
+      case ControlMessageType::audio_progress: return 39u;
     }
     return 0u;
   }();
@@ -630,7 +676,7 @@ std::optional<ControlEnvelope> DecodeControlEnvelope(
         field == 1 || field == 2 || field == 3 || field == 10 ||
         field == 11 || field == 12 || field == 13 || field == 14 ||
         field == 20 || field == 21 || field == 30 || field == 31 ||
-        (field >= 32 && field <= 38);
+        (field >= 32 && field <= 39);
     if (!known_field || wire_type != 2) {
       if (!reader.Skip(wire_type)) return std::nullopt;
       continue;
@@ -719,6 +765,10 @@ std::optional<ControlEnvelope> DecodeControlEnvelope(
     case 38:
       envelope.type = ControlMessageType::diagnostics_report_received;
       parsed = ParseDiagnosticsReportSession(selected_submessage, envelope);
+      break;
+    case 39:
+      envelope.type = ControlMessageType::audio_progress;
+      parsed = ParseAudioProgress(selected_submessage, envelope);
       break;
   }
   return parsed && ValidateEnvelope(envelope)

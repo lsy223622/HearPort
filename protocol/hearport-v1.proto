@@ -114,6 +114,12 @@ message StartStreamAck {
   uint32 stream_id = 1;              // echo of the pending non-zero StartStream.stream_id
 }
 
+message AudioProgress {
+  uint32 stream_id = 1;              // active non-zero application stream ID
+  uint32 generation = 2;             // active non-zero reliable audio generation
+  optional uint32 latest_received_sequence = 3; // absent before first record
+}
+
 message ErrorMessage {
   ErrorCode code = 1;                // ERROR_CODE_UNSPECIFIED is invalid
   string message = 2;                // diagnostic only
@@ -144,5 +150,6 @@ message ControlEnvelope {
     DiagnosticsReportChunk diagnostics_report_chunk = 36;
     DiagnosticsReportEnd diagnostics_report_end = 37;
     DiagnosticsReportReceived diagnostics_report_received = 38;
+    AudioProgress audio_progress = 39;
   }
 }

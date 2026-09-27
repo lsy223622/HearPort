@@ -108,6 +108,8 @@ bool SenderAuthentication::HandleConnect(
   }
   peer_supports_diagnostics_ =
       (envelope.feature_bits & wire::kFeatureDiagnosticsUpload) != 0;
+  peer_wants_reliable_ =
+      (envelope.feature_bits & wire::kFeatureReliableAudio) != 0;
 
   if (envelope.auth_mode == AuthMode::remembered) {
     const auto credential = credential_store_.Load();
@@ -213,6 +215,7 @@ bool SenderAuthentication::CompleteAuthentication(bool remember) {
   if (!service_.MarkAuthenticated()) {
     return Fail(ErrorCode::protocol, "session authentication state rejected");
   }
+  service_.ConfigureReliableAudio(peer_wants_reliable_);
   if (service_.debug_duration().has_value() && !peer_supports_diagnostics_) {
     service_.LogDiagnostic("debug_session_refused receiver_feature_missing=1");
     return Fail(ErrorCode::protocol,
@@ -223,6 +226,7 @@ bool SenderAuthentication::CompleteAuthentication(bool remember) {
   ready.feature_bits = peer_supports_diagnostics_
                            ? wire::kFeatureDiagnosticsUpload
                            : 0;
+  if (peer_wants_reliable_) ready.feature_bits |= wire::kFeatureReliableAudio;
   if (!Send(ready)) return false;
   authenticated_ = true;
   if (peer_supports_diagnostics_) {
@@ -383,6 +387,16 @@ bool SenderAuthentication::HandleControlPayload(
                   ? Flow::debug_stream_active
                   : Flow::idle;
       return true;
+    case wire::ControlMessageType::audio_progress:
+      if (!peer_wants_reliable_ || !authenticated_ ||
+          !service_.ObserveAudioProgress(
+              envelope->stream_id, envelope->audio_generation,
+              envelope->has_audio_sequence
+                  ? std::optional<std::uint32_t>(envelope->audio_sequence)
+                  : std::nullopt)) {
+        return Fail(ErrorCode::stream_state, "unexpected AudioProgress");
+      }
+      return true;
     default:
       return Fail(ErrorCode::protocol, "unexpected control message");
   }
@@ -404,6 +418,7 @@ void SenderAuthentication::Reset() noexcept {
   authenticated_ = false;
   remember_pairing_ = false;
   peer_supports_diagnostics_ = false;
+  peer_wants_reliable_ = false;
   report_upload_active_ = false;
   report_upload_session_id_.fill(std::byte{0});
   debug_session_id_.fill(std::byte{0});

@@ -160,6 +160,30 @@ int main() {
               session_ready_features,
           "SessionReady features round-trip");
 
+  ControlEnvelope progress;
+  progress.type = ControlMessageType::audio_progress;
+  progress.stream_id = 7;
+  progress.audio_generation = 1;
+  progress.has_audio_sequence = true;
+  progress.audio_sequence = 0;
+  const auto progress_bytes = Envelope(
+      39, Join({VarintField(1, 7), VarintField(2, 1), VarintField(3, 0)}));
+  Require(hearport::wire::EncodeControlEnvelope(progress) == progress_bytes,
+          "zero-sequence audio progress uses canonical field 39 bytes");
+  const auto decoded_progress =
+      hearport::wire::DecodeControlEnvelope(progress_bytes);
+  Require(decoded_progress.has_value() && decoded_progress->has_audio_sequence &&
+              decoded_progress->audio_sequence == 0,
+          "audio progress preserves present sequence zero");
+  progress.has_audio_sequence = false;
+  Require(hearport::wire::EncodeControlEnvelope(progress) ==
+              Envelope(39, Join({VarintField(1, 7), VarintField(2, 1)})),
+          "audio progress can report before the first record");
+  Require(!hearport::wire::DecodeControlEnvelope(
+              Envelope(39, Join({VarintField(1, 7), VarintField(2, 0)})))
+              .has_value(),
+          "zero audio generation is rejected");
+
   const auto invalid_session = Envelope(
       33, Join({BytesField(1, std::span<const std::byte>(session_id).first(15)),
                 VarintField(2, 7), VarintField(3, 60)}));

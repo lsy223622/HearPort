@@ -31,9 +31,11 @@ enum class ControlMessageType : std::uint8_t {
   diagnostics_report_chunk,
   diagnostics_report_end,
   diagnostics_report_received,
+  audio_progress,
 };
 
 inline constexpr std::uint32_t kFeatureDiagnosticsUpload = 1u;
+inline constexpr std::uint32_t kFeatureReliableAudio = 2u;
 inline constexpr std::size_t kDiagnosticReportChunkMaxBytes = 60u * 1024u;
 
 // This is the small, schema-shaped value used at the platform boundary. The
@@ -54,6 +56,9 @@ struct ControlEnvelope {
   std::uint32_t total_bytes = 0;
   std::uint32_t chunk_count = 0;
   std::uint32_t chunk_index = 0;
+  std::uint32_t audio_generation = 0;
+  std::uint32_t audio_sequence = 0;
+  bool has_audio_sequence = false;
 };
 
 std::vector<std::byte> EncodeControlEnvelope(const ControlEnvelope& envelope);

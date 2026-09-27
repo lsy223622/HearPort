@@ -110,6 +110,25 @@ final class ReceiverCoreTests: XCTestCase {
         }
     }
 
+    func testAudioProgressPreservesSequenceZeroAndAbsentSequence() throws {
+        let withZero = ControlEnvelope(.audioProgress(streamID: 7, generation: 1,
+                                                      latestReceivedSequence: 0))
+        let withZeroBytes = envelope(
+            39, body: varintField(1, 7) + varintField(2, 1) + varintField(3, 0)
+        )
+        XCTAssertEqual(try withZero.encoded(), withZeroBytes)
+        XCTAssertEqual(try ControlEnvelope.decode(withZeroBytes), withZero)
+
+        let withoutSequence = ControlEnvelope(.audioProgress(streamID: 7, generation: 1,
+                                                              latestReceivedSequence: nil))
+        let withoutBytes = envelope(39, body: varintField(1, 7) + varintField(2, 1))
+        XCTAssertEqual(try withoutSequence.encoded(), withoutBytes)
+        XCTAssertEqual(try ControlEnvelope.decode(withoutBytes), withoutSequence)
+        XCTAssertThrowsError(try ControlEnvelope.decode(
+            envelope(39, body: varintField(1, 7) + varintField(2, 0))
+        ))
+    }
+
     private func varintField(_ field: UInt32, _ value: UInt32) -> [UInt8] {
         var encoded = varint((field << 3) | 0)
         encoded += varint(value)

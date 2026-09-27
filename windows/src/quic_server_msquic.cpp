@@ -165,10 +165,22 @@ class MsQuicServer final : public QuicServer {
 
   bool SendAudio(const wire::EncodedAudioDatagram& datagram) override {
     std::lock_guard lock(mutex_);
-    if (!started_ || connection_ == nullptr || api_ == nullptr ||
-        !datagram_ready_) {
+    if (!started_ || connection_ == nullptr || api_ == nullptr) {
       return false;
     }
+    if (reliable_mode_) {
+      if (audio_stream_ == nullptr) return false;
+      auto* context = new SendBufferContext(
+          std::span<const std::byte>(datagram.data(), datagram.size()));
+      const auto status = api_->StreamSend(audio_stream_, &context->buffer, 1,
+                                           QUIC_SEND_FLAG_NONE, context);
+      if (QUIC_FAILED(status)) {
+        delete context;
+        return false;
+      }
+      return true;
+    }
+    if (!datagram_ready_) return false;
     const auto packet = wire::DecodeAudioDatagram(datagram);
     if (!packet) return false;
     auto* context = new SendBufferContext(datagram, packet->stream_id,
@@ -180,6 +192,49 @@ class MsQuicServer final : public QuicServer {
       delete context;
       return false;
     }
+    return true;
+  }
+
+  bool StartReliableAudio(std::uint32_t stream_id,
+                          std::uint32_t generation) override {
+    std::lock_guard lock(mutex_);
+    if (!started_ || api_ == nullptr || connection_ == nullptr ||
+        stream_id == 0 || generation == 0) return false;
+    reliable_mode_ = true;
+    if (audio_stream_ != nullptr) {
+      api_->StreamShutdown(audio_stream_,
+                           QUIC_STREAM_SHUTDOWN_FLAG_ABORT_SEND, 0);
+      audio_stream_ = nullptr;
+    }
+    HQUIC stream = nullptr;
+    if (QUIC_FAILED(api_->StreamOpen(connection_,
+                                    QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL,
+                                    AudioStreamCallback, this, &stream))) {
+      return false;
+    }
+    audio_stream_ = stream;
+    if (QUIC_FAILED(api_->StreamStart(stream,
+                                     QUIC_STREAM_START_FLAG_IMMEDIATE))) {
+      audio_stream_ = nullptr;
+      api_->StreamClose(stream);
+      return false;
+    }
+    std::array<std::byte, 8> preface{};
+    for (int index = 0; index < 4; ++index) {
+      preface[index] = std::byte(stream_id >> (24 - index * 8));
+      preface[index + 4] = std::byte(generation >> (24 - index * 8));
+    }
+    auto* context = new SendBufferContext(preface);
+    const auto status = api_->StreamSend(stream, &context->buffer, 1,
+                                         QUIC_SEND_FLAG_NONE, context);
+    if (QUIC_FAILED(status)) {
+      delete context;
+      audio_stream_ = nullptr;
+      api_->StreamShutdown(stream, QUIC_STREAM_SHUTDOWN_FLAG_ABORT_SEND, 0);
+      return false;
+    }
+    Log("quic_reliable_audio_started stream_id=" + std::to_string(stream_id) +
+        " generation=" + std::to_string(generation));
     return true;
   }
 
@@ -342,6 +397,8 @@ class MsQuicServer final : public QuicServer {
               tracked = true;
               server->connection_ = nullptr;
               server->control_stream_ = nullptr;
+              server->audio_stream_ = nullptr;
+              server->reliable_mode_ = false;
               server->datagram_ready_ = false;
               on_closed = server->callbacks_.on_closed;
             }
@@ -427,6 +484,30 @@ class MsQuicServer final : public QuicServer {
     return QUIC_STATUS_SUCCESS;
   }
 
+  static QUIC_STATUS QUIC_API AudioStreamCallback(
+      HQUIC stream, void* context, QUIC_STREAM_EVENT* event) {
+    auto* server = static_cast<MsQuicServer*>(context);
+    switch (event->Type) {
+      case QUIC_STREAM_EVENT_SEND_COMPLETE:
+        delete static_cast<SendBufferContext*>(
+            event->SEND_COMPLETE.ClientContext);
+        break;
+      case QUIC_STREAM_EVENT_SHUTDOWN_COMPLETE: {
+        const QUIC_API_TABLE* api = nullptr;
+        {
+          std::lock_guard lock(server->mutex_);
+          api = server->api_;
+          if (server->audio_stream_ == stream) server->audio_stream_ = nullptr;
+        }
+        if (api != nullptr) api->StreamClose(stream);
+        break;
+      }
+      default:
+        break;
+    }
+    return QUIC_STATUS_SUCCESS;
+  }
+
   void StopLocked(std::unique_lock<std::mutex>& lock) {
     started_ = false;
     if (listener_ != nullptr && api_ != nullptr) {
@@ -441,6 +522,7 @@ class MsQuicServer final : public QuicServer {
         return connection_ != connection;
       });
       control_stream_ = nullptr;
+      audio_stream_ = nullptr;
     }
     if (configuration_ != nullptr && api_ != nullptr) {
       api_->ConfigurationClose(configuration_);
@@ -455,6 +537,7 @@ class MsQuicServer final : public QuicServer {
       api_ = nullptr;
     }
     datagram_ready_ = false;
+    reliable_mode_ = false;
   }
 
   std::mutex mutex_;
@@ -465,9 +548,11 @@ class MsQuicServer final : public QuicServer {
   HQUIC listener_ = nullptr;
   HQUIC connection_ = nullptr;
   HQUIC control_stream_ = nullptr;
+  HQUIC audio_stream_ = nullptr;
   QuicServerOptions options_{};
   QuicServerCallbacks callbacks_{};
   bool datagram_ready_ = false;
+  bool reliable_mode_ = false;
   bool started_ = false;
 };
 
@@ -493,6 +578,7 @@ class UnavailableQuicServer final : public QuicServer {
   }
   bool SendControl(std::span<const std::byte>) override { return false; }
   bool SendAudio(const wire::EncodedAudioDatagram&) override { return false; }
+  bool StartReliableAudio(std::uint32_t, std::uint32_t) override { return false; }
   void CloseConnection() override {}
   void Stop() override {}
 };

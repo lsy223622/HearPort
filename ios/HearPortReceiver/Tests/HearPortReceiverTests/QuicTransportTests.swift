@@ -64,5 +64,42 @@ final class QuicTransportTests: XCTestCase {
                           tlsPolicy: .pairing(onPeerSPKIHash: { _ in }))
         wait(for: [control, audio], timeout: 15)
     }
+
+    func testReliableAudioGenerationsUseIncomingStreams() throws {
+        guard ProcessInfo.processInfo.environment["HEARPORT_QUIC_INTEGRATION"] == "1" else {
+            throw XCTSkip("Requires the loopback QUIC echo server")
+        }
+        let diagnostics = HearPortDiagnostics(
+            directory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
+        let transport = HearPortQuicTransport(diagnostics: diagnostics, audioMode: .reliable)
+        let audio = expectation(description: "Two reliable audio generations")
+        audio.expectedFulfillmentCount = 2
+        transport.onStateChange = { state in
+            if state == .ready {
+                transport.acceptReliableAudio()
+                transport.expectReliableAudio(streamID: 1, latestReceivedSequence: { nil })
+                try? transport.sendControl(Data("RELIABLE_1".utf8))
+            }
+        }
+        transport.onReliableAudioGeneration = { streamID, generation in
+            XCTAssertEqual(streamID, 1)
+            XCTAssertTrue(generation == 1 || generation == 2)
+            return true
+        }
+        transport.onAudioDatagram = { data in
+            let packet = try? AudioDatagram(encoded: data)
+            XCTAssertEqual(packet?.streamID, 1)
+            audio.fulfill()
+            if packet?.sequence == 0 {
+                try? transport.sendControl(Data("RELIABLE_2".utf8))
+            } else {
+                XCTAssertEqual(packet?.sequence, 1)
+            }
+        }
+        defer { transport.cancel() }
+        transport.connect(host: "127.0.0.1", port: 44330,
+                          tlsPolicy: .pairing(onPeerSPKIHash: { _ in }))
+        wait(for: [audio], timeout: 15)
+    }
 }
 #endif
