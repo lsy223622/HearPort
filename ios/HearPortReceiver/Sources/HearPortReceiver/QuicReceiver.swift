@@ -733,7 +733,8 @@ public final class HearPortQuicTransport {
         onStateChange?(.connecting)
 
         connectionGroup.stateUpdateHandler = { [weak self] newState in
-            guard let self else { return }
+            guard let self, let activeGroup = self.group,
+                  activeGroup === connectionGroup else { return }
             switch newState {
             case .ready:
                 self.datagramReady = true
@@ -775,20 +776,24 @@ public final class HearPortQuicTransport {
             }
         }
         connectionGroup.newConnectionHandler = { [weak self] connection in
-            guard let self, self.audioMode == .reliable,
+            guard let self, let activeGroup = self.group,
+                  activeGroup === connectionGroup,
+                  self.audioMode == .reliable,
                   self.reliableAccepted, let streamID = self.expectedAudioStreamID else {
                 connection.cancel()
                 return
             }
             self.receiveAudio(on: connection,
-                              records: ReliableAudioRecords(expectedStreamID: streamID))
+                              records: ReliableAudioRecords(expectedStreamID: streamID),
+                              connectionGroup: connectionGroup)
             connection.start(queue: self.queue)
         }
         connectionGroup.setReceiveHandler(
             maximumMessageSize: AudioDatagram.byteCount,
             rejectOversizedMessages: true
         ) { [weak self] _, data, isComplete in
-            guard let self else { return }
+            guard let self, let activeGroup = self.group,
+                  activeGroup === connectionGroup else { return }
             if let data {
                 let isFirst = !self.loggedFirstDatagram
                 self.loggedFirstDatagram = true
@@ -871,15 +876,20 @@ public final class HearPortQuicTransport {
         audioStream?.cancel()
         audioStream = nil
         audioGeneration = 0
-        progressInFlight = false
         expectedAudioStreamID = streamID
         progressSequence = latestReceivedSequence
     }
 
-    private func receiveAudio(on stream: NWConnection, records: ReliableAudioRecords) {
+    private func receiveAudio(on stream: NWConnection, records: ReliableAudioRecords,
+                              connectionGroup: NWConnectionGroup) {
         stream.receive(minimumIncompleteLength: 1, maximumLength: 65_540) {
             [weak self] data, _, isComplete, error in
-            guard let self, self.group != nil else { return }
+            guard let self, let activeGroup = self.group,
+                  activeGroup === connectionGroup else { return }
+            guard self.expectedAudioStreamID == records.expectedStreamID else {
+                stream.cancel()
+                return
+            }
             var records = records
             do {
                 let packets = try records.append(data ?? Data())
@@ -898,8 +908,7 @@ public final class HearPortQuicTransport {
                                  "stream_id": "\(records.expectedStreamID)",
                                  "generation": "\(generation)"])
                 }
-                guard self.expectedAudioStreamID == records.expectedStreamID,
-                      self.audioStream === stream || records.generation == nil else {
+                guard self.audioStream === stream || records.generation == nil else {
                     stream.cancel()
                     return
                 }
@@ -925,7 +934,8 @@ public final class HearPortQuicTransport {
                                                   "error": "\(error)"])
                     return
                 }
-                self.receiveAudio(on: stream, records: records)
+                self.receiveAudio(on: stream, records: records,
+                                  connectionGroup: connectionGroup)
             } catch {
                 self.diagnostics.log(.error, category: .transport,
                                      message: "reliable_audio_invalid",
@@ -938,12 +948,13 @@ public final class HearPortQuicTransport {
     }
 
     private func startProgressTimer() {
-        guard progressTimer == nil else { return }
+        guard progressTimer == nil, let connectionGroup = group else { return }
         let timer = DispatchSource.makeTimerSource(queue: queue)
         timer.schedule(deadline: .now() + .milliseconds(100),
                        repeating: .milliseconds(100))
         timer.setEventHandler { [weak self] in
-            guard let self, !self.progressInFlight,
+            guard let self, let activeGroup = self.group,
+                  activeGroup === connectionGroup, !self.progressInFlight,
                   let streamID = self.expectedAudioStreamID,
                   self.audioGeneration != 0 else { return }
             do {
@@ -952,7 +963,11 @@ public final class HearPortQuicTransport {
                     latestReceivedSequence: self.progressSequence?()))
                 self.progressInFlight = true
                 try self.sendControl(message.encoded()) { [weak self] _ in
-                    self?.progressInFlight = false
+                    self?.queue.async { [weak self] in
+                        guard let self, let activeGroup = self.group,
+                              activeGroup === connectionGroup else { return }
+                        self.progressInFlight = false
+                    }
                 }
             } catch {
                 self.progressInFlight = false
@@ -984,7 +999,8 @@ public final class HearPortQuicTransport {
         }
         controlStream = control
         control.stateUpdateHandler = { [weak self] state in
-            guard let self else { return }
+            guard let self, let current = self.controlStream,
+                  current === control else { return }
             switch state {
             case .setup, .preparing:
                 self.diagnostics.log(
@@ -1060,17 +1076,19 @@ public final class HearPortQuicTransport {
     private func receiveControl(on stream: NWConnection) {
         stream.receive(minimumIncompleteLength: 1, maximumLength: 65_540) {
             [weak self] data, _, isComplete, error in
+            guard let self, let current = self.controlStream,
+                  current === stream else { return }
             if let data {
-                self?.diagnostics.log(
+                self.diagnostics.log(
                     .debug,
                     category: .control,
                     message: "control_read",
                     fields: ["event": "control_read", "bytes": "\(data.count)"]
                 )
-                self?.onControlData?(data)
+                self.onControlData?(data)
             }
             if let error {
-                self?.diagnostics.log(
+                self.diagnostics.log(
                     .warning,
                     category: .transport,
                     message: "control_read_failed",
@@ -1078,7 +1096,7 @@ public final class HearPortQuicTransport {
                 )
             }
             guard error == nil, !isComplete else { return }
-            self?.receiveControl(on: stream)
+            self.receiveControl(on: stream)
         }
     }
 

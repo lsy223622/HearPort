@@ -359,4 +359,25 @@ final class ReceiverCoreTests: XCTestCase {
         XCTAssertEqual(lifecycle.state, .silentRebuffer)
         XCTAssertEqual(lifecycle.resetGeneration, 2)
     }
+
+    func testReliableGenerationResetsAudioWithoutLosingAuthentication() throws {
+        let receiver = HearPortReceiver(bufferTargetPackets: 64)
+        XCTAssertTrue(receiver.beginAuthentication(authMode: .oneTime, peerID: Data()))
+        XCTAssertTrue(receiver.markAuthenticated())
+        XCTAssertTrue(receiver.beginStream(7))
+        XCTAssertTrue(receiver.acknowledgeStartStream(7))
+        let first = try AudioDatagram(streamID: 7, sequence: 10,
+                                      pcm: Data(repeating: 0, count: AudioDatagram.pcmByteCount))
+        XCTAssertEqual(receiver.receiveDatagram(first.encoded), .accepted)
+        XCTAssertEqual(receiver.reliableProgressSequence(), 10)
+        XCTAssertFalse(receiver.beginReliableGeneration(8))
+        XCTAssertTrue(receiver.beginReliableGeneration(7))
+        XCTAssertEqual(receiver.session.activeStreamID, 7)
+        XCTAssertEqual(receiver.session.phase, .silentRebuffer)
+        XCTAssertNil(receiver.reliableProgressSequence())
+        let next = try AudioDatagram(streamID: 7, sequence: 100,
+                                     pcm: Data(repeating: 0, count: AudioDatagram.pcmByteCount))
+        XCTAssertEqual(receiver.receiveDatagram(next.encoded), .accepted)
+        XCTAssertEqual(receiver.reliableProgressSequence(), 100)
+    }
 }

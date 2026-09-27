@@ -48,6 +48,10 @@ class ReliableAudioLag {
     return true;
   }
 
+  std::optional<std::uint32_t> latest_produced() const noexcept {
+    return latest_produced_;
+  }
+
  private:
   std::uint32_t stream_id_ = 0;
   std::uint32_t generation_ = 0;

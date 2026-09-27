@@ -287,19 +287,22 @@ void SenderService::ConfigureReliableAudio(bool enabled) {
 bool SenderService::ObserveAudioProgress(
     std::uint32_t stream_id, std::uint32_t generation,
     std::optional<std::uint32_t> latest_received) {
-  std::lock_guard send_lock(audio_send_mutex_);
+  std::unique_lock send_lock(audio_send_mutex_);
   if (!reliable_mode_.load()) return false;
+  std::optional<std::uint32_t> latest_produced;
   {
     std::lock_guard reliable_lock(reliable_mutex_);
     if (!reliable_lag_.Observe(stream_id, generation, latest_received,
                                ReliableAudioLag::Clock::now())) {
       return true;
     }
+    latest_produced = reliable_lag_.latest_produced();
   }
   const auto next_generation = generation == UINT32_MAX ? 1 : generation + 1;
+  std::size_t discarded = 0;
   {
     std::lock_guard queue_lock(queue_mutex_);
-    const auto discarded = audio_queue_.size();
+    discarded = audio_queue_.size();
     audio_queue_.clear();
     dropped_audio_packets_ += discarded;
     for (std::size_t index = 0; index < discarded; ++index) {
@@ -307,6 +310,7 @@ bool SenderService::ObserveAudioProgress(
     }
   }
   if (!quic_->StartReliableAudio(stream_id, next_generation)) {
+    send_lock.unlock();
     LogDiagnostic("reliable_audio_restart_failed");
     return false;
   }
@@ -316,9 +320,15 @@ bool SenderService::ObserveAudioProgress(
     reliable_lag_.Begin(stream_id, next_generation,
                         ReliableAudioLag::Clock::now());
   }
+  send_lock.unlock();
   LogDiagnostic("reliable_audio_live_edge_restart stream_id=" +
-                std::to_string(stream_id) + " generation=" +
-                std::to_string(next_generation));
+                std::to_string(stream_id) + " old_generation=" +
+                std::to_string(generation) + " new_generation=" +
+                std::to_string(next_generation) + " produced=" +
+                (latest_produced ? std::to_string(*latest_produced) : "none") +
+                " received=" +
+                (latest_received ? std::to_string(*latest_received) : "none") +
+                " discarded_queue_packets=" + std::to_string(discarded));
   return true;
 }
 
@@ -692,8 +702,15 @@ void SenderService::LogAudioSummary() {
           now - diagnostics_last_summary_);
   diagnostics_last_summary_ = now;
   const auto snapshot = audio_metrics_.exchange_interval();
+  std::uint32_t reliable_generation = 0;
+  {
+    std::lock_guard lock(reliable_mutex_);
+    reliable_generation = reliable_generation_;
+  }
   std::ostringstream line;
   line << "quic_audio_summary interval_ms=" << elapsed_ms.count()
+       << " audio_mode=" << (reliable_mode_.load() ? "reliable" : "datagram")
+       << " audio_generation=" << reliable_generation
        << " capture_callbacks=" << snapshot.capture_callbacks
        << " capture_frames=" << snapshot.capture_frames
        << " normalized_frames=" << snapshot.normalized_frames
