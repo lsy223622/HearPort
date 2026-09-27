@@ -37,6 +37,27 @@ class EchoProtocol(QuicConnectionProtocol):
                 return
             self._quic.send_stream_data(event.stream_id, event.data, end_stream=False)
             self.reliable_requests.extend(event.data)
+            if b"RELIABLE_ABORT_1" in self.reliable_requests:
+                audio_stream = self._quic.get_next_available_stream_id(
+                    is_unidirectional=True)
+                preface = (1).to_bytes(4, "big") + (1).to_bytes(4, "big")
+                packet = (1).to_bytes(4, "big") + (0).to_bytes(4, "big") + bytes(960)
+                self._quic.send_stream_data(audio_stream, preface + packet + packet[:1])
+                self.reliable_requests.clear()
+                self.transmit()
+
+                def replace_audio_stream():
+                    self._quic.reset_stream(audio_stream, error_code=0)
+                    next_stream = self._quic.get_next_available_stream_id(
+                        is_unidirectional=True)
+                    next_preface = (1).to_bytes(4, "big") + (2).to_bytes(4, "big")
+                    next_packet = ((1).to_bytes(4, "big") +
+                                   (1).to_bytes(4, "big") + bytes(960))
+                    self._quic.send_stream_data(next_stream, next_preface + next_packet,
+                                                end_stream=True)
+                    self.transmit()
+
+                asyncio.get_running_loop().call_later(0.1, replace_audio_stream)
             marker = f"RELIABLE_{self.reliable_generation + 1}".encode()
             if marker in self.reliable_requests and self.reliable_generation < 2:
                 self.reliable_generation += 1

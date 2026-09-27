@@ -101,5 +101,43 @@ final class QuicTransportTests: XCTestCase {
                           tlsPolicy: .pairing(onPeerSPKIHash: { _ in }))
         wait(for: [audio], timeout: 15)
     }
+
+    func testInterruptedReliableRecordDoesNotCloseConnection() throws {
+        guard ProcessInfo.processInfo.environment["HEARPORT_QUIC_INTEGRATION"] == "1" else {
+            throw XCTSkip("Requires the loopback QUIC echo server")
+        }
+        let diagnostics = HearPortDiagnostics(
+            directory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
+        let transport = HearPortQuicTransport(diagnostics: diagnostics, audioMode: .reliable)
+        let audio = expectation(description: "Audio resumes on the replacement stream")
+        audio.expectedFulfillmentCount = 2
+        transport.onStateChange = { state in
+            if state == .ready {
+                transport.acceptReliableAudio()
+                transport.expectReliableAudio(streamID: 1, latestReceivedSequence: { nil })
+                try? transport.sendControl(Data("RELIABLE_ABORT_1".utf8))
+            } else if state == .failed {
+                XCTFail("Interrupted old audio stream closed the connection")
+            }
+        }
+        transport.onReliableAudioGeneration = { streamID, generation in
+            XCTAssertEqual(streamID, 1)
+            XCTAssertTrue(generation == 1 || generation == 2)
+            return true
+        }
+        transport.onAudioDatagram = { data in
+            guard let packet = try? AudioDatagram(encoded: data) else {
+                XCTFail("Invalid audio packet")
+                return
+            }
+            XCTAssertEqual(packet.streamID, 1)
+            XCTAssertTrue(packet.sequence == 0 || packet.sequence == 1)
+            audio.fulfill()
+        }
+        defer { transport.cancel() }
+        transport.connect(host: "127.0.0.1", port: 44330,
+                          tlsPolicy: .pairing(onPeerSPKIHash: { _ in }))
+        wait(for: [audio], timeout: 15)
+    }
 }
 #endif
