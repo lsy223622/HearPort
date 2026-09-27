@@ -407,15 +407,6 @@ public final class ReceiverControlSession {
             rememberedResponseSent = true
             send(.authResponse(peerID: credential.peerID, mac: mac))
         case let .sessionReady(features):
-            if audioMode == .reliable &&
-                (features & ControlFeature.reliableAudio) == 0 {
-                diagnostics.log(.error, category: .control,
-                                message: "reliable_audio_unsupported",
-                                fields: ["event": "reliable_audio_unsupported"])
-                transport.cancel()
-                onError?("This Windows sender does not support Stability mode. Update it or select Low latency.")
-                return
-            }
             switch mode {
             case .remembered:
                 guard rememberedResponseSent else {
@@ -442,6 +433,15 @@ public final class ReceiverControlSession {
                     message: "remembered_credential_saved",
                     fields: ["event": "remembered_credential_saved"]
                 )
+            }
+            if audioMode == .reliable &&
+                (features & ControlFeature.reliableAudio) == 0 {
+                diagnostics.log(.error, category: .control,
+                                message: "reliable_audio_unsupported",
+                                fields: ["event": "reliable_audio_unsupported"])
+                transport.cancel()
+                onError?("This Windows sender does not support Stability mode. Update it or select Low latency.")
+                return
             }
             ready = true
             peerFeatures = features

@@ -388,8 +388,13 @@ bool SenderAuthentication::HandleControlPayload(
                   : Flow::idle;
       return true;
     case wire::ControlMessageType::audio_progress:
-      if (!peer_wants_reliable_ || !authenticated_ ||
-          !service_.ObserveAudioProgress(
+      if (!peer_wants_reliable_ || !authenticated_) {
+        return Fail(ErrorCode::stream_state, "unexpected AudioProgress");
+      }
+      if (flow_ != Flow::idle && flow_ != Flow::debug_stream_active) {
+        return true;
+      }
+      if (!service_.ObserveAudioProgress(
               envelope->stream_id, envelope->audio_generation,
               envelope->has_audio_sequence
                   ? std::optional<std::uint32_t>(envelope->audio_sequence)
