@@ -8,8 +8,13 @@ public final class HearPortReceiver {
     public private(set) var invalidDatagrams = 0
 
     private var jitter: JitterBuffer?
-    private var renderRing: RenderRingBuffer
+    private let renderRing: RenderRingBuffer
     private let lock = NSLock()
+    private let jitterFillFramesAtomic = AtomicUInt64()
+    private let renderActiveAtomic = AtomicUInt64()
+    private let pumpQueue = DispatchQueue(label: "com.hearport.receiver.pump", qos: .userInitiated)
+    private var pumpTimer: DispatchSourceTimer?
+    private let ringReserveFrames: Int
     private var loggedFirstAudioDatagram = false
     private var lastReceivedSequence: UInt32?
     private var outputRoute = "unknown"
@@ -36,6 +41,10 @@ public final class HearPortReceiver {
         lifecycle = AudioLifecycleController(diagnostics: diagnostics)
         renderRing = RenderRingBuffer(capacityFrames: renderCapacityFrames)
         jitterTargetPackets = normalizedBufferTarget
+        let targetFrames = normalizedBufferTarget * AudioDatagram.framesPerPacket
+        ringReserveFrames = min(renderCapacityFrames, 2_048,
+                                targetFrames - (normalizedBufferTarget > 8
+                                    ? AudioDatagram.framesPerPacket : 0))
         diagnostics.log(
             .info,
             category: .realtime,
@@ -51,12 +60,15 @@ public final class HearPortReceiver {
 
     deinit {
         realtimeReporter?.cancel()
+        pumpTimer?.cancel()
     }
 
     public var renderFillFrames: Int {
-        guard lock.try() else { return 0 }
-        defer { lock.unlock() }
-        return renderRing.fillFrames + (jitter?.fillPackets ?? 0) * AudioDatagram.framesPerPacket
+        renderRing.fillFrames + Int(jitterFillFramesAtomic.load())
+    }
+
+    public var isRenderActive: Bool {
+        renderActiveAtomic.load() != 0 && renderRing.fillFrames > 0
     }
 
     public var jitterStats: JitterStats? {
@@ -116,7 +128,11 @@ public final class HearPortReceiver {
         lock.lock()
         session.resetForConnection()
         jitter = nil
-        renderRing.reset()
+        renderActiveAtomic.store(0)
+        jitterFillFramesAtomic.store(0)
+        renderRing.requestReset()
+        pumpTimer?.cancel()
+        pumpTimer = nil
         loggedFirstAudioDatagram = false
         lastReceivedSequence = nil
         realtimeMetrics.resetInterval()
@@ -136,7 +152,10 @@ public final class HearPortReceiver {
         if accepted {
             jitter = JitterBuffer(streamID: streamID,
                                   targetPackets: jitterTargetPackets)
-            renderRing.reset()
+            renderActiveAtomic.store(0)
+            jitterFillFramesAtomic.store(0)
+            renderRing.requestReset()
+            startPumpTimerLocked()
             loggedFirstAudioDatagram = false
             lastReceivedSequence = nil
             realtimeMetrics.resetInterval()
@@ -234,9 +253,13 @@ public final class HearPortReceiver {
         if disposition == .accepted {
             let previousMode = jitter?.mode
             let previousTrimmedPackets = jitter?.stats.trimmedPackets ?? 0
-            if let insertResult = jitter?.insert(packet) {
+            let stagedBeforeInsert = max(0, renderRing.fillFrames -
+                                         AudioDatagram.framesPerPacket)
+            if let insertResult = jitter?.insert(packet, stagedFrames: stagedBeforeInsert) {
                 jitterResult = insertResult
                 let started = jitter?.startIfReady() ?? false
+                pumpLocked()
+                jitter?.trimToTarget(stagedFrames: renderRing.fillFrames)
                 let trimmedPackets = (jitter?.stats.trimmedPackets ?? 0) - previousTrimmedPackets
                 trimmedSequences = jitter?.takeTrimmedSequences() ?? []
                 fillPackets = jitter?.fillPackets ?? 0
@@ -268,6 +291,8 @@ public final class HearPortReceiver {
                 }
             }
         }
+        jitterFillFramesAtomic.store(UInt64((jitter?.fillPackets ?? 0) *
+                                            AudioDatagram.framesPerPacket))
         lock.unlock()
 
         debugSessionDiagnostics.recordPacket(
@@ -309,11 +334,13 @@ public final class HearPortReceiver {
         lifecycle.handle(event)
         switch event {
         case .interruptionBegan:
-            renderRing.reset()
+            renderActiveAtomic.store(0)
+            renderRing.requestReset()
             jitter?.enterSilentRebuffer()
             session.enterInterruption()
         case .routeChanged:
-            renderRing.reset()
+            renderActiveAtomic.store(0)
+            renderRing.requestReset()
             jitter?.enterSilentRebuffer()
             session.enterInterruption()
             session.recoverToRebuffer()
@@ -324,6 +351,8 @@ public final class HearPortReceiver {
         }
         let state = lifecycle.state
         let generation = lifecycle.resetGeneration
+        jitterFillFramesAtomic.store(UInt64((jitter?.fillPackets ?? 0) *
+                                            AudioDatagram.framesPerPacket))
         lock.unlock()
         diagnostics.log(
             .info,
@@ -343,7 +372,9 @@ public final class HearPortReceiver {
         jitter?.enterSilentRebuffer()
         session.enterSilentRebuffer()
         lifecycle.enterSilentRebuffer()
-        renderRing.reset()
+        renderActiveAtomic.store(0)
+        jitterFillFramesAtomic.store(0)
+        renderRing.requestReset()
         let phase = session.phase
         let state = lifecycle.state
         lock.unlock()
@@ -361,40 +392,18 @@ public final class HearPortReceiver {
 
     public func renderFrames(_ frameCount: Int) -> [Float] {
         guard frameCount > 0 else { return [] }
-        guard lock.try() else {
-            realtimeMetrics.recordRenderLockMiss(silencedFrames: frameCount)
-            return Array(repeating: 0, count: frameCount * 2)
-        }
-        defer { lock.unlock() }
-        let wasSilent = lifecycle.shouldRenderSilence
-        let underflowBefore = renderRing.underflowFrames
-        let overflowBefore = renderRing.overflowFrames
-        pumpLocked(minimumFrames: frameCount)
         let output = renderRing.pop(frames: frameCount)
         realtimeMetrics.recordRenderBuffer(
             fillFrames: renderRing.fillFrames,
-            underflowFrames: renderRing.underflowFrames - underflowBefore,
-            overflowFrames: renderRing.overflowFrames - overflowBefore
+            underflowFrames: frameCount - output.renderedFrames,
+            overflowFrames: 0
         )
-        if let buffer = jitter,
-           renderRing.fillFrames == 0,
-           buffer.fillPackets == 0,
-           buffer.mode != .silentRebuffer {
-            jitter?.enterSilentRebuffer()
-            session.enterSilentRebuffer()
-            lifecycle.enterSilentRebuffer()
-        }
-        if wasSilent || lifecycle.shouldRenderSilence {
-            return wasSilent
-                ? Array(repeating: 0, count: frameCount * 2)
-                : output
-        }
-        return output
+        return output.samples
     }
 
-    private func pumpLocked(minimumFrames: Int) {
-        guard jitter != nil else { return }
-        while renderRing.fillFrames < minimumFrames {
+    private func pumpLocked() {
+        guard jitter != nil, renderRing.isResetAcknowledged else { return }
+        while renderRing.fillFrames + AudioDatagram.framesPerPacket <= ringReserveFrames {
             if let packet = jitter?.consumeNext() {
                 renderRing.push(Self.decodePCM(packet.pcm))
             } else if jitter?.hasFuturePacket == true,
@@ -413,9 +422,33 @@ public final class HearPortReceiver {
                 break
             }
         }
-        if jitter?.mode == .running {
+        if jitter?.mode == .running, renderRing.fillFrames > 0 {
             lifecycle.handle(.audioAvailable)
+            renderActiveAtomic.store(1)
+        } else if renderRing.fillFrames == 0, jitter?.fillPackets == 0,
+                  jitter?.mode == .running {
+            jitter?.enterSilentRebuffer()
+            session.enterSilentRebuffer()
+            lifecycle.enterSilentRebuffer()
+            renderActiveAtomic.store(0)
         }
+    }
+
+    private func startPumpTimerLocked() {
+        guard pumpTimer == nil else { return }
+        let timer = DispatchSource.makeTimerSource(queue: pumpQueue)
+        timer.schedule(deadline: .now() + .milliseconds(5),
+                       repeating: .milliseconds(5), leeway: .milliseconds(1))
+        timer.setEventHandler { [weak self] in
+            guard let self else { return }
+            self.lock.lock()
+            self.pumpLocked()
+            self.jitterFillFramesAtomic.store(UInt64((self.jitter?.fillPackets ?? 0) *
+                                                     AudioDatagram.framesPerPacket))
+            self.lock.unlock()
+        }
+        pumpTimer = timer
+        timer.resume()
     }
 
     private func startRealtimeReporter() {

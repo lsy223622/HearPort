@@ -1,69 +1,45 @@
 import Foundation
+import HearPortAtomics
 
-public struct RenderRingBuffer {
-    public let capacityFrames: Int
-    private var storage: [Float]
-    private var readIndex = 0
-    private var writeIndex = 0
-    private var countFrames = 0
+final class RenderRingBuffer: @unchecked Sendable {
+    let capacityFrames: Int
+    private let storage: OpaquePointer
 
-    public private(set) var overflowFrames = 0
-    public private(set) var underflowFrames = 0
-
-    public init(capacityFrames: Int) {
+    init(capacityFrames: Int) {
         precondition(capacityFrames > 0)
+        guard let storage = hearport_audio_ring_create(capacityFrames) else {
+            preconditionFailure("Could not allocate audio ring")
+        }
         self.capacityFrames = capacityFrames
-        storage = Array(repeating: 0, count: capacityFrames * 2)
+        self.storage = storage
     }
 
-    public var fillFrames: Int { countFrames }
+    deinit {
+        hearport_audio_ring_destroy(storage)
+    }
 
-    public mutating func reset() {
-        readIndex = 0
-        writeIndex = 0
-        countFrames = 0
-        overflowFrames = 0
-        underflowFrames = 0
+    var fillFrames: Int { Int(hearport_audio_ring_fill(storage)) }
+    var isResetAcknowledged: Bool { hearport_audio_ring_reset_acknowledged(storage) }
+
+    func requestReset() {
+        hearport_audio_ring_request_reset(storage)
     }
 
     @discardableResult
-    public mutating func push(_ interleavedStereo: [Float]) -> Int {
+    func push(_ interleavedStereo: [Float]) -> Int {
         guard interleavedStereo.count.isMultiple(of: 2) else { return 0 }
-        var sourceIndex = 0
-        var frames = interleavedStereo.count / 2
-        if frames > capacityFrames {
-            sourceIndex = (frames - capacityFrames) * 2
-            frames = capacityFrames
+        return interleavedStereo.withUnsafeBufferPointer { samples in
+            Int(hearport_audio_ring_push(storage, samples.baseAddress,
+                                         interleavedStereo.count / 2))
         }
-        if countFrames + frames > capacityFrames {
-            let discarded = countFrames + frames - capacityFrames
-            readIndex = (readIndex + discarded * 2) % storage.count
-            countFrames -= discarded
-            overflowFrames += discarded
-        }
-        for _ in 0..<frames {
-            storage[writeIndex] = interleavedStereo[sourceIndex]
-            storage[writeIndex + 1] = interleavedStereo[sourceIndex + 1]
-            sourceIndex += 2
-            writeIndex = (writeIndex + 2) % storage.count
-        }
-        countFrames += frames
-        return frames
     }
 
-    public mutating func pop(frames requestedFrames: Int) -> [Float] {
-        guard requestedFrames > 0 else { return [] }
+    func pop(frames requestedFrames: Int) -> (samples: [Float], renderedFrames: Int) {
+        guard requestedFrames > 0 else { return ([], 0) }
         var output = Array(repeating: Float.zero, count: requestedFrames * 2)
-        let available = min(requestedFrames, countFrames)
-        for frame in 0..<available {
-            output[frame * 2] = storage[readIndex]
-            output[frame * 2 + 1] = storage[readIndex + 1]
-            readIndex = (readIndex + 2) % storage.count
+        let rendered = output.withUnsafeMutableBufferPointer { samples in
+            Int(hearport_audio_ring_pop(storage, samples.baseAddress, requestedFrames))
         }
-        countFrames -= available
-        if available < requestedFrames {
-            underflowFrames += requestedFrames - available
-        }
-        return output
+        return (output, rendered)
     }
 }

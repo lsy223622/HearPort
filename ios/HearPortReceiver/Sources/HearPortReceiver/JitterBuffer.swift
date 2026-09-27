@@ -80,7 +80,8 @@ public struct JitterBuffer {
         return sequences
     }
 
-    public mutating func insert(_ packet: AudioDatagram) -> JitterInsertResult {
+    public mutating func insert(_ packet: AudioDatagram,
+                                stagedFrames: Int = 0) -> JitterInsertResult {
         guard packet.streamID == streamID else {
             stats.wrongStreamPackets += 1
             return .wrongStream
@@ -102,7 +103,7 @@ public struct JitterBuffer {
         }
         packets[packet.sequence] = packet
         stats.insertedPackets += 1
-        trimToTarget()
+        trimToTarget(stagedFrames: stagedFrames)
         return .inserted
     }
 
@@ -136,12 +137,15 @@ public struct JitterBuffer {
         mode = .silentRebuffer
     }
 
-    private mutating func trimToTarget() {
-        guard mode == .running, packets.count > targetPackets else { return }
+    mutating func trimToTarget(stagedFrames: Int = 0) {
+        let stagedPackets = (max(0, stagedFrames) + AudioDatagram.framesPerPacket - 1) /
+            AudioDatagram.framesPerPacket
+        let limit = max(0, targetPackets - stagedPackets)
+        guard mode == .running, packets.count > limit else { return }
         guard let expected = nextSequence else { return }
 
         var oldestSequence = expected
-        while packets.count > targetPackets {
+        while packets.count > limit {
             if packets[oldestSequence] == nil {
                 guard let nextOldest = packets.keys.min(by: {
                     ($0 &- expected) < ($1 &- expected)
@@ -155,6 +159,6 @@ public struct JitterBuffer {
         }
         nextSequence = packets[oldestSequence] != nil
             ? oldestSequence
-            : packets.keys.min { ($0 &- expected) < ($1 &- expected) }
+            : (packets.keys.min { ($0 &- expected) < ($1 &- expected) } ?? oldestSequence)
     }
 }

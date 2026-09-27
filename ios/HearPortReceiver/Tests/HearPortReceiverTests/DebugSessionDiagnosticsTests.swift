@@ -162,6 +162,7 @@ final class DebugSessionDiagnosticsTests: XCTestCase {
         }
         for _ in 0..<4 {
             _ = receiver.renderFrames(AudioDatagram.framesPerPacket)
+            Thread.sleep(forTimeInterval: 0.02)
         }
 
         _ = try capture.finish(reason: "duration_expired", diagnostics: diagnostics)
