@@ -938,6 +938,7 @@ public final class HearPortQuicTransport {
                                              fields: ["event": "reliable_audio_flow_ended",
                                                       "generation": "\(self.audioGeneration)"])
                     }
+                    stream.cancel()
                     return
                 }
                 if let error {
@@ -948,6 +949,7 @@ public final class HearPortQuicTransport {
                                          message: "reliable_audio_read_failed",
                                          fields: ["event": "reliable_audio_read_failed",
                                                   "error": "\(error)"])
+                    stream.cancel()
                     return
                 }
                 self.receiveAudio(on: stream, records: records,

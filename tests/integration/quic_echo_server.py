@@ -26,6 +26,7 @@ class EchoProtocol(QuicConnectionProtocol):
         self.sent_audio = False
         self.reliable_requests = bytearray()
         self.reliable_generation = 0
+        self.cycle_generation = 0
 
     def quic_event_received(self, event):
         if isinstance(event, HandshakeCompleted):
@@ -37,6 +38,17 @@ class EchoProtocol(QuicConnectionProtocol):
                 return
             self._quic.send_stream_data(event.stream_id, event.data, end_stream=False)
             self.reliable_requests.extend(event.data)
+            if b"RELIABLE_CYCLE_" in self.reliable_requests and self.cycle_generation < 10:
+                self.cycle_generation += 1
+                audio_stream = self._quic.get_next_available_stream_id(
+                    is_unidirectional=True)
+                preface = ((1).to_bytes(4, "big") +
+                           self.cycle_generation.to_bytes(4, "big"))
+                packet = ((1).to_bytes(4, "big") +
+                          (self.cycle_generation - 1).to_bytes(4, "big") + bytes(960))
+                self._quic.send_stream_data(audio_stream, preface + packet,
+                                            end_stream=True)
+                self.reliable_requests.clear()
             if b"RELIABLE_ABORT_1" in self.reliable_requests:
                 audio_stream = self._quic.get_next_available_stream_id(
                     is_unidirectional=True)

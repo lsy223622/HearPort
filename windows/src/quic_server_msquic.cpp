@@ -353,6 +353,10 @@ class MsQuicServer final : public QuicServer {
         }
         break;
       }
+      case QUIC_CONNECTION_EVENT_STREAMS_AVAILABLE:
+        server->Log("quic_streams_available unidirectional=" +
+                    std::to_string(event->STREAMS_AVAILABLE.UnidirectionalCount));
+        break;
       case QUIC_CONNECTION_EVENT_DATAGRAM_STATE_CHANGED: {
         std::function<void(std::size_t)> on_ready;
         std::function<void()> on_unavailable;
@@ -505,6 +509,15 @@ class MsQuicServer final : public QuicServer {
       HQUIC stream, void* context, QUIC_STREAM_EVENT* event) {
     auto* server = static_cast<MsQuicServer*>(context);
     switch (event->Type) {
+      case QUIC_STREAM_EVENT_START_COMPLETE: {
+        std::ostringstream line;
+        line << "quic_audio_stream_start_complete status="
+             << static_cast<unsigned long>(event->START_COMPLETE.Status)
+             << " id=" << event->START_COMPLETE.ID
+             << " peer_accepted=" << event->START_COMPLETE.PeerAccepted;
+        server->Log(line.str());
+        break;
+      }
       case QUIC_STREAM_EVENT_SEND_COMPLETE:
         if (auto* send_context = static_cast<SendBufferContext*>(
                 event->SEND_COMPLETE.ClientContext)) {
