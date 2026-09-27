@@ -299,8 +299,7 @@ public final class PlatformAudioOutputController {
         let fillError = Double(fillFrames - receiver.jitterTargetFrames)
         let ratio = drift.update(
             fillError: fillError,
-            validAudio: lifecycle.state == .playing &&
-                fillFrames > 0
+            validAudio: receiver.isRenderActive
         )
         let sourceFrames = max(
             1,
@@ -355,8 +354,6 @@ public final class PlatformAudioOutputController {
                 fields: ["event": "route_changed"]
             )
             self?.receiver.handleAudioLifecycle(.routeChanged)
-            self?.drift.reset()
-            self?.resampler.reset()
             self?.rebuildEngine()
         })
         observers.append(center.addObserver(
@@ -377,9 +374,9 @@ public final class PlatformAudioOutputController {
                     fields: ["event": "interruption_began"]
                 )
                 self.receiver.handleAudioLifecycle(.interruptionBegan)
+                self.stopEngineForRecovery()
                 self.drift.reset()
                 self.resampler.reset()
-                self.stopEngineForRecovery()
             } else {
                 self.receiver.diagnostics.log(
                     .info,
@@ -403,6 +400,7 @@ public final class PlatformAudioOutputController {
 
     private func rebuildEngine() {
         stopEngineForRecovery()
+        resampler.reset()
         do {
             try audioSession.setActive(true)
             outputSampleRate = audioSession.sampleRate

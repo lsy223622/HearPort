@@ -28,6 +28,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          cc -std=c11 -O2 -pthread \
+            -I ios/HearPortReceiver/Sources/HearPortAtomics/include \
+            ios/HearPortReceiver/Tests/AudioRingCTests.c \
+            ios/HearPortReceiver/Sources/HearPortAtomics/AudioRing.c \
+            -o "$RUNNER_TEMP/audio-ring-tests"
+          "$RUNNER_TEMP/audio-ring-tests"
           python3 -m venv "$RUNNER_TEMP/quic-test"
           "$RUNNER_TEMP/quic-test/bin/pip" install aioquic==1.3.0
           "$RUNNER_TEMP/quic-test/bin/python" -u tests/integration/quic_echo_server.py > "$RUNNER_TEMP/quic-server.log" 2>&1 &
