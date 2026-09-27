@@ -5,6 +5,19 @@ import XCTest
 @testable import HearPortReceiver
 
 final class QuicTransportTests: XCTestCase {
+    private final class AudioCycleState: @unchecked Sendable {
+        private let lock = NSLock()
+        private var nextSequence: UInt32 = 0
+
+        func accept(_ sequence: UInt32) -> UInt32? {
+            lock.lock()
+            defer { lock.unlock() }
+            guard sequence == nextSequence else { return nil }
+            nextSequence += 1
+            return nextSequence
+        }
+    }
+
     private final class EchoState: @unchecked Sendable {
         private let lock = NSLock()
         private var decoder = ControlFrameDecoder()
@@ -149,7 +162,7 @@ final class QuicTransportTests: XCTestCase {
         let transport = HearPortQuicTransport(diagnostics: diagnostics, audioMode: .reliable)
         let audio = expectation(description: "Ten successive reliable audio streams")
         audio.expectedFulfillmentCount = 10
-        var nextSequence: UInt32 = 0
+        let cycle = AudioCycleState()
         transport.onStateChange = { state in
             if state == .ready {
                 transport.acceptReliableAudio()
@@ -169,8 +182,10 @@ final class QuicTransportTests: XCTestCase {
                 XCTFail("Invalid audio packet")
                 return
             }
-            XCTAssertEqual(packet.sequence, nextSequence)
-            nextSequence += 1
+            guard let nextSequence = cycle.accept(packet.sequence) else {
+                XCTFail("Reliable audio sequence was missing or out of order")
+                return
+            }
             audio.fulfill()
             if nextSequence < 10 {
                 try? transport.sendControl(Data("RELIABLE_CYCLE_\(nextSequence + 1)".utf8))
