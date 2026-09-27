@@ -18,9 +18,14 @@ int main() {
   assert(!lag.Observe(7, 1, 19, start + std::chrono::milliseconds(200)));
   assert(!lag.Observe(7, 2, 0, start + std::chrono::milliseconds(300)));
   assert(!lag.Observe(7, 1, 19, start + std::chrono::milliseconds(300)));
-  assert(lag.Observe(7, 1, 19, start + std::chrono::milliseconds(600)));
+  assert(!lag.Observe(7, 1, 19, start + std::chrono::milliseconds(600)));
+  for (std::uint32_t sequence = 101; sequence <= 200; ++sequence) {
+    lag.Produced(sequence);
+  }
+  assert(!lag.Observe(7, 1, 39, start + std::chrono::milliseconds(700)));
+  assert(lag.Observe(7, 1, 39, start + std::chrono::milliseconds(800)));
 
-  lag.Begin(7, 2, start + std::chrono::milliseconds(600));
+  lag.Begin(7, 2, start + std::chrono::milliseconds(800));
   for (std::uint32_t sequence = 0xfffffff0u; sequence != 6; ++sequence) {
     lag.Produced(sequence);
   }
@@ -37,10 +42,15 @@ int main() {
   lag.Produced(80);
   assert(!lag.Observe(7, 3, std::nullopt,
                       start + std::chrono::milliseconds(2100)));
+  for (std::uint32_t sequence = 81; sequence <= 160; ++sequence) {
+    lag.Produced(sequence);
+  }
+  assert(!lag.Observe(7, 3, std::nullopt,
+                      start + std::chrono::milliseconds(2200)));
   assert(lag.Observe(7, 3, std::nullopt,
-                     start + std::chrono::milliseconds(2200)));
+                     start + std::chrono::milliseconds(2300)));
 
-  lag.Begin(7, 4, start + std::chrono::milliseconds(2300));
+  lag.Begin(7, 4, start + std::chrono::milliseconds(2400));
   assert(!lag.Observe(7, 4, std::nullopt,
                       start + std::chrono::milliseconds(3000)));
 }

@@ -139,5 +139,47 @@ final class QuicTransportTests: XCTestCase {
                           tlsPolicy: .pairing(onPeerSPKIHash: { _ in }))
         wait(for: [audio], timeout: 15)
     }
+
+    func testReliableAudioCanCycleBeyondInitialStreamLimit() throws {
+        guard ProcessInfo.processInfo.environment["HEARPORT_QUIC_INTEGRATION"] == "1" else {
+            throw XCTSkip("Requires the loopback QUIC echo server")
+        }
+        let diagnostics = HearPortDiagnostics(
+            directory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
+        let transport = HearPortQuicTransport(diagnostics: diagnostics, audioMode: .reliable)
+        let audio = expectation(description: "Ten successive reliable audio streams")
+        audio.expectedFulfillmentCount = 10
+        var nextSequence: UInt32 = 0
+        transport.onStateChange = { state in
+            if state == .ready {
+                transport.acceptReliableAudio()
+                transport.expectReliableAudio(streamID: 1, latestReceivedSequence: { nil })
+                try? transport.sendControl(Data("RELIABLE_CYCLE_1".utf8))
+            } else if state == .failed {
+                XCTFail("Reliable audio stream cycle closed the connection")
+            }
+        }
+        transport.onReliableAudioGeneration = { streamID, generation in
+            XCTAssertEqual(streamID, 1)
+            XCTAssertTrue((1...10).contains(generation))
+            return true
+        }
+        transport.onAudioDatagram = { data in
+            guard let packet = try? AudioDatagram(encoded: data) else {
+                XCTFail("Invalid audio packet")
+                return
+            }
+            XCTAssertEqual(packet.sequence, nextSequence)
+            nextSequence += 1
+            audio.fulfill()
+            if nextSequence < 10 {
+                try? transport.sendControl(Data("RELIABLE_CYCLE_\(nextSequence + 1)".utf8))
+            }
+        }
+        defer { transport.cancel() }
+        transport.connect(host: "127.0.0.1", port: 44330,
+                          tlsPolicy: .pairing(onPeerSPKIHash: { _ in }))
+        wait(for: [audio], timeout: 15)
+    }
 }
 #endif

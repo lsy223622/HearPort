@@ -34,10 +34,10 @@ class ReliableAudioLag {
         restart_pending_ || !latest_produced_) {
       return false;
     }
-    bool behind = produced_count_ > 80;
+    bool behind = produced_count_ > 160;
     if (latest_received) {
       const auto distance = *latest_produced_ - *latest_received;
-      behind = distance < 0x80000000u && distance > 80;
+      behind = distance < 0x80000000u && distance > 160;
     }
     consecutive_lag_reports_ = behind ? consecutive_lag_reports_ + 1 : 0;
     if (consecutive_lag_reports_ < 2 ||
