@@ -16,6 +16,9 @@ targets:
     platform: iOS
     sources:
       - path: Sources
+      - path: Resources/en.lproj/Localizable.strings
+      - path: Resources/zh-Hans.lproj/Localizable.strings
+      - path: Resources/zh-Hans.lproj/InfoPlist.strings
     dependencies:
       - package: HearPortReceiver
     settings:
