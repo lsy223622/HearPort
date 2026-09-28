@@ -6,6 +6,11 @@
 "Connecting" = "Connecting";
 "Connected" = "Connected";
 "Connection failed" = "Connection failed";
+"Authentication failed. Check the pairing code or pair again." = "Authentication failed. Check the pairing code or pair again.";
+"Pairing is not available on the Windows PC." = "Pairing is not available on the Windows PC.";
+"Windows audio is unavailable." = "Windows audio is unavailable.";
+"The Windows PC does not support this audio mode." = "The Windows PC does not support this audio mode.";
+"The Windows PC reported a connection error." = "The Windows PC reported a connection error.";
 "Playing" = "Playing";
 "Audio output unavailable" = "Audio output unavailable";
 "Disconnect" = "Disconnect";

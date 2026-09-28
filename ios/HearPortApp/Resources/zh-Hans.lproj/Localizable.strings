@@ -6,6 +6,11 @@
 "Connecting" = "正在连接";
 "Connected" = "已连接";
 "Connection failed" = "连接失败";
+"Authentication failed. Check the pairing code or pair again." = "验证失败，请检查配对码或重新配对。";
+"Pairing is not available on the Windows PC." = "Windows 电脑当前未开放配对。";
+"Windows audio is unavailable." = "Windows 电脑的音频不可用。";
+"The Windows PC does not support this audio mode." = "Windows 电脑不支持当前音频模式。";
+"The Windows PC reported a connection error." = "Windows 电脑报告连接错误。";
 "Playing" = "正在播放";
 "Audio output unavailable" = "音频输出不可用";
 "Disconnect" = "断开连接";
