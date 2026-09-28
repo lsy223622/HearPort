@@ -529,7 +529,20 @@ public final class ReceiverControlSession {
                     "message_bytes": "\(message.utf8.count)"
                 ]
             )
-            onError?(message)
+            let displayMessage: String
+            switch code {
+            case .authFailed:
+                displayMessage = "Authentication failed. Check the pairing code or pair again."
+            case .pairingClosed:
+                displayMessage = "Pairing is not available on the Windows PC."
+            case .audioUnavailable:
+                displayMessage = "Windows audio is unavailable."
+            case .datagramUnsupported:
+                displayMessage = "The Windows PC does not support this audio mode."
+            case .protocolError, .streamState, .internalError:
+                displayMessage = "The Windows PC reported a connection error."
+            }
+            onError?(displayMessage)
         case let .diagnosticsStart(sessionID, streamID, durationSeconds):
             guard (peerFeatures & ControlFeature.diagnosticsUpload) != 0,
                   activeDebugSessionID == nil,
