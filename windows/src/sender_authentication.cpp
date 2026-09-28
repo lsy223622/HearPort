@@ -56,6 +56,12 @@ std::string SenderAuthentication::pairing_pin() const {
                      pairing_pin_.size());
 }
 
+void SenderAuthentication::SetConnectionHandler(
+    std::function<void(bool, bool)> handler) {
+  std::lock_guard lock(mutex_);
+  connection_handler_ = std::move(handler);
+}
+
 bool SenderAuthentication::ChoosePairingPin() {
   std::array<std::byte, 4> random{};
   constexpr std::uint32_t kLimit =
@@ -386,6 +392,7 @@ bool SenderAuthentication::HandleControlPayload(
       flow_ = flow_ == Flow::debug_stream_ack
                   ? Flow::debug_stream_active
                   : Flow::idle;
+      if (connection_handler_) connection_handler_(true, peer_wants_reliable_);
       return true;
     case wire::ControlMessageType::audio_progress:
       if (!peer_wants_reliable_ || !authenticated_) {
@@ -416,6 +423,7 @@ void SenderAuthentication::OnCaptureReset() {
 
 void SenderAuthentication::Reset() noexcept {
   std::lock_guard lock(mutex_);
+  if (authenticated_ && connection_handler_) connection_handler_(false, false);
   if (report_upload_active_) {
     report_store_.Abort(report_upload_session_id_);
   }
