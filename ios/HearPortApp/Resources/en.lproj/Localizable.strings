@@ -8,7 +8,6 @@
 "Connection failed" = "Connection failed";
 "Playing" = "Playing";
 "Audio output unavailable" = "Audio output unavailable";
-"Connect a Windows PC to play its audio here." = "Connect a Windows PC to play its audio here.";
 "Disconnect" = "Disconnect";
 "Last connection" = "Last connection";
 "Connect" = "Connect";
@@ -25,6 +24,7 @@
 "6-digit PIN" = "6-digit PIN";
 "Enter the code displayed by HearPort on Windows." = "Enter the code displayed by HearPort on Windows.";
 "Connect to a PC" = "Connect to a PC";
+"Bring Windows audio to this iPad." = "Bring Windows audio to this iPad.";
 "Done" = "Done";
 "Playback" = "Playback";
 "Audio transport mode" = "Audio transport mode";

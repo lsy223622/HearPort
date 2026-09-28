@@ -37,8 +37,12 @@ public struct HearPortApp: View {
     public var body: some View {
         NavigationStack {
             homeView
-            .navigationTitle("HearPort")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Text("HearPort")
+                        .font(.headline)
+                }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     NavigationLink {
                         settingsView
@@ -49,6 +53,9 @@ public struct HearPortApp: View {
                 }
             }
         }
+        .frame(maxWidth: 760)
+        .frame(maxWidth: .infinity)
+        .background(Color(uiColor: .systemGroupedBackground))
         .tint(Color.primary)
         .sheet(isPresented: $showingConnectionSetup) {
             NavigationStack {
@@ -135,11 +142,7 @@ public struct HearPortApp: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(status)
                             .font(.headline)
-                        if control == nil {
-                            Text("Connect a Windows PC to play its audio here.")
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                        } else {
+                        if control != nil {
                             Text(currentHost)
                                 .font(.subheadline)
                                 .foregroundStyle(.secondary)
@@ -154,6 +157,16 @@ public struct HearPortApp: View {
                         disconnect()
                     }
                 }
+            } header: {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Connect to a PC")
+                        .font(.title2.weight(.semibold))
+                        .foregroundStyle(.primary)
+                    Text("Bring Windows audio to this iPad.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                .textCase(nil)
             }
 
             if !lastHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -188,9 +201,6 @@ public struct HearPortApp: View {
                 Text("Use the address shown on your Windows PC. Pairing requires its six-digit code.")
             }
         }
-        .frame(maxWidth: 760)
-        .frame(maxWidth: .infinity)
-        .background(Color(uiColor: .systemGroupedBackground))
     }
 
     private var connectionSetupView: some View {

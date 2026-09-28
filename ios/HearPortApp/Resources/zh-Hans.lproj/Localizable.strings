@@ -8,7 +8,6 @@
 "Connection failed" = "连接失败";
 "Playing" = "正在播放";
 "Audio output unavailable" = "音频输出不可用";
-"Connect a Windows PC to play its audio here." = "连接 Windows 电脑后，即可在这台 iPad 上播放声音。";
 "Disconnect" = "断开连接";
 "Last connection" = "上次连接";
 "Connect" = "连接";
@@ -25,6 +24,7 @@
 "6-digit PIN" = "六位配对码";
 "Enter the code displayed by HearPort on Windows." = "输入 Windows 端 HearPort 显示的配对码。";
 "Connect to a PC" = "连接电脑";
+"Bring Windows audio to this iPad." = "将 Windows 电脑的声音带到这台 iPad。";
 "Done" = "完成";
 "Playback" = "播放";
 "Audio transport mode" = "音频传输模式";
