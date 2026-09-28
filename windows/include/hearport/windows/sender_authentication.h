@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <span>
 #include <string>
@@ -33,6 +34,7 @@ class SenderAuthentication {
   // The returned PIN is for the host UI to display and is never persisted.
   bool OpenPairingWindow();
   std::string pairing_pin() const;
+  void SetConnectionHandler(std::function<void(bool, bool)> handler);
 
   bool HandleControlPayload(std::span<const std::byte> payload);
   void OnDebugSessionEnded(std::array<std::byte, 16> session_id,
@@ -78,6 +80,7 @@ class SenderAuthentication {
   security::Bytes32 pairing_scalar_{};
   bool pairing_pin_ready_ = false;
   bool authenticated_ = false;
+  std::function<void(bool, bool)> connection_handler_;
   bool remember_pairing_ = false;
   bool peer_supports_diagnostics_ = false;
   bool peer_wants_reliable_ = false;

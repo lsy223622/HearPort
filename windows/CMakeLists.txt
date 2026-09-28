@@ -47,6 +47,41 @@ target_link_libraries(hearport_windows_platform PRIVATE ole32 avrt advapi32 cryp
 add_executable(hearport_sender src/main.cpp)
 target_link_libraries(hearport_sender PRIVATE hearport_windows_platform)
 
+enable_language(RC)
+add_executable(hearport_sender_gui WIN32
+  src/gui_main.cpp
+  src/sender_certificate.cpp
+  src/gui_resources.rc
+)
+target_include_directories(hearport_sender_gui PRIVATE src)
+target_compile_definitions(hearport_sender_gui PRIVATE UNICODE _UNICODE)
+target_link_libraries(hearport_sender_gui PRIVATE
+  hearport_windows_platform ncrypt crypt32 advapi32
+  comctl32 shell32 ole32 user32 gdi32 iphlpapi dwmapi uxtheme
+)
+if(MSVC)
+  target_compile_options(hearport_sender_gui PRIVATE /utf-8)
+  target_link_options(hearport_sender_gui PRIVATE /MANIFEST:NO)
+endif()
+if(MINGW)
+  target_link_options(hearport_sender_gui PRIVATE -municode)
+endif()
+
+if(HEARPORT_MSQUIC_INCLUDE_DIR AND HEARPORT_MSQUIC_LIBRARY)
+  get_filename_component(_msquic_library_dir "${HEARPORT_MSQUIC_LIBRARY}" DIRECTORY)
+  find_file(HEARPORT_MSQUIC_DLL NAMES msquic.dll
+    HINTS "${_msquic_library_dir}/../bin" NO_DEFAULT_PATH)
+  if(NOT HEARPORT_MSQUIC_DLL)
+    message(FATAL_ERROR "msquic.dll was not found beside ${HEARPORT_MSQUIC_LIBRARY}")
+  endif()
+  foreach(sender IN ITEMS hearport_sender hearport_sender_gui)
+    add_custom_command(TARGET ${sender} POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${HEARPORT_MSQUIC_DLL}" "$<TARGET_FILE_DIR:${sender}>"
+      VERBATIM)
+  endforeach()
+endif()
+
 if(BUILD_TESTING)
   add_executable(hearport_debug_session_trace_tests
     tests/debug_session_trace_tests.cpp)

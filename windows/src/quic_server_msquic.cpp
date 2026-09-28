@@ -77,15 +77,21 @@ class MsQuicServer final : public QuicServer {
     callbacks_ = std::move(callbacks);
     Log("quic_start port=" + std::to_string(options_.port));
 
-    if (QUIC_FAILED(MsQuicOpen2(&api_))) {
+    const auto open_status = MsQuicOpen2(&api_);
+    if (QUIC_FAILED(open_status)) {
+      Log("quic_open_failed status=" +
+          std::to_string(static_cast<unsigned long>(open_status)));
       api_ = nullptr;
       return false;
     }
 
     const QUIC_REGISTRATION_CONFIG registration_config{
         "HearPort", QUIC_EXECUTION_PROFILE_LOW_LATENCY};
-    if (QUIC_FAILED(api_->RegistrationOpen(&registration_config,
-                                           &registration_))) {
+    const auto registration_status =
+        api_->RegistrationOpen(&registration_config, &registration_);
+    if (QUIC_FAILED(registration_status)) {
+      Log("quic_registration_failed status=" +
+          std::to_string(static_cast<unsigned long>(registration_status)));
       StopLocked(lock);
       return false;
     }
@@ -104,9 +110,12 @@ class MsQuicServer final : public QuicServer {
     const QUIC_BUFFER alpn{sizeof(kAlpnText) - 1,
                             reinterpret_cast<uint8_t*>(
                                 const_cast<char*>(kAlpnText))};
-    if (QUIC_FAILED(api_->ConfigurationOpen(
-            registration_, &alpn, 1, &settings, sizeof(settings), nullptr,
-            &configuration_))) {
+    const auto configuration_status = api_->ConfigurationOpen(
+        registration_, &alpn, 1, &settings, sizeof(settings), nullptr,
+        &configuration_);
+    if (QUIC_FAILED(configuration_status)) {
+      Log("quic_configuration_failed status=" +
+          std::to_string(static_cast<unsigned long>(configuration_status)));
       StopLocked(lock);
       return false;
     }
@@ -117,14 +126,20 @@ class MsQuicServer final : public QuicServer {
     QUIC_CREDENTIAL_CONFIG credential{};
     credential.Type = QUIC_CREDENTIAL_TYPE_CERTIFICATE_HASH;
     credential.CertificateHash = &certificate_hash;
-    if (QUIC_FAILED(
-            api_->ConfigurationLoadCredential(configuration_, &credential))) {
+    const auto credential_status =
+        api_->ConfigurationLoadCredential(configuration_, &credential);
+    if (QUIC_FAILED(credential_status)) {
+      Log("quic_credential_failed status=" +
+          std::to_string(static_cast<unsigned long>(credential_status)));
       StopLocked(lock);
       return false;
     }
 
-    if (QUIC_FAILED(api_->ListenerOpen(registration_, ListenerCallback, this,
-                                       &listener_))) {
+    const auto listener_open_status =
+        api_->ListenerOpen(registration_, ListenerCallback, this, &listener_);
+    if (QUIC_FAILED(listener_open_status)) {
+      Log("quic_listener_open_failed status=" +
+          std::to_string(static_cast<unsigned long>(listener_open_status)));
       StopLocked(lock);
       return false;
     }
@@ -132,7 +147,11 @@ class MsQuicServer final : public QuicServer {
     QUIC_ADDR address{};
     QuicAddrSetFamily(&address, QUIC_ADDRESS_FAMILY_UNSPEC);
     QuicAddrSetPort(&address, options_.port);
-    if (QUIC_FAILED(api_->ListenerStart(listener_, &alpn, 1, &address))) {
+    const auto listener_start_status =
+        api_->ListenerStart(listener_, &alpn, 1, &address);
+    if (QUIC_FAILED(listener_start_status)) {
+      Log("quic_listener_start_failed status=" +
+          std::to_string(static_cast<unsigned long>(listener_start_status)));
       StopLocked(lock);
       return false;
     }
