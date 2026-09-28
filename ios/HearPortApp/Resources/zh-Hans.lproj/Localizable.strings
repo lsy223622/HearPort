@@ -25,6 +25,7 @@
 "Enter the code displayed by HearPort on Windows." = "输入 Windows 端 HearPort 显示的配对码。";
 "Connect to a PC" = "连接电脑";
 "Bring Windows audio to this iPad." = "将 Windows 电脑的声音带到这台 iPad。";
+"Choose a PC below to connect." = "选择下方电脑进行连接。";
 "Done" = "完成";
 "Playback" = "播放";
 "Audio transport mode" = "音频传输模式";

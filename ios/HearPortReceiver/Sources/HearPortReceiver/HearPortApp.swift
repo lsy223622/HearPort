@@ -37,11 +37,16 @@ public struct HearPortApp: View {
     public var body: some View {
         NavigationStack {
             homeView
+            .navigationTitle("HearPort")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    Text("HearPort")
-                        .font(.headline)
+                ToolbarItem(placement: .principal) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "waveform")
+                            .foregroundStyle(.green)
+                        Text("HearPort")
+                    }
+                    .font(.title.weight(.semibold))
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     NavigationLink {
@@ -53,8 +58,6 @@ public struct HearPortApp: View {
                 }
             }
         }
-        .frame(maxWidth: 760)
-        .frame(maxWidth: .infinity)
         .background(Color(uiColor: .systemGroupedBackground))
         .tint(Color.primary)
         .sheet(isPresented: $showingConnectionSetup) {
@@ -132,75 +135,151 @@ public struct HearPortApp: View {
     }
 
     private var homeView: some View {
-        Form {
-            Section {
-                HStack(spacing: 12) {
-                    Image(systemName: connectionError == nil ? "speaker.wave.2.fill" : "exclamationmark.triangle")
-                        .foregroundStyle(connectionError == nil ?
-                                         (audioOutput == nil ? Color.secondary : Color.green) : Color.red)
-                        .frame(width: 28)
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(status)
-                            .font(.headline)
-                        if control != nil {
-                            Text(currentHost)
+        GeometryReader { geometry in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 30) {
+                    if !isConnecting && audioOutput == nil {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Connect to a PC")
+                                .font(.largeTitle.weight(.bold))
+                            Text("Bring Windows audio to this iPad.")
                                 .font(.subheadline)
                                 .foregroundStyle(.secondary)
                         }
                     }
-                }
-                .padding(.vertical, 10)
-                if control != nil || audioOutput != nil {
-                    LabeledContent("Transport", value: Self.label(for: activeAudioMode))
-                    LabeledContent("Buffer target", value: Self.bufferDescription(for: activeBufferTargetPackets))
-                    Button("Disconnect", role: .destructive) {
-                        disconnect()
-                    }
-                }
-            } header: {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Connect to a PC")
-                        .font(.title2.weight(.semibold))
-                        .foregroundStyle(.primary)
-                    Text("Bring Windows audio to this iPad.")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-                .textCase(nil)
-            }
 
-            if !lastHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Section("Last connection") {
-                    HStack {
-                        Label(lastHost, systemImage: "desktopcomputer")
-                        Spacer(minLength: 16)
-                        Button("Connect") {
-                            host = lastHost
-                            if hasRememberedCredential && lastHost == rememberedHost {
-                                authMode = .remembered
-                                connect()
-                            } else {
-                                authMode = .oneTime
-                                showingConnectionSetup = true
+                    statusCard
+
+                    if !isConnecting && audioOutput == nil &&
+                        !lastHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Last connection")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                            HStack(spacing: 16) {
+                                Image(systemName: "desktopcomputer")
+                                    .font(.title2)
+                                    .frame(width: 36)
+                                Text(lastHost)
+                                    .font(.headline)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                Spacer(minLength: 16)
+                                Button("Connect") {
+                                    host = lastHost
+                                    if hasRememberedCredential && lastHost == rememberedHost {
+                                        authMode = .remembered
+                                        connect()
+                                    } else {
+                                        authMode = .oneTime
+                                        showingConnectionSetup = true
+                                    }
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .disabled(isConnecting || audioOutput != nil)
                             }
+                            .padding(20)
+                            .background(Color(uiColor: .secondarySystemGroupedBackground),
+                                        in: RoundedRectangle(cornerRadius: 16))
                         }
-                        .disabled(isConnecting || audioOutput != nil)
                     }
+
+                    if !isConnecting && audioOutput == nil {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Other connection options")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                            Button {
+                                showingConnectionSetup = true
+                            } label: {
+                                Label("Enter PC address", systemImage: "plus")
+                                    .font(.headline)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(20)
+                                    .background(Color(uiColor: .secondarySystemGroupedBackground),
+                                                in: RoundedRectangle(cornerRadius: 16))
+                            }
+                            .buttonStyle(.plain)
+                            Text("Use the address shown on your Windows PC. Pairing requires its six-digit code.")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .frame(maxWidth: 960)
+                .padding(.horizontal, 28)
+                .padding(.vertical, 32)
+                .frame(maxWidth: .infinity)
+                .frame(minHeight: geometry.size.height)
+            }
+            .background(Color(uiColor: .systemGroupedBackground))
+        }
+    }
+
+    private var statusCard: some View {
+        VStack(spacing: 14) {
+            Image(systemName: connectionError == nil ?
+                  (audioOutput == nil ? "speaker.wave.2" : "speaker.wave.2.fill") :
+                  "exclamationmark.triangle")
+                .font(.system(size: 34))
+                .foregroundStyle(connectionError == nil ?
+                                 (audioOutput == nil ? Color.secondary : Color.green) : Color.red)
+                .frame(width: 72, height: 72)
+                .background(Color(uiColor: .tertiarySystemGroupedBackground), in: Circle())
+
+            Text(status)
+                .font(.title.weight(.semibold))
+                .multilineTextAlignment(.center)
+
+            if control != nil {
+                Text(currentHost)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("Choose a PC below to connect.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+
+            if isConnecting {
+                ProgressView()
+                    .padding(.top, 4)
+            }
+
+            if audioOutput != nil {
+                Divider()
+                    .padding(.vertical, 8)
+                HStack(spacing: 24) {
+                    VStack(spacing: 4) {
+                        Text("Transport")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text(Self.label(for: activeAudioMode))
+                    }
+                    .frame(maxWidth: .infinity)
+                    VStack(spacing: 4) {
+                        Text("Buffer target")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text(Self.bufferDescription(for: activeBufferTargetPackets))
+                    }
+                    .frame(maxWidth: .infinity)
                 }
             }
 
-            Section {
-                Button {
-                    showingConnectionSetup = true
-                } label: {
-                    Label("Enter PC address", systemImage: "plus")
+            if control != nil || audioOutput != nil {
+                Button("Disconnect", role: .destructive) {
+                    disconnect()
                 }
-            } header: {
-                Text("Other connection options")
-            } footer: {
-                Text("Use the address shown on your Windows PC. Pairing requires its six-digit code.")
+                .buttonStyle(.bordered)
+                .padding(.top, 6)
             }
         }
+        .frame(maxWidth: .infinity)
+        .padding(28)
+        .frame(minHeight: isConnecting || audioOutput != nil ? 340 : 280)
+        .background(Color(uiColor: .secondarySystemGroupedBackground),
+                    in: RoundedRectangle(cornerRadius: 20))
     }
 
     private var connectionSetupView: some View {
@@ -280,6 +359,9 @@ public struct HearPortApp: View {
         }
         .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.inline)
+        .frame(maxWidth: 760)
+        .frame(maxWidth: .infinity)
+        .background(Color(uiColor: .systemGroupedBackground))
     }
 
     private var diagnosticsView: some View {
@@ -320,6 +402,9 @@ public struct HearPortApp: View {
         }
         .navigationTitle("Diagnostics")
         .navigationBarTitleDisplayMode(.inline)
+        .frame(maxWidth: 760)
+        .frame(maxWidth: .infinity)
+        .background(Color(uiColor: .systemGroupedBackground))
         .onAppear { refreshDiagnostics() }
     }
 
