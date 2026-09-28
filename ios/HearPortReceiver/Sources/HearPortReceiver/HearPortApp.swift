@@ -165,7 +165,7 @@ public struct HearPortApp: View {
                                     .lineLimit(1)
                                     .truncationMode(.middle)
                                 Spacer(minLength: 16)
-                                Button("Connect") {
+                                Button {
                                     host = lastHost
                                     if hasRememberedCredential && lastHost == rememberedHost {
                                         authMode = .remembered
@@ -174,6 +174,9 @@ public struct HearPortApp: View {
                                         authMode = .oneTime
                                         showingConnectionSetup = true
                                     }
+                                } label: {
+                                    Text("Connect")
+                                        .foregroundStyle(Color(uiColor: .systemBackground))
                                 }
                                 .buttonStyle(.borderedProminent)
                                 .disabled(isConnecting || audioOutput != nil)
