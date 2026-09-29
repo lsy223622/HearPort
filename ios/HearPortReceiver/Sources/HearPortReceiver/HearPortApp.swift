@@ -41,15 +41,8 @@ public struct HearPortApp: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .principal) {
-                    HStack(spacing: 8) {
-                        Image("HearPortSymbol", bundle: .main)
-                            .resizable()
-                            .scaledToFit()
-                            .frame(width: 28, height: 28)
-                            .accessibilityHidden(true)
-                        Text("HearPort")
-                    }
-                    .font(.title.weight(.semibold))
+                    Text("HearPort")
+                        .font(.system(size: 32, weight: .semibold))
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     NavigationLink {
