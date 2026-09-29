@@ -3,6 +3,18 @@ import XCTest
 @testable import HearPortReceiver
 
 final class ReliableAudioRecordsTests: XCTestCase {
+    func testReliableProbeRecordsKeepVariablePacketLengthsAcrossChunks() throws {
+        var records = ReliableProbeRecords(expectedStreamID: 7)
+        let first = Data([0, 0, 0, 7, 0, 0, 0, 1] + Array(repeating: 0x31, count: 480))
+        let second = Data([0, 0, 0, 7, 0, 0, 0, 2] + Array(repeating: 0x42, count: 960))
+        let preface = Data([0, 0, 0, 7, 0, 0, 0, 1])
+        let framed = preface + Data([0x01, 0xe8]) + first +
+            Data([0x03, 0xc8]) + second
+        XCTAssertTrue(try records.append(framed.prefix(490)).isEmpty)
+        let packets = try records.append(framed.dropFirst(490))
+        XCTAssertEqual(packets, [first, second])
+        XCTAssertNoThrow(try records.finish())
+    }
     func testSplitPrefaceAndJoinedRecordsYieldOriginalAudio() throws {
         var records = ReliableAudioRecords(expectedStreamID: 7)
         let first = try AudioDatagram(streamID: 7, sequence: 0,

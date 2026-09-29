@@ -138,7 +138,8 @@ public struct HearPortApp: View {
         GeometryReader { geometry in
             ScrollView {
                 VStack(alignment: .leading, spacing: 30) {
-                    if !isConnecting && audioOutput == nil {
+                    if !isConnecting && audioOutput == nil &&
+                        control?.isNetworkProbe != true {
                         VStack(alignment: .leading, spacing: 6) {
                             Text("Connect to a PC")
                                 .font(.largeTitle.weight(.bold))
@@ -151,6 +152,7 @@ public struct HearPortApp: View {
                     statusCard
 
                     if !isConnecting && audioOutput == nil &&
+                        control?.isNetworkProbe != true &&
                         !lastHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         VStack(alignment: .leading, spacing: 10) {
                             Text("Last connection")
@@ -179,7 +181,8 @@ public struct HearPortApp: View {
                                         .foregroundStyle(Color(uiColor: .systemBackground))
                                 }
                                 .buttonStyle(.borderedProminent)
-                                .disabled(isConnecting || audioOutput != nil)
+                                .disabled(isConnecting || audioOutput != nil ||
+                                          control?.isNetworkProbe == true)
                             }
                             .padding(20)
                             .background(Color(uiColor: .secondarySystemGroupedBackground),
@@ -187,7 +190,8 @@ public struct HearPortApp: View {
                         }
                     }
 
-                    if !isConnecting && audioOutput == nil {
+                    if !isConnecting && audioOutput == nil &&
+                        control?.isNetworkProbe != true {
                         VStack(alignment: .leading, spacing: 10) {
                             Text("Other connection options")
                                 .font(.subheadline)
@@ -488,7 +492,7 @@ public struct HearPortApp: View {
                 refreshDiagnostics()
             }
         }
-        session.onReady = {
+        session.onReady = { [weak session] in
             DispatchQueue.main.async {
                 guard connectionID == activeConnectionID else { return }
                 isConnecting = false
@@ -500,6 +504,11 @@ public struct HearPortApp: View {
                     pin = ""
                 }
                 lastHost = endpoint
+                if session?.isNetworkProbe == true {
+                    status = Self.localize("Network test running")
+                    refreshDiagnostics()
+                    return
+                }
                 do {
                     let output = PlatformAudioOutputController(receiver: activeReceiver)
                     try output.start()

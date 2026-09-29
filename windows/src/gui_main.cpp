@@ -27,6 +27,7 @@
 #include "hearport/windows/sender_authentication.h"
 #include "hearport/windows/sender_certificate.h"
 #include "hearport/windows/sender_service.h"
+#include "hearport/windows/network_probe.h"
 
 namespace {
 
@@ -51,6 +52,7 @@ constexpr int kDuration = 106;
 constexpr int kPort = 107;
 constexpr int kSavePort = 108;
 constexpr int kAutoStart = 109;
+constexpr int kNetworkProbe = 110;
 constexpr int kCloseWindow = 112;
 constexpr int kExitApplication = 113;
 constexpr int kTrayOpen = 201;
@@ -528,7 +530,7 @@ class Application {
     Group(0, Tr(L"Connection status", L"连接状态"));
     Group(0, Tr(L"Connection information", L"连接信息"));
     Group(0, Tr(L"Pairing", L"设备配对"));
-    Group(1, Tr(L"Timed diagnostics", L"限时诊断"));
+    Group(1, Tr(L"Diagnostics and network test", L"诊断与网络测试"));
     Group(1, Tr(L"Logs and reports", L"日志与报告"));
     Group(2, Tr(L"Connection", L"连接"));
     Group(2, Tr(L"Windows startup", L"Windows 启动"));
@@ -558,13 +560,15 @@ class Application {
     Control(1, L"STATIC", Tr(L"Duration", L"诊断时长"),
             SS_LEFT | SS_CENTERIMAGE, 0);
     Control(1, L"STATIC",
-            Tr(L"A timed session restarts audio and waits for the iPad report.",
-               L"限时诊断会重新启动音频，并等待 iPad 报告传回。"),
+            Tr(L"Diagnostics use audio. Network test runs eight 30-second groups without audio and uploads the iPad report.",
+               L"诊断使用音频；网络测试无音频，连续运行八组各 30 秒并自动回传 iPad 报告。"),
             SS_LEFT, 0);
     duration_ = Control(1, L"BUTTON", Tr(L"1 minute...", L"1 分钟..."),
                         WS_TABSTOP | BS_PUSHBUTTON, kDuration);
     Control(1, L"BUTTON", Tr(L"Start diagnostics", L"开始诊断"),
             WS_TABSTOP | BS_PUSHBUTTON, kDiagnostics);
+    Control(1, L"BUTTON", Tr(L"Network test", L"网络测试"),
+            WS_TABSTOP | BS_PUSHBUTTON, kNetworkProbe);
     diagnostic_status_ = Control(1, L"STATIC", L"", SS_LEFT, 0);
     Control(1, L"BUTTON", Tr(L"Open sender log", L"打开运行日志"),
             WS_TABSTOP | BS_PUSHBUTTON, kLog);
@@ -625,7 +629,7 @@ class Application {
                  reinterpret_cast<WPARAM>(font_), TRUE);
     if (groups_[0].size() != 3 || groups_[1].size() != 2 ||
         groups_[2].size() != 2 || pages_[0].size() != 8 ||
-        pages_[1].size() != 7 || pages_[2].size() != 7 ||
+        pages_[1].size() != 8 || pages_[2].size() != 7 ||
         !port_frame_ || !port_edit_ || !footer_close_ || !footer_exit_) {
       return false;
     }
@@ -669,9 +673,10 @@ class Application {
     Place(diagnostics[1], 44, 122, group_width - 24, 45);
     Place(diagnostics[2], 150, 79, 100, 29);
     Place(diagnostics[3], width - 162, 183, 118, 29);
-    Place(diagnostics[4], 44, 263, group_width - 24, 50);
-    Place(diagnostics[5], width - 288, 359, 118, 29);
-    Place(diagnostics[6], width - 162, 359, 118, 29);
+    Place(diagnostics[4], width - 288, 183, 118, 29);
+    Place(diagnostics[5], 44, 263, group_width - 24, 50);
+    Place(diagnostics[6], width - 288, 359, 118, 29);
+    Place(diagnostics[7], width - 162, 359, 118, 29);
 
     auto& settings = pages_[2];
     Place(settings[0], 44, 82, group_width - 24, 28);
@@ -785,7 +790,9 @@ class Application {
     std::wstring detail;
     if (running_ && connected_) {
       heading = Tr(L"iPad connected", L"iPad 已连接");
-      detail = reliable_ ? Tr(L"Audio: reliable stream", L"音频：稳定性模式")
+      detail = network_probe_active_
+                   ? Tr(L"Eight network tests running", L"正在进行八组网络测试")
+                   : reliable_ ? Tr(L"Audio: reliable stream", L"音频：稳定性模式")
                          : Tr(L"Audio: low latency", L"音频：低延迟模式");
     } else if (running_) {
       heading = Tr(L"Ready for iPad", L"已就绪，等待 iPad 连接");
@@ -840,7 +847,8 @@ class Application {
     InvalidateRect(status_, nullptr, TRUE);
   }
 
-  void StartService(std::optional<std::chrono::seconds> diagnostics = std::nullopt) {
+  void StartService(std::optional<std::chrono::seconds> diagnostics = std::nullopt,
+                    bool network_probe = false) {
     if (running_) return;
     error_.clear();
     if (data_dir_.empty()) {
@@ -877,6 +885,7 @@ class Application {
       logger_.TryLog(line);
     };
     service_ = std::make_unique<SenderService>(*identity);
+    service_->ConfigureNetworkProbe(network_probe);
     service_->ConfigureDebugDuration(diagnostics);
     service_->SetDebugOutputDirectory(data_dir_ / L"diagnostics");
     hearport::security::Bytes32 spki = identity->certificate_spki_sha256;
@@ -899,8 +908,10 @@ class Application {
       authentication_.reset();
       service_.reset();
       logger_.Stop();
-      error_ = Tr(L"Could not start audio capture or the network listener.",
-                  L"无法启动音频采集或网络监听。");
+      error_ = network_probe
+                   ? Tr(L"Could not start the network listener.", L"无法启动网络监听。")
+                   : Tr(L"Could not start audio capture or the network listener.",
+                        L"无法启动音频采集或网络监听。");
       UpdateStatus();
       return;
     }
@@ -908,12 +919,15 @@ class Application {
     connected_ = false;
     reliable_ = false;
     diagnostic_duration_ = diagnostics;
+    network_probe_active_ = network_probe;
     if (diagnostics) {
       diagnostic_started_ = Clock::now();
-      SetWindowTextW(diagnostic_status_,
-                     Tr(L"Waiting for iPad and its diagnostic report…",
-                        L"正在等待 iPad 连接并传回诊断报告……")
-                         .c_str());
+      const auto message = network_probe
+          ? Tr(L"Connect the iPad to run eight 30-second tests.",
+               L"请连接 iPad，开始八组各 30 秒的测试。")
+          : Tr(L"Waiting for iPad and its diagnostic report…",
+               L"正在等待 iPad 连接并传回诊断报告……");
+      SetWindowTextW(diagnostic_status_, message.c_str());
     }
     UpdateStatus();
   }
@@ -927,6 +941,7 @@ class Application {
     connected_ = false;
     reliable_ = false;
     diagnostic_duration_.reset();
+    network_probe_active_ = false;
     pin_expires_.reset();
     UpdateStatus();
   }
@@ -969,6 +984,18 @@ class Application {
       SetWindowTextW(diagnostic_status_,
                      Tr(L"Could not start diagnostics. Check the overview and log.",
                         L"无法开始诊断，请查看概览和运行日志。")
+                         .c_str());
+    }
+  }
+
+  void StartNetworkProbe() {
+    StopService();
+    StartService(std::chrono::seconds(
+                     hearport::windows::kNetworkProbeDurationSeconds), true);
+    if (!running_) {
+      SetWindowTextW(diagnostic_status_,
+                     Tr(L"Could not start the network test. Check the overview and log.",
+                        L"无法启动网络测试，请查看概览和运行日志。")
                          .c_str());
     }
   }
@@ -1020,8 +1047,9 @@ class Application {
     port_ = static_cast<std::uint16_t>(value);
     if (restart) {
       const auto diagnostics = diagnostic_duration_;
+      const bool network_probe = network_probe_active_;
       StopService();
-      StartService(diagnostics);
+      StartService(diagnostics, network_probe);
       if (diagnostics && !running_) {
         SetWindowTextW(diagnostic_status_,
                        Tr(L"Diagnostics stopped because the sender could not restart on the new port.",
@@ -1164,6 +1192,7 @@ class Application {
             }
             break;
           case kDiagnostics: StartDiagnostics(); break;
+          case kNetworkProbe: StartNetworkProbe(); break;
           case kDuration: ChooseDuration(); break;
           case kLog: OpenPath(data_dir_ / L"HearPort-sender.log"); break;
           case kReports: OpenPath(data_dir_ / L"diagnostics"); break;
@@ -1290,6 +1319,7 @@ class Application {
   std::filesystem::path data_dir_;
   std::optional<Clock::time_point> pin_expires_;
   std::optional<std::chrono::seconds> diagnostic_duration_;
+  bool network_probe_active_ = false;
   Clock::time_point diagnostic_started_{};
   SenderDiagnosticLogger logger_;
   HBRUSH dark_brush_ = CreateSolidBrush(RGB(32, 32, 32));

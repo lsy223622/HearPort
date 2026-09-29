@@ -54,6 +54,8 @@ class SenderService {
                    std::span<const std::byte> debug_session_id = {});
   bool MarkStartStreamAckWritten(std::uint32_t stream_id);
   void ConfigureReliableAudio(bool enabled);
+  void ConfigureNetworkProbe(bool enabled);
+  bool network_probe() const noexcept { return network_probe_; }
   bool ObserveAudioProgress(std::uint32_t stream_id, std::uint32_t generation,
                             std::optional<std::uint32_t> latest_received);
   void ConfigureDebugDuration(std::optional<std::chrono::seconds> duration);
@@ -80,6 +82,7 @@ class SenderService {
   void EnqueueAudio(const wire::AudioDatagram& packet,
                     std::int64_t captured_at_ns);
   void AudioWorker();
+  void ProbeWorker(std::uint32_t stream_id);
   void HandleCapturePacket(std::span<const std::byte> bytes,
                            const PcmFormat& format);
   void HandleCaptureReset();
@@ -133,8 +136,11 @@ class SenderService {
   DebugEndedHandler debug_ended_handler_;
   std::deque<QueuedAudioPacket> audio_queue_;
   std::thread audio_thread_;
+  std::thread probe_thread_;
   std::thread diagnostics_thread_;
   bool stop_worker_ = false;
+  std::atomic<bool> stop_probe_ = false;
+  bool network_probe_ = false;
   bool stop_diagnostics_ = false;
   bool capture_reset_pending_ = false;
   bool datagram_ready_ = false;

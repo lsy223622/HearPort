@@ -17,6 +17,14 @@ private struct DebugSessionMetadata {
     let streamID: UInt32
     let durationSeconds: UInt32
     let startedAt: UInt64
+    let networkProbe: Bool
+}
+
+private struct DebugProbePacketRecord {
+    let receivedAt: UInt64
+    let streamID: UInt32
+    let sequence: UInt32
+    let payloadBytes: Int
 }
 
 enum DebugJitterDecision: String {
@@ -45,6 +53,7 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
     private var session: DebugSessionMetadata?
     private var records: [DebugPacketTraceRecord] = []
     private var jitterDecisions: [DebugJitterDecisionRecord] = []
+    private var probePackets: [DebugProbePacketRecord] = []
 
     public init(capacity: Int = DebugSessionDiagnostics.defaultCapacity,
                 bufferTargetPackets: Int = 8,
@@ -58,19 +67,26 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
 
     public var isRecording: Bool { recording.load() != 0 }
 
-    public func begin(sessionID: Data, streamID: UInt32, durationSeconds: UInt32) {
+    public func begin(sessionID: Data, streamID: UInt32, durationSeconds: UInt32,
+                      networkProbe: Bool = false) {
         precondition(sessionID.count == 16 && streamID != 0)
         lock.lock()
         records.removeAll(keepingCapacity: true)
-        records.reserveCapacity(capacity)
         jitterDecisions.removeAll(keepingCapacity: true)
-        jitterDecisions.reserveCapacity(capacity)
+        probePackets.removeAll(keepingCapacity: true)
+        if networkProbe {
+            probePackets.reserveCapacity(capacity)
+        } else {
+            records.reserveCapacity(capacity)
+            jitterDecisions.reserveCapacity(capacity)
+        }
         dropped.store(0)
         session = DebugSessionMetadata(
             sessionID: sessionID,
             streamID: streamID,
             durationSeconds: durationSeconds,
-            startedAt: DispatchTime.now().uptimeNanoseconds
+            startedAt: DispatchTime.now().uptimeNanoseconds,
+            networkProbe: networkProbe
         )
         recording.store(1)
         lock.unlock()
@@ -86,6 +102,27 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
                 "trace_capacity": "\(capacity)"
             ]
         )
+    }
+
+    public func recordProbePacket(_ data: Data) {
+        guard recording.load() != 0 else { return }
+        guard lock.try() else {
+            dropped.increment()
+            return
+        }
+        defer { lock.unlock() }
+        guard recording.load() != 0, let session, session.networkProbe else { return }
+        guard data.count >= 8 else { dropped.increment(); return }
+        let streamID = data.prefix(4).reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
+        guard streamID == session.streamID else { dropped.increment(); return }
+        let sequence = data.dropFirst(4).prefix(4).reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
+        guard probePackets.count < capacity else { dropped.increment(); return }
+        probePackets.append(DebugProbePacketRecord(
+            receivedAt: DispatchTime.now().uptimeNanoseconds,
+            streamID: streamID,
+            sequence: sequence,
+            payloadBytes: data.count
+        ))
     }
 
     public func recordPacket(streamID: UInt32,
@@ -154,6 +191,7 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
         let metadata: DebugSessionMetadata
         let capturedRecords: [DebugPacketTraceRecord]
         let capturedJitterDecisions: [DebugJitterDecisionRecord]
+        let capturedProbePackets: [DebugProbePacketRecord]
         let dropCount: UInt64
         lock.lock()
         guard recording.load() != 0, let current = session else {
@@ -164,6 +202,7 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
         metadata = current
         capturedRecords = records
         capturedJitterDecisions = jitterDecisions
+        capturedProbePackets = probePackets
         dropCount = dropped.load()
         lock.unlock()
 
@@ -175,6 +214,7 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
                 metadata: metadata,
                 records: capturedRecords,
                 jitterDecisions: capturedJitterDecisions,
+                probePackets: capturedProbePackets,
                 dropCount: dropCount,
                 reason: reason,
                 safeDiagnostics: safeDiagnostics,
@@ -190,6 +230,7 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
             if session?.sessionID == metadata.sessionID {
                 records.removeAll(keepingCapacity: true)
                 jitterDecisions.removeAll(keepingCapacity: true)
+                probePackets.removeAll(keepingCapacity: true)
                 session = nil
             }
             lock.unlock()
@@ -215,6 +256,7 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
     private static func makeReport(metadata: DebugSessionMetadata,
                                    records: [DebugPacketTraceRecord],
                                    jitterDecisions: [DebugJitterDecisionRecord],
+                                   probePackets: [DebugProbePacketRecord],
                                    dropCount: UInt64,
                                    reason: String,
                                    safeDiagnostics: String,
@@ -243,12 +285,41 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
             "end_reason=\(safeField(reason))",
             "trace_records=\(records.count)",
             "jitter_decision_records=\(jitterDecisions.count)",
-            "trace_dropped=\(dropCount)",
-            "",
-            "packet_trace_v1",
-            "received_at_ns\tstream_id\tsequence\tdisposition\tjitter_result\tfill_packets"
+            "trace_dropped=\(dropCount)"
         ]
-        lines.reserveCapacity(records.count + jitterDecisions.count + 26)
+        lines.reserveCapacity(records.count + jitterDecisions.count + probePackets.count + 30)
+        if metadata.networkProbe {
+            lines.insert("probe_mode=network", at: 5)
+            lines.insert("probe_trace_records=\(probePackets.count)", at: 6)
+            let specs: [(bytes: Int, rate: Int, burst: Int)] = [
+                (968, 400, 4), (968, 400, 1), (488, 400, 4), (968, 200, 1),
+                (968, 400, 4), (968, 400, 1), (488, 400, 4), (968, 200, 1)
+            ]
+            var firstSequence = 0
+            lines.append("\nnetwork_probe_rounds_v1")
+            lines.append("round\ttransport\tseconds\tpayload_bytes\tpackets_per_second\tburst_packets\tfirst_sequence\tplanned\treceived\tunique\tduplicates\tnot_received\twrong_size")
+            for (index, spec) in specs.enumerated() {
+                let planned = spec.rate * 30
+                let lastSequence = firstSequence + planned
+                let received = probePackets.filter {
+                    (firstSequence..<lastSequence).contains(Int($0.sequence))
+                }
+                let unique = Set(received.map(\.sequence)).count
+                let wrongSize = received.filter { $0.payloadBytes != spec.bytes }.count
+                lines.append("\(index + 1)\t\(index < 4 ? "datagram" : "reliable_stream")\t30\t\(spec.bytes)\t\(spec.rate)\t\(spec.burst)\t\(firstSequence)\t\(planned)\t\(received.count)\t\(unique)\t\(received.count - unique)\t\(planned - unique)\t\(wrongSize)")
+                firstSequence = lastSequence
+            }
+            lines.append("\nnetwork_probe_trace_v1")
+            lines.append("received_at_ns\tstream_id\tsequence\tpayload_bytes")
+            for packet in probePackets {
+                lines.append("\(packet.receivedAt)\t\(packet.streamID)\t\(packet.sequence)\t\(packet.payloadBytes)")
+            }
+            lines.append("\napp_diagnostics_v1")
+            lines.append(safeDiagnostics.trimmingCharacters(in: .newlines))
+            return lines.joined(separator: "\n") + "\n"
+        }
+        lines.append("\npacket_trace_v1")
+        lines.append("received_at_ns\tstream_id\tsequence\tdisposition\tjitter_result\tfill_packets")
         for record in records {
             lines.append([
                 String(record.receivedAt),

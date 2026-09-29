@@ -224,6 +224,45 @@ class MsQuicServer final : public QuicServer {
     return true;
   }
 
+  bool SendProbe(std::span<const std::byte> datagram,
+                 std::uint32_t stream_id,
+                 std::uint32_t sequence) override {
+    std::lock_guard lock(mutex_);
+    if (!started_ || connection_ == nullptr || api_ == nullptr ||
+        datagram.empty()) return false;
+    if (reliable_mode_) {
+      if (audio_stream_ == nullptr || datagram.size() > 968 ||
+          pending_reliable_sends_.load() >= kMaxReliablePendingSends) return false;
+      std::vector<std::byte> framed(datagram.size() + 2);
+      framed[0] = std::byte{static_cast<std::uint8_t>(datagram.size() >> 8)};
+      framed[1] = std::byte{static_cast<std::uint8_t>(datagram.size())};
+      std::copy(datagram.begin(), datagram.end(), framed.begin() + 2);
+      auto* context = new SendBufferContext(framed);
+      context->audio_epoch = audio_epoch_.load();
+      pending_reliable_sends_.fetch_add(1);
+      const auto status = api_->StreamSend(audio_stream_, &context->buffer, 1,
+                                           QUIC_SEND_FLAG_NONE, context);
+      if (QUIC_FAILED(status)) {
+        pending_reliable_sends_.fetch_sub(1);
+        delete context;
+        return false;
+      }
+      return true;
+    }
+    if (!datagram_ready_) return false;
+    auto* context = new SendBufferContext(datagram);
+    context->stream_id = stream_id;
+    context->sequence = sequence;
+    context->on_send_state = callbacks_.on_datagram_send_state;
+    const auto status = api_->DatagramSend(
+        connection_, &context->buffer, 1, QUIC_SEND_FLAG_NONE, context);
+    if (QUIC_FAILED(status)) {
+      delete context;
+      return false;
+    }
+    return true;
+  }
+
   bool StartReliableAudio(std::uint32_t stream_id,
                           std::uint32_t generation) override {
     std::lock_guard lock(mutex_);
@@ -636,6 +675,8 @@ class UnavailableQuicServer final : public QuicServer {
   }
   bool SendControl(std::span<const std::byte>) override { return false; }
   bool SendAudio(const wire::EncodedAudioDatagram&) override { return false; }
+  bool SendProbe(std::span<const std::byte>, std::uint32_t,
+                 std::uint32_t) override { return false; }
   bool StartReliableAudio(std::uint32_t, std::uint32_t) override { return false; }
   void CloseConnection() override {}
   void Stop() override {}

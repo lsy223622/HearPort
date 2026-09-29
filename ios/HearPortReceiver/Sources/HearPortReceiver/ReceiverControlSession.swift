@@ -31,6 +31,19 @@ public final class ReceiverControlSession {
     private var ready = false
     private var receiverReadyNotified = false
     private var peerFeatures: UInt32 = 0
+    private let probeModeLock = NSLock()
+    private var probeMode = false
+    public var isNetworkProbe: Bool {
+        probeModeLock.lock()
+        defer { probeModeLock.unlock() }
+        return probeMode
+    }
+
+    private func setNetworkProbe(_ enabled: Bool) {
+        probeModeLock.lock()
+        probeMode = enabled
+        probeModeLock.unlock()
+    }
     private var activeDebugSessionID: Data?
     private var activeDebugStreamID: UInt32?
     private var pendingReportSessionID: Data?
@@ -53,8 +66,13 @@ public final class ReceiverControlSession {
         self.keychain = keychain
         debugSessionDiagnostics = receiver.debugSessionDiagnostics
         debugReportTransfer = receiver.debugSessionDiagnostics.reportTransfer
-        self.transport.onAudioDatagram = { [weak receiver] data in
-            _ = receiver?.receiveDatagram(data)
+        self.transport.onAudioDatagram = { [weak self] data in
+            guard let self else { return }
+            if self.isNetworkProbe {
+                self.debugSessionDiagnostics.recordProbePacket(data)
+            } else {
+                _ = self.receiver.receiveDatagram(data)
+            }
         }
         self.transport.onReliableAudioGeneration = { [weak receiver] streamID, _ in
             receiver?.beginReliableGeneration(streamID) ?? false
@@ -94,6 +112,7 @@ public final class ReceiverControlSession {
                 self.rememberedResponseSent = false
                 self.activeDebugSessionID = nil
                 self.activeDebugStreamID = nil
+                self.setNetworkProbe(false)
                 self.receiver.resetForConnection()
             }
         }
@@ -118,6 +137,7 @@ public final class ReceiverControlSession {
         self.ready = false
         self.receiverReadyNotified = false
         self.peerFeatures = 0
+        setNetworkProbe(false)
         self.activeDebugSessionID = nil
         self.activeDebugStreamID = nil
         self.pendingReportSessionID = nil
@@ -206,6 +226,7 @@ public final class ReceiverControlSession {
         )
         transport.cancel()
         ready = false
+        setNetworkProbe(false)
         connectSent = false
         pairConfirmationVerified = false
         rememberedResponseSent = false
@@ -216,7 +237,7 @@ public final class ReceiverControlSession {
         guard !connectSent else { return }
         guard mode == .remembered || (mode == .pair || mode == .oneTime) else { return }
         let peerID = credential?.peerID ?? Data()
-        let features = ControlFeature.diagnosticsUpload |
+        let features = ControlFeature.diagnosticsUpload | ControlFeature.networkProbe |
             (audioMode == .reliable ? ControlFeature.reliableAudio : 0)
         let envelope = ControlEnvelope(.connectRequest(authMode: mode,
                                                        peerID: peerID,
@@ -445,7 +466,9 @@ public final class ReceiverControlSession {
             }
             ready = true
             peerFeatures = features
-            if audioMode == .reliable { transport.acceptReliableAudio() }
+            setNetworkProbe((features & ControlFeature.networkProbe) != 0)
+            if isNetworkProbe { transport.enableNetworkProbe() }
+            if audioMode == .reliable && !isNetworkProbe { transport.acceptReliableAudio() }
             diagnostics.log(
                 .info,
                 category: .control,
@@ -485,14 +508,20 @@ public final class ReceiverControlSession {
                 message: "start_stream_received",
                 fields: ["event": "start_stream_received", "stream_id": "\(streamID)"]
             )
-            guard receiver.beginStream(streamID) else {
-                throw PairingSecurityError.providerFailure(-3)
+            if !isNetworkProbe {
+                guard receiver.beginStream(streamID) else {
+                    throw PairingSecurityError.providerFailure(-3)
+                }
             }
-            if audioMode == .reliable {
+            if audioMode == .reliable && !isNetworkProbe {
                 transport.expectReliableAudio(streamID: streamID,
                                               latestReceivedSequence: { [weak receiver = self.receiver] in
                     receiver?.reliableProgressSequence()
                 })
+            }
+            if isNetworkProbe {
+                transport.expectReliableAudio(streamID: streamID,
+                                              latestReceivedSequence: { nil })
             }
             send(.startStreamAck(streamID), completion: { [weak self] error in
                 guard let self else { return }
@@ -516,7 +545,9 @@ public final class ReceiverControlSession {
                     message: "start_stream_ack_written",
                     fields: ["event": "start_stream_ack_written", "stream_id": "\(streamID)"]
                 )
-                _ = self.receiver.acknowledgeStartStream(streamID)
+                if !self.isNetworkProbe {
+                    _ = self.receiver.acknowledgeStartStream(streamID)
+                }
             })
         case let .error(code, message):
             diagnostics.log(
@@ -552,7 +583,8 @@ public final class ReceiverControlSession {
             debugSessionDiagnostics.begin(
                 sessionID: sessionID,
                 streamID: streamID,
-                durationSeconds: durationSeconds
+                durationSeconds: durationSeconds,
+                networkProbe: isNetworkProbe
             )
             activeDebugSessionID = sessionID
             activeDebugStreamID = streamID
