@@ -229,11 +229,6 @@ class Application {
     window_class.cbSize = sizeof(window_class);
     window_class.lpfnWndProc = WindowProc;
     window_class.hInstance = instance;
-    window_class.hIcon = LoadIconW(instance, MAKEINTRESOURCEW(IDI_HEARPORT));
-    window_class.hIconSm = reinterpret_cast<HICON>(LoadImageW(
-        instance, MAKEINTRESOURCEW(IDI_HEARPORT), IMAGE_ICON,
-        GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON),
-        LR_SHARED));
     window_class.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     window_class.hbrBackground = GetSysColorBrush(COLOR_BTNFACE);
     window_class.lpszClassName = kWindowClass;
