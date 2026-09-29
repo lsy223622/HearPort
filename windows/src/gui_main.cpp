@@ -23,6 +23,7 @@
 #include <utility>
 #include <vector>
 
+#include "gui_resources.h"
 #include "hearport/windows/diagnostic_logger.h"
 #include "hearport/windows/sender_authentication.h"
 #include "hearport/windows/sender_certificate.h"
@@ -226,8 +227,11 @@ class Application {
     window_class.cbSize = sizeof(window_class);
     window_class.lpfnWndProc = WindowProc;
     window_class.hInstance = instance;
-    window_class.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
-    window_class.hIconSm = window_class.hIcon;
+    window_class.hIcon = LoadIconW(instance, MAKEINTRESOURCEW(IDI_HEARPORT));
+    window_class.hIconSm = reinterpret_cast<HICON>(LoadImageW(
+        instance, MAKEINTRESOURCEW(IDI_HEARPORT), IMAGE_ICON,
+        GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON),
+        LR_SHARED));
     window_class.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     window_class.hbrBackground = GetSysColorBrush(COLOR_BTNFACE);
     window_class.lpszClassName = kWindowClass;
@@ -339,6 +343,12 @@ class Application {
                                 : GetSysColor(COLOR_WINDOWTEXT));
     RECT text_rect{10, 0, bounds.right - 8, text_size.cy + 2};
     DrawTextW(context, label, -1, &text_rect, DT_LEFT | DT_SINGLELINE);
+    if (group == groups_[0][0]) {
+      const int icon_size = MulDiv(44, dpi_, 96);
+      DrawIconEx(context, MulDiv(14, dpi_, 96), MulDiv(25, dpi_, 96),
+                 ThemeIcon(icon_size), icon_size, icon_size, 0, nullptr,
+                 DI_NORMAL);
+    }
     SelectObject(context, previous_font);
   }
 
@@ -655,8 +665,8 @@ class Application {
     Place(groups_[2][1], 32, 287, group_width, 114);
 
     auto& overview = pages_[0];
-    Place(overview[0], 44, 78, group_width - 24, 24);
-    Place(overview[1], 44, 108, group_width - 144, 29);
+    Place(overview[0], 100, 78, group_width - 80, 24);
+    Place(overview[1], 100, 108, group_width - 200, 29);
     Place(overview[2], 44, 185, group_width - 24, 24);
     Place(overview[3], 44, 213, group_width - 24, 24);
     Place(overview[4], 44, 241, group_width - 24, 24);
@@ -705,6 +715,7 @@ class Application {
 
   void ApplyTheme() {
     if (!tabs_) return;
+    const bool was_dark = dark_;
     dark_ = SystemDarkMode();
     const BOOL dark_frame = dark_ ? TRUE : FALSE;
     DwmSetWindowAttribute(hwnd_, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark_frame,
@@ -730,6 +741,22 @@ class Application {
       InvalidateRect(button, nullptr, TRUE);
     }
     InvalidateRect(hwnd_, nullptr, TRUE);
+    if (tray_ready_ && dark_ != was_dark) {
+      NOTIFYICONDATAW icon{};
+      icon.cbSize = sizeof(icon);
+      icon.hWnd = hwnd_;
+      icon.uID = kTrayIcon;
+      icon.uFlags = NIF_ICON;
+      icon.hIcon = ThemeIcon(GetSystemMetrics(SM_CXSMICON));
+      Shell_NotifyIconW(NIM_MODIFY, &icon);
+    }
+  }
+
+  HICON ThemeIcon(int size) const {
+    return reinterpret_cast<HICON>(LoadImageW(
+        instance_, MAKEINTRESOURCEW(dark_ ? IDI_HEARPORT_TRAY_DARK
+                                         : IDI_HEARPORT_TRAY_LIGHT),
+        IMAGE_ICON, size, size, LR_SHARED));
   }
 
   void AddTrayIcon() {
@@ -739,7 +766,7 @@ class Application {
     icon.uID = kTrayIcon;
     icon.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     icon.uCallbackMessage = kTrayMessage;
-    icon.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+    icon.hIcon = ThemeIcon(GetSystemMetrics(SM_CXSMICON));
     lstrcpynW(icon.szTip, L"HearPort", ARRAYSIZE(icon.szTip));
     tray_ready_ = Shell_NotifyIconW(NIM_ADD, &icon) != FALSE;
     EnableWindow(footer_close_, tray_ready_);
@@ -1111,6 +1138,7 @@ class Application {
         return 0;
       }
       case WM_SETTINGCHANGE:
+      case WM_THEMECHANGED:
         ApplyTheme();
         return 0;
       case WM_ERASEBKGND: {
