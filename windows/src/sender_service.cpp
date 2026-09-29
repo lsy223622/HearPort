@@ -297,6 +297,7 @@ void SenderService::ConfigureNetworkProbe(bool enabled) {
 
 void SenderService::ProbeWorker(std::uint32_t stream_id) {
   using Clock = std::chrono::steady_clock;
+  probe_packets_processed_.store(0);
   const auto close_timer = [](HANDLE handle) { CloseHandle(handle); };
   std::unique_ptr<void, decltype(close_timer)> timer(
       CreateWaitableTimerExW(nullptr, nullptr,
@@ -366,6 +367,7 @@ void SenderService::ProbeWorker(std::uint32_t stream_id) {
           target.time_since_epoch()).count();
       debug_trace_.RecordPacket(sequence, scheduled_at, woke_at, sent_at, sent);
       if (!sent && !reliable) CompleteDebugSend(stream_id);
+      probe_packets_processed_.store(sequence + 1);
     }
     LogDiagnostic("network_probe_round_end round=" + std::to_string(index + 1) +
                   " sequence=" + std::to_string(sequence) +
