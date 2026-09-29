@@ -59,6 +59,9 @@ class SenderService {
   std::uint32_t network_probe_packets_processed() const noexcept {
     return probe_packets_processed_.load();
   }
+  std::uint32_t network_probe_stream_id() const noexcept {
+    return probe_stream_id_.load();
+  }
   bool ObserveAudioProgress(std::uint32_t stream_id, std::uint32_t generation,
                             std::optional<std::uint32_t> latest_received);
   void ConfigureDebugDuration(std::optional<std::chrono::seconds> duration);
@@ -144,6 +147,7 @@ class SenderService {
   bool stop_worker_ = false;
   std::atomic<bool> stop_probe_ = false;
   std::atomic<std::uint32_t> probe_packets_processed_ = 0;
+  std::atomic<std::uint32_t> probe_stream_id_ = 0;
   bool network_probe_ = false;
   bool stop_diagnostics_ = false;
   bool capture_reset_pending_ = false;

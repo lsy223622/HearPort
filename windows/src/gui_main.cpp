@@ -565,8 +565,8 @@ class Application {
     Control(1, L"STATIC", Tr(L"Duration", L"诊断时长"),
             SS_LEFT | SS_CENTERIMAGE, 0);
     Control(1, L"STATIC",
-            Tr(L"Diagnostics use audio. Network test runs eight 30-second groups without audio and uploads the iPad report.",
-               L"诊断使用音频；网络测试无音频，连续运行八组各 30 秒并自动回传 iPad 报告。"),
+            Tr(L"Diagnostics use audio. Network test runs twenty 30-second groups without audio and uploads the iPad report.",
+               L"诊断使用音频；网络测试无音频，连续运行二十组各 30 秒并自动回传 iPad 报告。"),
             SS_LEFT, 0);
     duration_ = Control(1, L"BUTTON", Tr(L"1 minute...", L"1 分钟..."),
                         WS_TABSTOP | BS_PUSHBUTTON, kDuration);
@@ -814,32 +814,34 @@ class Application {
                                   L"音频来源：Windows 默认输出设备");
     if (running_ && network_probe_active_ && connected_) {
       const std::uint32_t processed = service_->network_probe_packets_processed();
+      const auto rounds = hearport::windows::MakeNetworkProbeRounds(
+          service_->network_probe_stream_id());
       std::uint32_t before_round = 0;
       std::size_t round_index = 0;
-      for (; round_index < hearport::windows::kNetworkProbeRounds.size(); ++round_index) {
-        const auto& round = hearport::windows::kNetworkProbeRounds[round_index];
+      for (; round_index < rounds.size(); ++round_index) {
+        const auto& round = rounds[round_index];
         const auto round_packets = round.packets_per_second *
                                    hearport::windows::kNetworkProbeSecondsPerRound;
         if (processed < before_round + round_packets) break;
         before_round += round_packets;
       }
-      if (round_index == hearport::windows::kNetworkProbeRounds.size()) {
+      if (round_index == rounds.size()) {
         heading = Tr(L"Network test sent", L"网络测试发送完成");
         detail = Tr(L"Waiting for the iPad report.", L"正在等待 iPad 回传报告。");
       } else {
-        const auto& round = hearport::windows::kNetworkProbeRounds[round_index];
+        const auto& round = rounds[round_index];
         const auto round_seconds =
             (processed - before_round) / round.packets_per_second;
         const auto total_seconds =
             round_index * hearport::windows::kNetworkProbeSecondsPerRound +
             round_seconds;
         heading = Tr(L"Network test ", L"网络测试 ") +
-                  std::to_wstring(round_index + 1) + L"/8 · " +
-                  (round_index < 4 ? L"Datagram" : L"Reliable stream");
+                  std::to_wstring(round_index + 1) + L"/20 · " +
+                  (round.reliable ? L"Reliable stream" : L"Datagram");
         detail = Tr(L"Round ", L"本组 ") + std::to_wstring(round_seconds) +
                  Tr(L"/30 s · Total ", L"/30 秒 · 总计 ") +
                  std::to_wstring(total_seconds) +
-                 Tr(L"/240 s", L"/240 秒");
+                 Tr(L"/600 s", L"/600 秒");
         audio_label = Tr(L"Packet: ", L"数据包：") +
                       std::to_wstring(round.payload_bytes) +
                       Tr(L" B · ", L" 字节 · ") +
@@ -849,8 +851,8 @@ class Application {
       }
     } else if (running_ && network_probe_active_) {
       heading = Tr(L"Network test ready", L"网络测试待连接");
-      detail = Tr(L"Connect the iPad to begin eight rounds.",
-                  L"连接 iPad 后开始八组测试。");
+      detail = Tr(L"Connect the iPad to begin twenty rounds.",
+                  L"连接 iPad 后开始二十组测试。");
       audio_label = Tr(L"Test data only; no audio is sent.",
                        L"仅传输测试数据，不发送音频。");
     } else if (running_ && connected_) {
@@ -992,8 +994,8 @@ class Application {
     if (diagnostics) {
       diagnostic_started_ = Clock::now();
       const auto message = network_probe
-          ? Tr(L"Connect the iPad to run eight 30-second tests.",
-               L"请连接 iPad，开始八组各 30 秒的测试。")
+          ? Tr(L"Connect the iPad to run twenty 30-second tests.",
+               L"请连接 iPad，开始二十组各 30 秒的测试。")
           : Tr(L"Waiting for iPad and its diagnostic report…",
                L"正在等待 iPad 连接并传回诊断报告……");
       SetWindowTextW(diagnostic_status_, message.c_str());

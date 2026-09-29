@@ -115,7 +115,9 @@ bool SenderAuthentication::HandleConnect(
   peer_supports_diagnostics_ =
       (envelope.feature_bits & wire::kFeatureDiagnosticsUpload) != 0;
   peer_supports_network_probe_ =
-      (envelope.feature_bits & wire::kFeatureNetworkProbe) != 0;
+      (envelope.feature_bits &
+       (wire::kFeatureNetworkProbe | wire::kFeatureNetworkProbeRepeat)) ==
+      (wire::kFeatureNetworkProbe | wire::kFeatureNetworkProbeRepeat);
   peer_wants_reliable_ =
       (envelope.feature_bits & wire::kFeatureReliableAudio) != 0;
 
@@ -240,7 +242,10 @@ bool SenderAuthentication::CompleteAuthentication(bool remember) {
                            ? wire::kFeatureDiagnosticsUpload
                            : 0;
   if (peer_wants_reliable_) ready.feature_bits |= wire::kFeatureReliableAudio;
-  if (service_.network_probe()) ready.feature_bits |= wire::kFeatureNetworkProbe;
+  if (service_.network_probe()) {
+    ready.feature_bits |=
+        wire::kFeatureNetworkProbe | wire::kFeatureNetworkProbeRepeat;
+  }
   if (!Send(ready)) return false;
   authenticated_ = true;
   if (peer_supports_diagnostics_) {

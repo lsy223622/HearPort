@@ -18,6 +18,51 @@ private struct DebugSessionMetadata {
     let durationSeconds: UInt32
     let startedAt: UInt64
     let networkProbe: Bool
+    let networkProbeRepeat: Bool
+}
+
+enum NetworkProbePlan {
+    struct Round {
+        let variant: Int
+        let payloadBytes: Int
+        let packetsPerSecond: Int
+        let burstPackets: Int
+        let reliable: Bool
+        let repeatIndex: Int
+    }
+
+    private static let variants: [(bytes: Int, rate: Int, burst: Int)] = [
+        (968, 400, 4), (968, 400, 1), (488, 400, 4),
+        (968, 200, 1), (488, 400, 1)
+    ]
+
+    static func rounds(streamID: UInt32) -> [Round] {
+        var state = streamID ^ 0xa5a5_5a5a
+        if state == 0 { state = 1 }
+        var rounds: [Round] = []
+        rounds.reserveCapacity(20)
+        for mode in 0..<2 {
+            var order = Array(0..<variants.count)
+            for remaining in stride(from: order.count, through: 2, by: -1) {
+                state ^= state &<< 13
+                state ^= state >> 17
+                state ^= state &<< 5
+                order.swapAt(remaining - 1, Int(state % UInt32(remaining)))
+            }
+            for repeatIndex in 1...2 {
+                for offset in 0..<order.count {
+                    let variant = order[repeatIndex == 1 ? offset : order.count - 1 - offset]
+                    let spec = variants[variant]
+                    rounds.append(Round(
+                        variant: variant, payloadBytes: spec.bytes,
+                        packetsPerSecond: spec.rate, burstPackets: spec.burst,
+                        reliable: mode == 1, repeatIndex: repeatIndex
+                    ))
+                }
+            }
+        }
+        return rounds
+    }
 }
 
 private struct DebugProbePacketRecord {
@@ -68,7 +113,8 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
     public var isRecording: Bool { recording.load() != 0 }
 
     public func begin(sessionID: Data, streamID: UInt32, durationSeconds: UInt32,
-                      networkProbe: Bool = false) {
+                      networkProbe: Bool = false,
+                      networkProbeRepeat: Bool = false) {
         precondition(sessionID.count == 16 && streamID != 0)
         lock.lock()
         records.removeAll(keepingCapacity: true)
@@ -86,7 +132,8 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
             streamID: streamID,
             durationSeconds: durationSeconds,
             startedAt: DispatchTime.now().uptimeNanoseconds,
-            networkProbe: networkProbe
+            networkProbe: networkProbe,
+            networkProbeRepeat: networkProbeRepeat
         )
         recording.store(1)
         lock.unlock()
@@ -291,22 +338,41 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
         if metadata.networkProbe {
             lines.insert("probe_mode=network", at: 5)
             lines.insert("probe_trace_records=\(probePackets.count)", at: 6)
-            let specs: [(bytes: Int, rate: Int, burst: Int)] = [
-                (968, 400, 4), (968, 400, 1), (488, 400, 4), (968, 200, 1),
-                (968, 400, 4), (968, 400, 1), (488, 400, 4), (968, 200, 1)
-            ]
+            let specs: [NetworkProbePlan.Round]
+            if metadata.networkProbeRepeat {
+                specs = NetworkProbePlan.rounds(streamID: metadata.streamID)
+                lines.append("probe_plan=shuffled_reverse_repeat_v2")
+                lines.append("\nnetwork_probe_rounds_v2")
+                lines.append("round\ttransport\trepeat\tvariant\tseconds\tpayload_bytes\tpackets_per_second\tburst_packets\tfirst_sequence\tplanned\treceived\tunique\tduplicates\tnot_received\twrong_size")
+            } else {
+                let legacy: [(Int, Int, Int)] = [
+                    (968, 400, 4), (968, 400, 1), (488, 400, 4), (968, 200, 1),
+                    (968, 400, 4), (968, 400, 1), (488, 400, 4), (968, 200, 1)
+                ]
+                specs = legacy.enumerated().map { index, spec in
+                    NetworkProbePlan.Round(
+                        variant: index % 4, payloadBytes: spec.0,
+                        packetsPerSecond: spec.1, burstPackets: spec.2,
+                        reliable: index >= 4, repeatIndex: 1
+                    )
+                }
+                lines.append("\nnetwork_probe_rounds_v1")
+                lines.append("round\ttransport\tseconds\tpayload_bytes\tpackets_per_second\tburst_packets\tfirst_sequence\tplanned\treceived\tunique\tduplicates\tnot_received\twrong_size")
+            }
             var firstSequence = 0
-            lines.append("\nnetwork_probe_rounds_v1")
-            lines.append("round\ttransport\tseconds\tpayload_bytes\tpackets_per_second\tburst_packets\tfirst_sequence\tplanned\treceived\tunique\tduplicates\tnot_received\twrong_size")
             for (index, spec) in specs.enumerated() {
-                let planned = spec.rate * 30
+                let planned = spec.packetsPerSecond * 30
                 let lastSequence = firstSequence + planned
                 let received = probePackets.filter {
                     (firstSequence..<lastSequence).contains(Int($0.sequence))
                 }
                 let unique = Set(received.map(\.sequence)).count
-                let wrongSize = received.filter { $0.payloadBytes != spec.bytes }.count
-                lines.append("\(index + 1)\t\(index < 4 ? "datagram" : "reliable_stream")\t30\t\(spec.bytes)\t\(spec.rate)\t\(spec.burst)\t\(firstSequence)\t\(planned)\t\(received.count)\t\(unique)\t\(received.count - unique)\t\(planned - unique)\t\(wrongSize)")
+                let wrongSize = received.filter { $0.payloadBytes != spec.payloadBytes }.count
+                let transport = spec.reliable ? "reliable_stream" : "datagram"
+                let prefix = metadata.networkProbeRepeat
+                    ? "\(index + 1)\t\(transport)\t\(spec.repeatIndex)\t\(spec.variant)"
+                    : "\(index + 1)\t\(transport)"
+                lines.append("\(prefix)\t30\t\(spec.payloadBytes)\t\(spec.packetsPerSecond)\t\(spec.burstPackets)\t\(firstSequence)\t\(planned)\t\(received.count)\t\(unique)\t\(received.count - unique)\t\(planned - unique)\t\(wrongSize)")
                 firstSequence = lastSequence
             }
             lines.append("\nnetwork_probe_trace_v1")

@@ -32,6 +32,22 @@ struct QuicServerCallbacks {
   std::function<void()> on_closed;
 };
 
+enum class ProbeSendStatus {
+  accepted,
+  disconnected,
+  stream_unavailable,
+  pending_limit,
+  invalid_size,
+  datagram_unavailable,
+  transport_rejected,
+};
+
+struct ProbeSendOutcome {
+  ProbeSendStatus status = ProbeSendStatus::disconnected;
+  std::size_t pending_reliable_sends = 0;
+  std::uint32_t transport_status = 0;
+};
+
 class QuicServer {
  public:
   virtual ~QuicServer() = default;
@@ -39,9 +55,9 @@ class QuicServer {
                      QuicServerCallbacks callbacks) = 0;
   virtual bool SendControl(std::span<const std::byte> framed_bytes) = 0;
   virtual bool SendAudio(const wire::EncodedAudioDatagram& datagram) = 0;
-  virtual bool SendProbe(std::span<const std::byte> datagram,
-                         std::uint32_t stream_id,
-                         std::uint32_t sequence) = 0;
+  virtual ProbeSendOutcome SendProbe(std::span<const std::byte> datagram,
+                                     std::uint32_t stream_id,
+                                     std::uint32_t sequence) = 0;
   virtual bool StartReliableAudio(std::uint32_t stream_id,
                                   std::uint32_t generation) = 0;
   virtual void CloseConnection() = 0;
