@@ -42,8 +42,11 @@ public struct HearPortApp: View {
             .toolbar {
                 ToolbarItem(placement: .principal) {
                     HStack(spacing: 8) {
-                        Image(systemName: "waveform")
-                            .foregroundStyle(.green)
+                        Image("HearPortSymbol", bundle: .main)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: 28, height: 28)
+                            .accessibilityHidden(true)
                         Text("HearPort")
                     }
                     .font(.title.weight(.semibold))
@@ -221,14 +224,20 @@ public struct HearPortApp: View {
 
     private var statusCard: some View {
         VStack(spacing: 14) {
-            Image(systemName: connectionError == nil ?
-                  (audioOutput == nil ? "speaker.wave.2" : "speaker.wave.2.fill") :
-                  "exclamationmark.triangle")
-                .font(.system(size: 34))
-                .foregroundStyle(connectionError == nil ?
-                                 (audioOutput == nil ? Color.secondary : Color.green) : Color.red)
-                .frame(width: 72, height: 72)
-                .background(Color(uiColor: .tertiarySystemGroupedBackground), in: Circle())
+            Group {
+                if connectionError == nil {
+                    Image("HearPortSymbol", bundle: .main)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 44, height: 44)
+                } else {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.system(size: 34))
+                        .foregroundStyle(.red)
+                }
+            }
+            .frame(width: 72, height: 72)
+            .background(Color(uiColor: .tertiarySystemGroupedBackground), in: Circle())
 
             Text(status)
                 .font(.title.weight(.semibold))
