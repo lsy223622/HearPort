@@ -238,6 +238,7 @@ public final class ReceiverControlSession {
         guard mode == .remembered || (mode == .pair || mode == .oneTime) else { return }
         let peerID = credential?.peerID ?? Data()
         let features = ControlFeature.diagnosticsUpload | ControlFeature.networkProbe |
+            ControlFeature.networkProbeRepeat |
             (audioMode == .reliable ? ControlFeature.reliableAudio : 0)
         let envelope = ControlEnvelope(.connectRequest(authMode: mode,
                                                        peerID: peerID,
@@ -584,7 +585,9 @@ public final class ReceiverControlSession {
                 sessionID: sessionID,
                 streamID: streamID,
                 durationSeconds: durationSeconds,
-                networkProbe: isNetworkProbe
+                networkProbe: isNetworkProbe,
+                networkProbeRepeat: isNetworkProbe &&
+                    (peerFeatures & ControlFeature.networkProbeRepeat) != 0
             )
             activeDebugSessionID = sessionID
             activeDebugStreamID = streamID

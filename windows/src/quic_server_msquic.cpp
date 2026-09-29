@@ -224,15 +224,23 @@ class MsQuicServer final : public QuicServer {
     return true;
   }
 
-  bool SendProbe(std::span<const std::byte> datagram,
-                 std::uint32_t stream_id,
-                 std::uint32_t sequence) override {
+  ProbeSendOutcome SendProbe(std::span<const std::byte> datagram,
+                             std::uint32_t stream_id,
+                             std::uint32_t sequence) override {
     std::lock_guard lock(mutex_);
     if (!started_ || connection_ == nullptr || api_ == nullptr ||
-        datagram.empty()) return false;
+        datagram.empty()) return {ProbeSendStatus::disconnected};
     if (reliable_mode_) {
-      if (audio_stream_ == nullptr || datagram.size() > 968 ||
-          pending_reliable_sends_.load() >= kMaxReliablePendingSends) return false;
+      const auto pending = pending_reliable_sends_.load();
+      if (audio_stream_ == nullptr) {
+        return {ProbeSendStatus::stream_unavailable, pending};
+      }
+      if (datagram.size() > 968) {
+        return {ProbeSendStatus::invalid_size, pending};
+      }
+      if (pending >= kMaxReliablePendingSends) {
+        return {ProbeSendStatus::pending_limit, pending};
+      }
       std::vector<std::byte> framed(datagram.size() + 2);
       framed[0] = std::byte{static_cast<std::uint8_t>(datagram.size() >> 8)};
       framed[1] = std::byte{static_cast<std::uint8_t>(datagram.size())};
@@ -245,11 +253,12 @@ class MsQuicServer final : public QuicServer {
       if (QUIC_FAILED(status)) {
         pending_reliable_sends_.fetch_sub(1);
         delete context;
-        return false;
+        return {ProbeSendStatus::transport_rejected, pending,
+                static_cast<std::uint32_t>(status)};
       }
-      return true;
+      return {ProbeSendStatus::accepted, pending + 1};
     }
-    if (!datagram_ready_) return false;
+    if (!datagram_ready_) return {ProbeSendStatus::datagram_unavailable};
     auto* context = new SendBufferContext(datagram);
     context->stream_id = stream_id;
     context->sequence = sequence;
@@ -258,9 +267,10 @@ class MsQuicServer final : public QuicServer {
         connection_, &context->buffer, 1, QUIC_SEND_FLAG_NONE, context);
     if (QUIC_FAILED(status)) {
       delete context;
-      return false;
+      return {ProbeSendStatus::transport_rejected, 0,
+              static_cast<std::uint32_t>(status)};
     }
-    return true;
+    return {ProbeSendStatus::accepted};
   }
 
   bool StartReliableAudio(std::uint32_t stream_id,
@@ -675,8 +685,10 @@ class UnavailableQuicServer final : public QuicServer {
   }
   bool SendControl(std::span<const std::byte>) override { return false; }
   bool SendAudio(const wire::EncodedAudioDatagram&) override { return false; }
-  bool SendProbe(std::span<const std::byte>, std::uint32_t,
-                 std::uint32_t) override { return false; }
+  ProbeSendOutcome SendProbe(std::span<const std::byte>, std::uint32_t,
+                             std::uint32_t) override {
+    return {ProbeSendStatus::disconnected};
+  }
   bool StartReliableAudio(std::uint32_t, std::uint32_t) override { return false; }
   void CloseConnection() override {}
   void Stop() override {}

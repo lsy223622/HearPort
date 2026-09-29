@@ -24,6 +24,7 @@ public enum ControlFeature {
     public static let diagnosticsUpload: UInt32 = 1
     public static let reliableAudio: UInt32 = 2
     public static let networkProbe: UInt32 = 4
+    public static let networkProbeRepeat: UInt32 = 8
 }
 
 let diagnosticReportChunkMaxBytes = 60 * 1024

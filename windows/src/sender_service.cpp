@@ -298,6 +298,8 @@ void SenderService::ConfigureNetworkProbe(bool enabled) {
 void SenderService::ProbeWorker(std::uint32_t stream_id) {
   using Clock = std::chrono::steady_clock;
   probe_packets_processed_.store(0);
+  probe_stream_id_.store(stream_id);
+  const auto rounds = MakeNetworkProbeRounds(stream_id);
   const auto close_timer = [](HANDLE handle) { CloseHandle(handle); };
   std::unique_ptr<void, decltype(close_timer)> timer(
       CreateWaitableTimerExW(nullptr, nullptr,
@@ -310,19 +312,24 @@ void SenderService::ProbeWorker(std::uint32_t stream_id) {
   const auto began = Clock::now();
   LogDiagnostic("network_probe_trace_fields captured_at_ns=scheduled queued_at_ns=woke send_at_ns=send_call");
   std::uint32_t sequence = 0;
-  for (std::size_t index = 0; index < kNetworkProbeRounds.size(); ++index) {
-    const auto& round = kNetworkProbeRounds[index];
-    const bool reliable = index >= kNetworkProbeRounds.size() / 2;
+  for (std::size_t index = 0; index < rounds.size(); ++index) {
+    const auto& round = rounds[index];
+    const bool reliable = round.reliable;
     const auto round_start = began +
         std::chrono::seconds(index * kNetworkProbeSecondsPerRound);
-    if (reliable && index == kNetworkProbeRounds.size() / 2 &&
+    if (reliable && index == rounds.size() / 2 &&
         !quic_->StartReliableAudio(stream_id, 1)) {
       LogDiagnostic("network_probe_reliable_stream_start_failed");
       return;
     }
     const auto count = round.packets_per_second * kNetworkProbeSecondsPerRound;
     std::uint32_t accepted = 0;
+    std::array<std::uint32_t, 7> outcomes{};
+    std::size_t pending_peak = 0;
+    std::uint32_t first_transport_status = 0;
     LogDiagnostic("network_probe_round_start round=" + std::to_string(index + 1) +
+                  " variant=" + std::to_string(round.variant) +
+                  " repeat=" + std::to_string((index % 10) / 5 + 1) +
                   " transport=" + (reliable ? std::string("reliable_stream")
                                               : std::string("datagram")) +
                   " payload_bytes=" + std::to_string(round.payload_bytes) +
@@ -361,7 +368,14 @@ void SenderService::ProbeWorker(std::uint32_t stream_id) {
       }
       if (!trace) return;
       const auto sent_at = MonotonicNanoseconds();
-      const bool sent = quic_->SendProbe(datagram, stream_id, sequence);
+      const auto outcome = quic_->SendProbe(datagram, stream_id, sequence);
+      const bool sent = outcome.status == ProbeSendStatus::accepted;
+      ++outcomes[static_cast<std::size_t>(outcome.status)];
+      pending_peak = std::max(pending_peak, outcome.pending_reliable_sends);
+      if (outcome.status == ProbeSendStatus::transport_rejected &&
+          first_transport_status == 0) {
+        first_transport_status = outcome.transport_status;
+      }
       if (sent) ++accepted;
       const auto scheduled_at = std::chrono::duration_cast<std::chrono::nanoseconds>(
           target.time_since_epoch()).count();
@@ -370,9 +384,18 @@ void SenderService::ProbeWorker(std::uint32_t stream_id) {
       probe_packets_processed_.store(sequence + 1);
     }
     LogDiagnostic("network_probe_round_end round=" + std::to_string(index + 1) +
+                  " stream_id=" + std::to_string(stream_id) +
                   " sequence=" + std::to_string(sequence) +
                   " send_accepted=" + std::to_string(accepted) +
-                  " send_rejected=" + std::to_string(count - accepted));
+                  " send_rejected=" + std::to_string(count - accepted) +
+                  " pending_peak=" + std::to_string(pending_peak) +
+                  " reject_disconnected=" + std::to_string(outcomes[1]) +
+                  " reject_stream_unavailable=" + std::to_string(outcomes[2]) +
+                  " reject_pending_limit=" + std::to_string(outcomes[3]) +
+                  " reject_invalid_size=" + std::to_string(outcomes[4]) +
+                  " reject_datagram_unavailable=" + std::to_string(outcomes[5]) +
+                  " reject_transport=" + std::to_string(outcomes[6]) +
+                  " transport_status=" + std::to_string(first_transport_status));
   }
 }
 

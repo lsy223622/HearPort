@@ -6,27 +6,26 @@
 
 int main() {
   using namespace hearport::windows;
-  static_assert(kNetworkProbeRounds.size() == 8);
-  assert(kNetworkProbeRounds[0].payload_bytes == 968);
-  assert(kNetworkProbeRounds[0].packets_per_second == 400);
-  assert(kNetworkProbeRounds[0].burst_packets == 4);
-  assert(kNetworkProbeRounds[1].payload_bytes == 968);
-  assert(kNetworkProbeRounds[1].packets_per_second == 400);
-  assert(kNetworkProbeRounds[1].burst_packets == 1);
-  assert(kNetworkProbeRounds[2].payload_bytes == 488);
-  assert(kNetworkProbeRounds[2].packets_per_second == 400);
-  assert(kNetworkProbeRounds[2].burst_packets == 4);
-  assert(kNetworkProbeRounds[3].payload_bytes == 968);
-  assert(kNetworkProbeRounds[3].packets_per_second == 200);
-  assert(kNetworkProbeRounds[3].burst_packets == 1);
-  std::uint32_t total = 0;
-  constexpr std::array<std::uint32_t, 8> boundaries{
-      12'000, 24'000, 36'000, 42'000, 54'000, 66'000, 78'000, 84'000};
-  for (std::size_t index = 0; index < kNetworkProbeRounds.size(); ++index) {
-    total += kNetworkProbeRounds[index].packets_per_second *
-             kNetworkProbeSecondsPerRound;
-    assert(total == boundaries[index]);
+  const auto rounds = MakeNetworkProbeRounds(7);
+  static_assert(kNetworkProbeRoundCount == 20);
+  constexpr std::array<std::uint8_t, 20> expected_variants{
+      2, 1, 3, 0, 4, 4, 0, 3, 1, 2,
+      0, 4, 2, 3, 1, 1, 3, 2, 4, 0};
+  for (std::size_t index = 0; index < rounds.size(); ++index) {
+    assert(rounds[index].variant == expected_variants[index]);
+    assert(rounds[index].reliable == (index >= 10));
   }
+  assert(rounds[4].payload_bytes == 488);
+  assert(rounds[4].packets_per_second == 400);
+  assert(rounds[4].burst_packets == 1);
+  assert(rounds[9].variant == rounds[0].variant);
+  assert(rounds[19].variant == rounds[10].variant);
+  std::uint32_t total = 0;
+  for (std::size_t index = 0; index < rounds.size(); ++index) {
+    total += rounds[index].packets_per_second *
+             kNetworkProbeSecondsPerRound;
+  }
+  assert(total == 216'000);
 
   const auto packet = MakeNetworkProbeDatagram(0x01020304, 0x11223344, 488);
   assert(packet.size() == 488);

@@ -3,6 +3,34 @@ import XCTest
 @testable import HearPortReceiver
 
 final class DebugSessionDiagnosticsTests: XCTestCase {
+    func testRepeatedNetworkProbePlanAndReport() throws {
+        let rounds = NetworkProbePlan.rounds(streamID: 7)
+        XCTAssertEqual(rounds.map(\.variant), [
+            2, 1, 3, 0, 4, 4, 0, 3, 1, 2,
+            0, 4, 2, 3, 1, 1, 3, 2, 4, 0
+        ])
+        XCTAssertEqual(rounds.map(\.packetsPerSecond).reduce(0, +) * 30, 216_000)
+        XCTAssertEqual(rounds.filter(\.reliable).count, 10)
+
+        let directory = try temporaryDirectory("RepeatedNetworkProbe")
+        let diagnostics = HearPortDiagnostics(directory: directory.appendingPathComponent("logs"))
+        let transfer = DebugReportTransfer(directory: directory.appendingPathComponent("reports"))
+        let capture = DebugSessionDiagnostics(
+            capacity: 1, reportTransfer: transfer, diagnostics: diagnostics
+        )
+        capture.begin(sessionID: Data(repeating: 0x28, count: 16),
+                      streamID: 7, durationSeconds: 610,
+                      networkProbe: true, networkProbeRepeat: true)
+        capture.recordProbePacket(Data([0, 0, 0, 7, 0, 0, 0, 0] +
+                                      Array(repeating: 0, count: 480)))
+        _ = try capture.finish(reason: "duration_expired", diagnostics: diagnostics)
+        let pending = try XCTUnwrap(transfer.pendingReport())
+        let report = try XCTUnwrap(String(data: pending.data, encoding: .utf8))
+        XCTAssertTrue(report.contains("network_probe_rounds_v2"))
+        XCTAssertTrue(report.contains("1\tdatagram\t1\t2\t30\t488\t400\t4\t0\t12000\t1\t1"))
+        XCTAssertTrue(report.contains("20\treliable_stream\t2\t0"))
+    }
+
     func testNetworkProbeRecordsPacketSizeWithoutAudioPayload() throws {
         let directory = try temporaryDirectory("NetworkProbeTrace")
         let diagnostics = HearPortDiagnostics(directory: directory.appendingPathComponent("logs"))
