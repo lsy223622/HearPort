@@ -83,6 +83,7 @@ class SenderAuthentication {
   std::function<void(bool, bool)> connection_handler_;
   bool remember_pairing_ = false;
   bool peer_supports_diagnostics_ = false;
+  bool peer_supports_network_probe_ = false;
   bool peer_wants_reliable_ = false;
   bool report_upload_active_ = false;
   std::array<std::byte, 16> report_upload_session_id_{};

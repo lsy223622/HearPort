@@ -12,6 +12,7 @@
 "The Windows PC does not support this audio mode." = "Windows 电脑不支持当前音频模式。";
 "The Windows PC reported a connection error." = "Windows 电脑报告连接错误。";
 "Playing" = "正在播放";
+"Network test running" = "正在进行网络测试";
 "Audio output unavailable" = "音频输出不可用";
 "Disconnect" = "断开连接";
 "Last connection" = "上次连接";

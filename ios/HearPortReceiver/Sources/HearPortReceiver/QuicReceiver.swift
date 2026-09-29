@@ -612,6 +612,7 @@ public final class HearPortQuicTransport {
     private var loggedFirstDatagram = false
     private let audioMode: AudioTransportMode
     private var reliableAccepted = false
+    private var networkProbe = false
     private var expectedAudioStreamID: UInt32?
     private var audioStream: NWConnection?
     private var audioGeneration: UInt32 = 0
@@ -662,9 +663,8 @@ public final class HearPortQuicTransport {
         quicOptions.isDatagram = true
         // The transport limit includes the QUIC frame header, not just audio bytes.
         quicOptions.maxDatagramFrameSize = 65_535
-        if audioMode == .reliable {
-            quicOptions.initialMaxStreamsUnidirectional = 65_535
-        }
+        quicOptions.initialMaxStreamsUnidirectional =
+            audioMode == .reliable ? 65_535 : 1
         sec_protocol_options_set_tls_resumption_enabled(
             quicOptions.securityProtocolOptions,
             false
@@ -780,14 +780,20 @@ public final class HearPortQuicTransport {
             guard let self, let connectionGroup,
                   let activeGroup = self.group,
                   activeGroup === connectionGroup,
-                  self.audioMode == .reliable,
+                  (self.audioMode == .reliable || self.networkProbe),
                   self.reliableAccepted, let streamID = self.expectedAudioStreamID else {
                 connection.cancel()
                 return
             }
-            self.receiveAudio(on: connection,
-                              records: ReliableAudioRecords(expectedStreamID: streamID),
-                              connectionGroup: connectionGroup)
+            if self.networkProbe {
+                self.receiveProbe(on: connection,
+                                  records: ReliableProbeRecords(expectedStreamID: streamID),
+                                  connectionGroup: connectionGroup)
+            } else {
+                self.receiveAudio(on: connection,
+                                  records: ReliableAudioRecords(expectedStreamID: streamID),
+                                  connectionGroup: connectionGroup)
+            }
             connection.start(queue: self.queue)
         }
         connectionGroup.setReceiveHandler(
@@ -812,7 +818,9 @@ public final class HearPortQuicTransport {
                         ]
                     )
                 }
-                if self.audioMode == .datagram { self.onAudioDatagram?(data) }
+                if self.audioMode == .datagram || self.networkProbe {
+                    self.onAudioDatagram?(data)
+                }
             }
         }
         connectionGroup.start(queue: queue)
@@ -852,6 +860,7 @@ public final class HearPortQuicTransport {
         progressSequence = nil
         progressInFlight = false
         reliableAccepted = false
+        networkProbe = false
         controlStream?.cancel()
         group?.cancel()
         controlStream = nil
@@ -872,6 +881,11 @@ public final class HearPortQuicTransport {
         reliableAccepted = true
     }
 
+    public func enableNetworkProbe() {
+        networkProbe = true
+        reliableAccepted = true
+    }
+
     public func expectReliableAudio(streamID: UInt32,
                                     latestReceivedSequence: @escaping () -> UInt32?) {
         progressTimer?.cancel()
@@ -881,6 +895,47 @@ public final class HearPortQuicTransport {
         audioGeneration = 0
         expectedAudioStreamID = streamID
         progressSequence = latestReceivedSequence
+    }
+
+    private func receiveProbe(on stream: NWConnection, records: ReliableProbeRecords,
+                              connectionGroup: NWConnectionGroup) {
+        stream.receive(minimumIncompleteLength: 1, maximumLength: 65_540) {
+            [weak self] data, _, isComplete, error in
+            guard let self, let activeGroup = self.group,
+                  activeGroup === connectionGroup else { return }
+            guard self.expectedAudioStreamID == records.expectedStreamID else {
+                stream.cancel()
+                return
+            }
+            var records = records
+            do {
+                let packets = try records.append(data ?? Data())
+                if let generation = records.generation, generation > self.audioGeneration {
+                    self.audioStream?.cancel()
+                    self.audioStream = stream
+                    self.audioGeneration = generation
+                }
+                guard self.audioStream === stream || records.generation == nil else {
+                    stream.cancel()
+                    return
+                }
+                for packet in packets { self.onAudioDatagram?(packet) }
+                if isComplete || error != nil {
+                    try records.finish()
+                    if self.audioStream === stream { self.audioStream = nil }
+                    stream.cancel()
+                    return
+                }
+                self.receiveProbe(on: stream, records: records,
+                                  connectionGroup: connectionGroup)
+            } catch {
+                self.diagnostics.log(.error, category: .transport,
+                                     message: "reliable_probe_invalid",
+                                     fields: ["event": "reliable_probe_invalid",
+                                              "error": "\(error)"])
+                stream.cancel()
+            }
+        }
     }
 
     private func receiveAudio(on stream: NWConnection, records: ReliableAudioRecords,

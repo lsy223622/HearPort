@@ -12,6 +12,7 @@
 "The Windows PC does not support this audio mode." = "The Windows PC does not support this audio mode.";
 "The Windows PC reported a connection error." = "The Windows PC reported a connection error.";
 "Playing" = "Playing";
+"Network test running" = "Network test running";
 "Audio output unavailable" = "Audio output unavailable";
 "Disconnect" = "Disconnect";
 "Last connection" = "Last connection";

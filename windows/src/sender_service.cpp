@@ -1,3 +1,8 @@
+#define _WIN32_WINNT 0x0A00
+#define NOMINMAX
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+
 #include "hearport/windows/sender_service.h"
 
 #include <algorithm>
@@ -12,6 +17,7 @@
 
 #include "hearport/wire/audio_datagram.h"
 #include "hearport/wire/control_framing.h"
+#include "hearport/windows/network_probe.h"
 
 namespace hearport::windows {
 
@@ -96,6 +102,7 @@ bool SenderService::Start() {
         if (IsFinalDebugSendState(state)) CompleteDebugSend(stream_id);
       };
   callbacks.on_closed = [this] {
+    stop_probe_.store(true);
     reliable_mode_.store(false);
     {
       std::lock_guard lock(reliable_mutex_);
@@ -142,13 +149,14 @@ bool SenderService::Start() {
     audio_metrics_.set_queue_state(0, false, 0);
   }
   control_decoder_.Reset();
-  audio_thread_ = std::thread([this] { AudioWorker(); });
+  stop_probe_.store(false);
+  if (!network_probe_) audio_thread_ = std::thread([this] { AudioWorker(); });
   {
     std::lock_guard lock(diagnostics_mutex_);
     stop_diagnostics_ = false;
   }
   diagnostics_thread_ = std::thread([this] { DiagnosticsWorker(); });
-  if (!capture_.Start(
+  if (!network_probe_ && !capture_.Start(
           [this](std::span<const std::byte> bytes, const PcmFormat& format) {
             HandleCapturePacket(bytes, format);
           },
@@ -161,9 +169,12 @@ bool SenderService::Start() {
 }
 
 void SenderService::Stop() {
-  if (!started_ && !audio_thread_.joinable() && !diagnostics_thread_.joinable()) {
+  if (!started_ && !audio_thread_.joinable() && !diagnostics_thread_.joinable() &&
+      !probe_thread_.joinable()) {
     return;
   }
+  stop_probe_.store(true);
+  if (probe_thread_.joinable()) probe_thread_.join();
   if (debug_trace_.IsActive()) EndDebugSession(2);
   capture_.Stop();
   {
@@ -274,7 +285,93 @@ bool SenderService::MarkStartStreamAckWritten(std::uint32_t stream_id) {
     pending_debug_session_id_.fill(std::byte{0});
     diagnostics_condition_.notify_all();
   }
+  if (network_probe_) {
+    probe_thread_ = std::thread([this, stream_id] { ProbeWorker(stream_id); });
+  }
   return true;
+}
+
+void SenderService::ConfigureNetworkProbe(bool enabled) {
+  network_probe_ = enabled;
+}
+
+void SenderService::ProbeWorker(std::uint32_t stream_id) {
+  using Clock = std::chrono::steady_clock;
+  const auto close_timer = [](HANDLE handle) { CloseHandle(handle); };
+  std::unique_ptr<void, decltype(close_timer)> timer(
+      CreateWaitableTimerExW(nullptr, nullptr,
+                             CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                             TIMER_ALL_ACCESS), close_timer);
+  if (!timer) {
+    LogDiagnostic("network_probe_timer_create_failed");
+    return;
+  }
+  const auto began = Clock::now();
+  LogDiagnostic("network_probe_trace_fields captured_at_ns=scheduled queued_at_ns=woke send_at_ns=send_call");
+  std::uint32_t sequence = 0;
+  for (std::size_t index = 0; index < kNetworkProbeRounds.size(); ++index) {
+    const auto& round = kNetworkProbeRounds[index];
+    const bool reliable = index >= kNetworkProbeRounds.size() / 2;
+    const auto round_start = began +
+        std::chrono::seconds(index * kNetworkProbeSecondsPerRound);
+    if (reliable && index == kNetworkProbeRounds.size() / 2 &&
+        !quic_->StartReliableAudio(stream_id, 1)) {
+      LogDiagnostic("network_probe_reliable_stream_start_failed");
+      return;
+    }
+    const auto count = round.packets_per_second * kNetworkProbeSecondsPerRound;
+    std::uint32_t accepted = 0;
+    LogDiagnostic("network_probe_round_start round=" + std::to_string(index + 1) +
+                  " transport=" + (reliable ? std::string("reliable_stream")
+                                              : std::string("datagram")) +
+                  " payload_bytes=" + std::to_string(round.payload_bytes) +
+                  " packets_per_second=" + std::to_string(round.packets_per_second) +
+                  " burst_packets=" + std::to_string(round.burst_packets) +
+                  " sequence=" + std::to_string(sequence));
+    for (std::uint32_t packet = 0; packet < count; ++packet, ++sequence) {
+      const auto tick = packet / round.burst_packets;
+      const auto target = round_start + std::chrono::nanoseconds(
+          (static_cast<std::uint64_t>(tick) * round.burst_packets *
+           1'000'000'000ull) / round.packets_per_second);
+      const auto remaining = target - Clock::now();
+      if (remaining > Clock::duration::zero()) {
+        LARGE_INTEGER due_time{};
+        due_time.QuadPart = -std::max<std::int64_t>(
+            1, std::chrono::duration_cast<std::chrono::nanoseconds>(
+                   remaining).count() / 100);
+        if (!SetWaitableTimerEx(timer.get(), &due_time, 0, nullptr, nullptr,
+                                nullptr, 0) ||
+            WaitForSingleObject(timer.get(), INFINITE) != WAIT_OBJECT_0) {
+          LogDiagnostic("network_probe_timer_wait_failed");
+          return;
+        }
+      }
+      if (stop_probe_.load()) return;
+      const auto woke_at = MonotonicNanoseconds();
+      const auto datagram = MakeNetworkProbeDatagram(
+          stream_id, sequence, round.payload_bytes);
+      std::lock_guard send_lock(audio_send_mutex_);
+      bool trace = false;
+      {
+        std::lock_guard debug_lock(debug_mutex_);
+        trace = debug_trace_.IsActive() &&
+                active_debug_stream_id_ == stream_id && !debug_ending_;
+        if (trace && !reliable) ++outstanding_debug_sends_;
+      }
+      if (!trace) return;
+      const auto sent_at = MonotonicNanoseconds();
+      const bool sent = quic_->SendProbe(datagram, stream_id, sequence);
+      if (sent) ++accepted;
+      const auto scheduled_at = std::chrono::duration_cast<std::chrono::nanoseconds>(
+          target.time_since_epoch()).count();
+      debug_trace_.RecordPacket(sequence, scheduled_at, woke_at, sent_at, sent);
+      if (!sent && !reliable) CompleteDebugSend(stream_id);
+    }
+    LogDiagnostic("network_probe_round_end round=" + std::to_string(index + 1) +
+                  " sequence=" + std::to_string(sequence) +
+                  " send_accepted=" + std::to_string(accepted) +
+                  " send_rejected=" + std::to_string(count - accepted));
+  }
 }
 
 void SenderService::ConfigureReliableAudio(bool enabled) {

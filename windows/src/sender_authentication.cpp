@@ -114,6 +114,8 @@ bool SenderAuthentication::HandleConnect(
   }
   peer_supports_diagnostics_ =
       (envelope.feature_bits & wire::kFeatureDiagnosticsUpload) != 0;
+  peer_supports_network_probe_ =
+      (envelope.feature_bits & wire::kFeatureNetworkProbe) != 0;
   peer_wants_reliable_ =
       (envelope.feature_bits & wire::kFeatureReliableAudio) != 0;
 
@@ -221,11 +223,16 @@ bool SenderAuthentication::CompleteAuthentication(bool remember) {
   if (!service_.MarkAuthenticated()) {
     return Fail(ErrorCode::protocol, "session authentication state rejected");
   }
-  service_.ConfigureReliableAudio(peer_wants_reliable_);
+  service_.ConfigureReliableAudio(peer_wants_reliable_ && !service_.network_probe());
   if (service_.debug_duration().has_value() && !peer_supports_diagnostics_) {
     service_.LogDiagnostic("debug_session_refused receiver_feature_missing=1");
     return Fail(ErrorCode::protocol,
                 "Update HearPort on iPad to use timed diagnostics.");
+  }
+  if (service_.network_probe() && !peer_supports_network_probe_) {
+    service_.LogDiagnostic("network_probe_refused receiver_feature_missing=1");
+    return Fail(ErrorCode::protocol,
+                "Update HearPort on iPad to use the network test.");
   }
   wire::ControlEnvelope ready;
   ready.type = wire::ControlMessageType::session_ready;
@@ -233,6 +240,7 @@ bool SenderAuthentication::CompleteAuthentication(bool remember) {
                            ? wire::kFeatureDiagnosticsUpload
                            : 0;
   if (peer_wants_reliable_) ready.feature_bits |= wire::kFeatureReliableAudio;
+  if (service_.network_probe()) ready.feature_bits |= wire::kFeatureNetworkProbe;
   if (!Send(ready)) return false;
   authenticated_ = true;
   if (peer_supports_diagnostics_) {
@@ -431,6 +439,7 @@ void SenderAuthentication::Reset() noexcept {
   authenticated_ = false;
   remember_pairing_ = false;
   peer_supports_diagnostics_ = false;
+  peer_supports_network_probe_ = false;
   peer_wants_reliable_ = false;
   report_upload_active_ = false;
   report_upload_session_id_.fill(std::byte{0});

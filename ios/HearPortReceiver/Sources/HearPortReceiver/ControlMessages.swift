@@ -23,6 +23,7 @@ public enum ErrorCode: UInt32, Equatable, Sendable {
 public enum ControlFeature {
     public static let diagnosticsUpload: UInt32 = 1
     public static let reliableAudio: UInt32 = 2
+    public static let networkProbe: UInt32 = 4
 }
 
 let diagnosticReportChunkMaxBytes = 60 * 1024
