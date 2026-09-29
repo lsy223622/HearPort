@@ -3,6 +3,30 @@ import XCTest
 @testable import HearPortReceiver
 
 final class DebugSessionDiagnosticsTests: XCTestCase {
+    func testNetworkProbeRecordsPacketSizeWithoutAudioPayload() throws {
+        let directory = try temporaryDirectory("NetworkProbeTrace")
+        let diagnostics = HearPortDiagnostics(directory: directory.appendingPathComponent("logs"))
+        let transfer = DebugReportTransfer(directory: directory.appendingPathComponent("reports"))
+        let capture = DebugSessionDiagnostics(
+            capacity: 4, reportTransfer: transfer, diagnostics: diagnostics
+        )
+        capture.begin(sessionID: Data(repeating: 0x27, count: 16),
+                      streamID: 7, durationSeconds: 250, networkProbe: true)
+        let packet = Data([0, 0, 0, 7, 0, 0, 0, 10] + Array(repeating: 0xa5, count: 480))
+        capture.recordProbePacket(packet)
+
+        _ = try capture.finish(reason: "duration_expired", diagnostics: diagnostics)
+        let pending = try XCTUnwrap(transfer.pendingReport())
+        let report = try XCTUnwrap(String(data: pending.data, encoding: .utf8))
+        XCTAssertTrue(report.contains("probe_mode=network"))
+        XCTAssertTrue(report.contains("network_probe_trace_v1"))
+        XCTAssertTrue(report.contains("network_probe_rounds_v1"))
+        XCTAssertTrue(report.contains("5\treliable_stream\t30\t968\t400\t4\t42000\t12000"))
+        XCTAssertTrue(report.contains("\t7\t10\t488"))
+        XCTAssertFalse(report.contains("a5a5a5"))
+        XCTAssertFalse(report.contains("\taccepted\tinserted\t"))
+    }
+
     func testPacketTraceIsBoundedAndContainsSafeMetadataOnly() throws {
         let directory = try temporaryDirectory("DebugSessionTrace")
         let logs = directory.appendingPathComponent("logs", isDirectory: true)

@@ -36,6 +36,7 @@ enum class ControlMessageType : std::uint8_t {
 
 inline constexpr std::uint32_t kFeatureDiagnosticsUpload = 1u;
 inline constexpr std::uint32_t kFeatureReliableAudio = 2u;
+inline constexpr std::uint32_t kFeatureNetworkProbe = 4u;
 inline constexpr std::size_t kDiagnosticReportChunkMaxBytes = 60u * 1024u;
 
 // This is the small, schema-shaped value used at the platform boundary. The

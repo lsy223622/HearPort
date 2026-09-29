@@ -22,6 +22,7 @@ add_library(hearport_windows_platform STATIC
   src/debug_session_trace.cpp
   src/debug_report_store.cpp
   src/diagnostic_logger.cpp
+  src/network_probe.cpp
   src/quic_server_msquic.cpp
   src/sender_options.cpp
   src/sender_authentication.cpp
@@ -88,6 +89,10 @@ if(BUILD_TESTING)
   target_link_libraries(hearport_debug_session_trace_tests PRIVATE hearport_windows_platform)
   add_test(NAME hearport_debug_session_trace_tests
            COMMAND hearport_debug_session_trace_tests)
+
+  add_executable(hearport_network_probe_tests tests/network_probe_tests.cpp)
+  target_link_libraries(hearport_network_probe_tests PRIVATE hearport_windows_platform)
+  add_test(NAME hearport_network_probe_tests COMMAND hearport_network_probe_tests)
 
   add_executable(hearport_sender_options_tests tests/sender_options_tests.cpp)
   target_link_libraries(hearport_sender_options_tests PRIVATE hearport_windows_platform)
