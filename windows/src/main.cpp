@@ -40,7 +40,7 @@ int main(int argc, char** argv) {
   auto parsed = hearport::windows::ParseSenderOptions(arguments);
   if (!parsed.has_value()) {
     std::cerr << "invalid sender arguments; --debug-seconds must be between "
-                 "60 and 600, and certificate hashes must be valid hex\n";
+                 "60 and 3600, and certificate hashes must be valid hex\n";
     return 2;
   }
   auto options = std::move(parsed->quic);

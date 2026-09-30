@@ -81,6 +81,21 @@ final class ReceiverCoreTests: XCTestCase {
         }
     }
 
+    func testNetworkProbeDurationRoundTrips() throws {
+        for seconds in [UInt32(610), 3600] {
+            let message = ControlEnvelope(.diagnosticsStart(
+                sessionID: Data(repeating: 0x11, count: 16), streamID: 7,
+                durationSeconds: seconds
+            ))
+            XCTAssertEqual(try ControlEnvelope.decode(message.encoded()), message)
+        }
+        let excessive = ControlEnvelope(.diagnosticsStart(
+            sessionID: Data(repeating: 0x11, count: 16), streamID: 7,
+            durationSeconds: 3601
+        ))
+        XCTAssertThrowsError(try excessive.encoded())
+    }
+
     func testDiagnosticReportChunkEnforcesSizeAndSessionID() throws {
         let sessionID = [UInt8](repeating: 0x11, count: 16)
         let maximumChunk = envelope(

@@ -227,7 +227,7 @@ bool ValidateEnvelope(const ControlEnvelope& envelope) noexcept {
              envelope.chunk_index == 0 && ExactLength(envelope.bytes1, 16) &&
              envelope.bytes2.empty() && envelope.stream_id != 0 &&
              envelope.duration_seconds >= 60 &&
-             envelope.duration_seconds <= 600;
+             envelope.duration_seconds <= 3600;
     case ControlMessageType::diagnostics_end:
       return NoControlHeaderFields(envelope) && envelope.duration_seconds == 0 &&
              envelope.reason != 0 && envelope.format_version == 0 &&

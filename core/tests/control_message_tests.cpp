@@ -126,6 +126,8 @@ int main() {
   const auto receiver_ready = Envelope(32, {});
   const auto diagnostics_start = Envelope(
       33, Join({BytesField(1, session_id), VarintField(2, 7), VarintField(3, 60)}));
+  const auto network_probe_start = Envelope(
+      33, Join({BytesField(1, session_id), VarintField(2, 7), VarintField(3, 610)}));
   const auto diagnostics_end = Envelope(
       34, Join({BytesField(1, session_id), VarintField(2, 1)}));
   const auto report_start = Envelope(
@@ -147,6 +149,22 @@ int main() {
     Require(hearport::wire::EncodeControlEnvelope(*decoded) == message,
             "diagnostic control message round-trips byte-for-byte");
   }
+  const auto decoded_network_probe_start =
+      hearport::wire::DecodeControlEnvelope(network_probe_start);
+  Require(decoded_network_probe_start.has_value() &&
+              decoded_network_probe_start->duration_seconds == 610,
+          "network probe duration decodes");
+  Require(hearport::wire::EncodeControlEnvelope(*decoded_network_probe_start) ==
+              network_probe_start,
+          "network probe duration round-trips");
+  const auto maximum_duration_start = Envelope(
+      33, Join({BytesField(1, session_id), VarintField(2, 7), VarintField(3, 3600)}));
+  Require(hearport::wire::DecodeControlEnvelope(maximum_duration_start).has_value(),
+          "one-hour diagnostic duration is accepted");
+  const auto excessive_duration_start = Envelope(
+      33, Join({BytesField(1, session_id), VarintField(2, 7), VarintField(3, 3601)}));
+  Require(!hearport::wire::DecodeControlEnvelope(excessive_duration_start).has_value(),
+          "diagnostic duration over one hour is rejected");
   const auto decoded_connect_features =
       hearport::wire::DecodeControlEnvelope(connect_features);
   Require(decoded_connect_features.has_value(), "ConnectRequest features decode");

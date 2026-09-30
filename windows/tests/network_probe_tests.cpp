@@ -1,11 +1,19 @@
 #include <cassert>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 
 #include "hearport/windows/network_probe.h"
+#include "hearport/windows/sender_service.h"
 
 int main() {
   using namespace hearport::windows;
+  SenderService sender(QuicServerOptions{});
+  sender.ConfigureNetworkProbe(true);
+  sender.ConfigureDebugDuration(std::chrono::seconds(kNetworkProbeDurationSeconds));
+  assert(sender.debug_duration() == std::chrono::seconds(610));
+  sender.ConfigureDebugDuration(std::chrono::seconds(3600));
+  assert(sender.debug_duration() == std::chrono::seconds(3600));
   const auto rounds = MakeNetworkProbeRounds(7);
   static_assert(kNetworkProbeRoundCount == 20);
   constexpr std::array<std::uint8_t, 20> expected_variants{
