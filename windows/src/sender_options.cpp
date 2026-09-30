@@ -69,7 +69,7 @@ std::optional<SenderOptions> ParseSenderOptions(
     } else if (argument.starts_with("--debug-seconds=")) {
       std::uint32_t seconds = 0;
       if (!ParseInteger(argument.substr(16), seconds) ||
-          seconds < 60 || seconds > 600) {
+          seconds < 60 || seconds > 3600) {
         return std::nullopt;
       }
       options.debug_seconds = seconds;

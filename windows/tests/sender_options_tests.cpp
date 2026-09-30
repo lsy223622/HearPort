@@ -28,7 +28,7 @@ int main() {
   assert(!ordinary->open_pairing);
   assert(!ordinary->debug_seconds.has_value());
 
-  for (const auto value : {"60", "300", "600"}) {
+  for (const auto value : {"60", "300", "600", "610", "3600"}) {
     std::string debug_argument = "--debug-seconds=";
     debug_argument += value;
     const std::array<std::string_view, 4> arguments{
@@ -40,7 +40,7 @@ int main() {
     assert(options->debug_seconds == static_cast<std::uint32_t>(std::stoi(value)));
   }
 
-  for (const auto value : {"59", "601", "abc", ""}) {
+  for (const auto value : {"59", "3601", "abc", ""}) {
     std::string debug_argument = "--debug-seconds=";
     debug_argument += value;
     const std::array<std::string_view, 4> arguments{

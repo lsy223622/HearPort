@@ -458,8 +458,8 @@ void SenderService::ConfigureDebugDuration(
     std::optional<std::chrono::seconds> duration) {
   if (duration.has_value() &&
       (*duration < std::chrono::seconds(60) ||
-       *duration > std::chrono::seconds(600))) {
-    throw std::invalid_argument("debug duration must be from 60 to 600 seconds");
+       *duration > std::chrono::seconds(3600))) {
+    throw std::invalid_argument("debug duration must be from 60 to 3600 seconds");
   }
   std::lock_guard lock(debug_mutex_);
   debug_duration_ = duration;
