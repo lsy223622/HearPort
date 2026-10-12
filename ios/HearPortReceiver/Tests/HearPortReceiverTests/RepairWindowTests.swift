@@ -3,10 +3,13 @@ import XCTest
 
 final class RepairWindowTests: XCTestCase {
     func testParityRestoresExactlyOneMissingSourceAndRejectsLateRepair() throws {
-        let records = try (0..<4).map { value in
-            try TimedAudioRecord(streamID: 7, generation: 1, sequence: UInt32(value),
-                frameCount: 120, kind: .audio, capturedAt: 1_000_000_000 + UInt64(value) * 2_500_000,
-                sourceFrame: UInt64(value) * 120, payload: Data(repeating: UInt8(value + 1), count: 960))
+        var records: [TimedAudioRecord] = []
+        for value in 0..<4 {
+            let captured = UInt64(1_000_000_000) + UInt64(value) * 2_500_000
+            let payload = Data(repeating: UInt8(value + 1), count: 960)
+            records.append(try TimedAudioRecord(streamID: 7, generation: 1, sequence: UInt32(value),
+                frameCount: 120, kind: .audio, capturedAt: captured,
+                sourceFrame: UInt64(value) * 120, payload: payload))
         }
         var parity = Data(repeating: 0, count: 992)
         for record in records { for index in 0..<992 { parity[index] ^= record.encoded[index] } }

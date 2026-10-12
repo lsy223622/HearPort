@@ -244,5 +244,10 @@ int main() {
               Envelope(40, Join({VarintField(1, 7), VarintField(2, 100),
                                  VarintField(3, 50), VarintField(4, 10)}))),
           "target cannot exceed maximum budget");
+  const auto manifest = Envelope(44, Join({VarintField(1, 7), BytesField(2, session_id)}));
+  const auto decoded_manifest = hearport::wire::DecodeControlEnvelope(manifest);
+  Require(decoded_manifest.has_value(), "probe manifest decodes");
+  Require(hearport::wire::EncodeControlEnvelope(*decoded_manifest) == manifest,
+          "probe manifest is preserved exactly");
   return 0;
 }

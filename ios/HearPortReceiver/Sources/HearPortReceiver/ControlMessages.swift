@@ -60,6 +60,7 @@ public enum ControlMessage: Equatable, Sendable {
     case audioProgress(streamID: UInt32, generation: UInt32,
                        latestReceivedSequence: UInt32?, timing: AudioProgressTiming? = nil)
     case audioSetup(streamID: UInt32, budget: PlayoutBudget)
+    case probeManifest(streamID: UInt32, manifest: Data)
     case clockRequest(requestID: UInt32, localSent: UInt64)
     case clockResponse(requestID: UInt32, localSent: UInt64,
                        remoteReceived: UInt64, remoteSent: UInt64)
@@ -88,6 +89,7 @@ public enum ControlMessage: Equatable, Sendable {
         case .diagnosticsReportEnd: return "diagnostics_report_end"
         case .diagnosticsReportReceived: return "diagnostics_report_received"
         case .audioProgress: return "audio_progress"
+        case .probeManifest: return "probe_manifest"
         case .audioSetup: return "audio_setup"
         case .clockRequest: return "clock_request"
         case .clockResponse: return "clock_response"
@@ -261,6 +263,15 @@ public struct ControlEnvelope: Equatable, Sendable {
             writer.writeVarintField(4, value: UInt32(budget.outputReserveMilliseconds.rounded()))
             body = writer.data
             field = 40
+        case let .probeManifest(streamID, manifest):
+            guard streamID != 0, !manifest.isEmpty, manifest.count <= 2048 else {
+                throw ControlMessageError.invalidMessage
+            }
+            field = 44
+            var writer = ProtoWriter()
+            writer.writeVarintField(1, value: streamID)
+            writer.writeBytesField(2, value: manifest)
+            body = writer.data
         case let .clockRequest(requestID, localSent):
             guard requestID != 0, localSent != 0 else { throw ControlMessageError.invalidMessage }
             var writer = ProtoWriter()
@@ -312,7 +323,7 @@ public struct ControlEnvelope: Equatable, Sendable {
                 continue
             }
             switch outer.field {
-            case 1, 2, 3, 10, 11, 12, 13, 14, 20, 21, 30, 31, 32...43:
+            case 1, 2, 3, 10, 11, 12, 13, 14, 20, 21, 30, 31, 32...44:
                 selected = (outer.field, body)
             default:
                 lastUnknownField = outer.field
@@ -343,7 +354,7 @@ public struct ControlEnvelope: Equatable, Sendable {
         case 37: message = try parseSessionMessage(selected.body, make: ControlMessage.diagnosticsReportEnd)
         case 38: message = try parseSessionMessage(selected.body, make: ControlMessage.diagnosticsReportReceived)
         case 39: message = try parseAudioProgress(selected.body)
-        case 40...43: message = try parseCoordinated(selected.body, field: selected.field)
+        case 40...44: message = try parseCoordinated(selected.body, field: selected.field)
         default: throw ControlMessageError.unknownField(selected.field)
         }
         return ControlEnvelope(message)
@@ -570,6 +581,11 @@ public struct ControlEnvelope: Equatable, Sendable {
         let fields = try parseFields(data)
         guard let first = try scalar(fields[1]), first != 0 else {
             throw ControlMessageError.invalidMessage
+        }
+        if field == 44 {
+            guard case let .bytes(manifest)? = fields[2], !manifest.isEmpty, manifest.count <= 2048
+            else { throw ControlMessageError.invalidMessage }
+            return .probeManifest(streamID: first, manifest: manifest)
         }
         if field == 40 {
             guard let target = try scalar(fields[2]), let maximum = try scalar(fields[3]),

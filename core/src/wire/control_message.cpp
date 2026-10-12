@@ -172,6 +172,9 @@ bool ValidateEnvelope(const ControlEnvelope& envelope) noexcept {
     return false;
   }
   switch (envelope.type) {
+    case ControlMessageType::probe_manifest:
+      return NoControlHeaderFields(envelope) && NoDiagnosticFields(envelope) &&
+             envelope.stream_id != 0 && !envelope.bytes1.empty() && envelope.bytes1.size() <= 2048;
     case ControlMessageType::audio_setup:
       return NoControlHeaderFields(envelope) && NoDiagnosticFields(envelope) &&
              envelope.stream_id != 0 && envelope.maximum_ms <= 2000 &&
@@ -571,6 +574,12 @@ bool ParseCoordinated(std::span<const std::byte> bytes,
     std::uint32_t field = 0;
     std::uint8_t wire = 0;
     if (!reader.ReadTag(field, wire)) return false;
+    if (envelope.type == ControlMessageType::probe_manifest) {
+      if (field == 1 && wire == 0) { if (!reader.ReadVarint(envelope.stream_id)) return false; seen |= 1; }
+      else if (field == 2 && wire == 2) { if (!reader.ReadBytes(envelope.bytes1)) return false; seen |= 2; }
+      else if (!reader.Skip(wire)) return false;
+      continue;
+    }
     if (wire != 0 || field > 4) {
       if (!reader.Skip(wire)) return false;
       continue;
@@ -598,8 +607,8 @@ bool ParseCoordinated(std::span<const std::byte> bytes,
       if (!reader.ReadVarint(*value)) return false;
     }
   }
-  return (seen & (envelope.type == ControlMessageType::clock_request ? 3u : 15u)) ==
-                 (envelope.type == ControlMessageType::clock_request ? 3u : 15u);
+  return (seen & ((envelope.type == ControlMessageType::clock_request || envelope.type == ControlMessageType::probe_manifest) ? 3u : 15u)) ==
+                 ((envelope.type == ControlMessageType::clock_request || envelope.type == ControlMessageType::probe_manifest) ? 3u : 15u);
 }
 
 }  // namespace
@@ -614,6 +623,10 @@ std::vector<std::byte> EncodeControlEnvelope(const ControlEnvelope& envelope) {
     AppendVarint(value, submessage);
   };
   switch (envelope.type) {
+    case ControlMessageType::probe_manifest:
+      scalar(1, envelope.stream_id);
+      AppendBytes(2, envelope.bytes1, submessage);
+      break;
     case ControlMessageType::audio_setup:
       scalar(1, envelope.stream_id);
       scalar(2, envelope.target_ms);
@@ -746,6 +759,7 @@ std::vector<std::byte> EncodeControlEnvelope(const ControlEnvelope& envelope) {
       case ControlMessageType::diagnostics_report_end: return 37u;
       case ControlMessageType::diagnostics_report_received: return 38u;
       case ControlMessageType::audio_progress: return 39u;
+      case ControlMessageType::probe_manifest: return 44u;
       case ControlMessageType::audio_setup: return 40u;
       case ControlMessageType::clock_request: return 41u;
       case ControlMessageType::clock_response: return 42u;
@@ -777,7 +791,7 @@ std::optional<ControlEnvelope> DecodeControlEnvelope(
         field == 1 || field == 2 || field == 3 || field == 10 ||
         field == 11 || field == 12 || field == 13 || field == 14 ||
         field == 20 || field == 21 || field == 30 || field == 31 ||
-        (field >= 32 && field <= 43);
+        (field >= 32 && field <= 44);
     if (!known_field || wire_type != 2) {
       if (!reader.Skip(wire_type)) return std::nullopt;
       continue;
@@ -791,11 +805,13 @@ std::optional<ControlEnvelope> DecodeControlEnvelope(
   ControlEnvelope envelope;
   bool parsed = false;
   switch (selected_field) {
+    case 44:
     case 40:
     case 41:
     case 42:
     case 43:
-      envelope.type = selected_field == 40 ? ControlMessageType::audio_setup :
+      envelope.type = selected_field == 44 ? ControlMessageType::probe_manifest :
+                      selected_field == 40 ? ControlMessageType::audio_setup :
                       selected_field == 41 ? ControlMessageType::clock_request :
                       selected_field == 42 ? ControlMessageType::clock_response :
                                              ControlMessageType::repair_request;

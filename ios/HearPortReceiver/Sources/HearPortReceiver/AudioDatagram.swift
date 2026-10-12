@@ -20,7 +20,7 @@ public struct TimedAudioRecord: Equatable, Sendable {
     public init(streamID: UInt32, generation: UInt32, sequence: UInt32,
                 frameCount: UInt16, kind: AudioRecordKind, capturedAt: UInt64,
                 sourceFrame: UInt64, payload: Data) throws {
-        let pcm = kind == .audio || kind == .retransmission || kind == .repeated
+        let pcm = kind == .audio
         guard streamID != 0, generation != 0, capturedAt != 0, frameCount != 0,
               !payload.isEmpty, payload.count <= 992,
               !pcm || (frameCount == 120 && payload.count == 960) else {

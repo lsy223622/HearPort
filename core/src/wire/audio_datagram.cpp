@@ -53,7 +53,7 @@ std::optional<AudioDatagram> DecodeAudioDatagram(
 
 std::vector<std::byte> EncodeTimedAudioRecord(const TimedAudioRecord& record) {
   const auto kind = static_cast<std::uint16_t>(record.kind);
-  const bool pcm = kind == 0 || kind == 2 || kind == 3;
+  const bool pcm = kind == 0;
   if (record.stream_id == 0 || record.generation == 0 || record.captured_at_ns == 0 ||
       record.frame_count == 0 || kind > 4 || record.payload.empty() ||
       record.payload.size() > 992 ||
@@ -92,7 +92,7 @@ std::optional<TimedAudioRecord> DecodeTimedAudioRecord(std::span<const std::byte
                         ReadBigEndian32(bytes.data() + 28);
   record.payload.assign(bytes.begin() + 32, bytes.end());
   const auto kind = static_cast<unsigned>(record.kind);
-  const bool pcm = kind == 0 || kind == 2 || kind == 3;
+  const bool pcm = kind == 0;
   if (record.stream_id == 0 || record.generation == 0 || record.captured_at_ns == 0 ||
       record.frame_count == 0 || kind > 4 ||
       (pcm && (record.frame_count != 120 || record.payload.size() != 960))) return std::nullopt;
