@@ -3,6 +3,17 @@ import XCTest
 @testable import HearPortReceiver
 
 final class ReceiverCoreTests: XCTestCase {
+    func testCoordinatedSetupAnd64BitClockCanonicalBytes() throws {
+        let setup = envelope(40, body: varintField(1, 7) + varintField(2, 50) +
+                                       varintField(3, 100) + varintField(4, 10))
+        XCTAssertEqual(try ControlEnvelope.decode(setup).encoded(), setup)
+        let clock = envelope(41, body: [8, 1, 16, 0x80, 0x80, 0x80, 0x80, 0x80, 0x20])
+        XCTAssertEqual(try ControlEnvelope.decode(clock).encoded(), clock)
+        let invalid = envelope(40, body: varintField(1, 7) + varintField(2, 100) +
+                                         varintField(3, 50) + varintField(4, 10))
+        XCTAssertThrowsError(try ControlEnvelope.decode(invalid))
+    }
+
     func testControlEnvelopeVectorsMatchCanonicalProtoFields() throws {
         let connect = ControlEnvelope(.connectRequest(authMode: .pair, peerID: Data(), features: 0))
         XCTAssertEqual(try connect.encoded(), Data([0x0a, 0x02, 0x08, 0x02]))
