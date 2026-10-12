@@ -59,4 +59,14 @@ int main() {
   assert(!lag.Observe(7, 5, 0, start + std::chrono::milliseconds(10),
                       std::chrono::milliseconds(200)));
   assert(lag.Observe(7, 5, 0, start + std::chrono::milliseconds(20)));
+  lag.Begin(7, 6, start, std::chrono::milliseconds(600));
+  lag.Produced(140, 33'840, 240);
+  assert(lag.Observe(7, 6, 140, start + std::chrono::milliseconds(10),
+                     std::chrono::milliseconds(0), 0));
+  lag.Begin(7, 7, start, std::chrono::milliseconds(100));
+  lag.Produced(30, 7'440, 240);
+  assert(!lag.Observe(7, 7, 30, start + std::chrono::milliseconds(10),
+                      std::chrono::milliseconds(0), 4'800));
+  assert(lag.Observe(7, 7, 30, start + std::chrono::milliseconds(10),
+                     std::chrono::milliseconds(0), 2'400));
 }

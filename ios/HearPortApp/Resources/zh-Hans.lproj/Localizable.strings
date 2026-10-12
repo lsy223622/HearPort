@@ -88,3 +88,8 @@
 "Unable to finish the diagnostic report upload" = "无法完成上传诊断报告";
 "Unable to send the diagnostic report" = "无法发送诊断报告";
 "Unable to resume the audio session" = "无法恢复音频会话";
+
+"Normal target: %lld ms" = "正常目标：%lld 毫秒";
+"Maximum total delay: %lld ms" = "总延迟上限：%lld 毫秒";
+"The target and maximum include transport, processing and output. Changes take effect on the next connection. A higher maximum can tolerate longer interruptions." = "目标和上限包含传输、处理及输出。设置在下次连接时生效。较高上限可以容纳更长的网络空窗。";
+"Selected delay budget is too small for this audio output." = "所选延迟预算不足以容纳当前音频输出。";

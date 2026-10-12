@@ -8,6 +8,33 @@ from diagnostics.analyze_network_probe import analyze, simulate_buffer
 
 
 class NetworkProbeAnalysisTests(unittest.TestCase):
+    def test_online_report_keeps_original_loss_separate_from_repair_and_playback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            report, sender = root / "report.txt", root / "sender.jsonl"
+            report.write_text(
+                "stream_id=7\nnetwork_probe_rounds_v4\n"
+                "round\ttransport\tseconds\tpayload_bytes\tpackets_per_second\tburst_packets\tfirst_sequence\tplanned\tcontroller\trepair\n"
+                "1\tdatagram\t1\t992\t400\t1\t0\t3\t2\t1\n"
+                "network_probe_trace_v3\n"
+                "received_at_ns\tsequence\tkind\trecorded_at_ns\n"
+                "10000000\t0\t4\t10010000\n12500000\t1\t1\t12510000\n15000000\t2\t2\t15010000\n"
+                "network_probe_playback_v1\n"
+                "round\tat_ns\tplayed_frames\tconcealed_frames\tskipped_frames\tbuffered_frames\ttarget_ms\tcorrection\tmaximum_age_ms\trepaired_packets\twaiting_frames\n"
+                "1\t20000000\t240\t120\t0\t120\t50\t0.05\t48\t1\t240\n"
+                "network_probe_heartbeat_v1\nat_ns\tscheduled_at_ns\napp_diagnostics_v1\n",
+                encoding="utf-8")
+            sender.write_text("".join(json.dumps({"type": "packet", "sequence": i,
+                "send_accepted": True, "send_state": "acknowledged", "send_at_ns": i * 2_500_000,
+                "captured_at_ns": i * 2_500_000, "transport_sent_at_ns": i * 2_500_000 + 100_000}) + "\n"
+                for i in range(3)), encoding="utf-8")
+            result = next(analyze(report, sender, 100))
+            self.assertEqual(result["received_unique"], 1)
+            self.assertEqual(result["online_consumption"]["repaired_packets"], 1)
+            self.assertEqual(result["online_consumption"]["played_frames"], 240)
+            self.assertEqual(result["online_consumption"]["waiting_frames"], 240)
+            self.assertEqual(result["datagram_submit_to_sent_ms"]["max"], 0.1)
+
     def test_missing_first_burst_positions_do_not_shift_playout_deadlines(self):
         sender = {i: {"captured_at_ns": (i // 8) * 20_000_000,
                       "send_at_ns": (i // 8) * 20_000_000} for i in range(40)}

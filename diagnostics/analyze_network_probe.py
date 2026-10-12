@@ -17,13 +17,13 @@ def load_report(path):
             if line.startswith("stream_id="):
                 stream_id = int(line.partition("=")[2])
             elif line in ("network_probe_rounds_v1", "network_probe_rounds_v2",
-                          "network_probe_rounds_v3"):
+                          "network_probe_rounds_v3", "network_probe_rounds_v4"):
                 section = "rounds"
                 header = None
-            elif line in ("network_probe_trace_v1", "network_probe_trace_v2"):
+            elif line in ("network_probe_trace_v1", "network_probe_trace_v2", "network_probe_trace_v3"):
                 section = "trace"
                 header = None
-            elif line in ("app_diagnostics_v1", "network_probe_heartbeat_v1"):
+            elif line in ("app_diagnostics_v1", "network_probe_heartbeat_v1", "network_probe_playback_v1"):
                 break
             elif section and line:
                 if header is None:
@@ -33,7 +33,7 @@ def load_report(path):
                 if section == "rounds":
                     rounds.append({key: int(value) if value.isdecimal() else value
                                    for key, value in values.items()})
-                else:
+                elif int(values.get("kind", 4)) == 4:
                     arrivals.append((int(values["received_at_ns"]),
                                      int(values["sequence"])))
     if not rounds:
@@ -126,9 +126,11 @@ def load_receiver_timing(path):
     with path.open(encoding="utf-8") as source:
         for raw in source:
             line = raw.rstrip("\n")
-            if line in ("network_probe_trace_v2", "network_probe_heartbeat_v1"):
+            if line in ("network_probe_trace_v2", "network_probe_trace_v3", "network_probe_heartbeat_v1"):
                 section = line
                 header = None
+            elif line == "network_probe_playback_v1":
+                section = None
             elif line == "app_diagnostics_v1":
                 break
             elif section and line:
@@ -136,11 +138,29 @@ def load_receiver_timing(path):
                     header = line.split("\t")
                     continue
                 row = {key: int(value) for key, value in zip(header, line.split("\t"))}
-                if section == "network_probe_trace_v2":
-                    packets.setdefault(row["sequence"], row)
+                if section in ("network_probe_trace_v2", "network_probe_trace_v3"):
+                    if row.get("kind", 4) == 4:
+                        packets.setdefault(row["sequence"], row)
                 else:
                     heartbeats.append(row)
     return packets, heartbeats
+
+
+def load_online_playback(path):
+    rows = []
+    active = False
+    with path.open(encoding="utf-8") as source:
+        for raw in source:
+            line = raw.rstrip("\n")
+            if line == "network_probe_playback_v1":
+                active = True; header = None
+            elif active and line.startswith("network_probe_"):
+                break
+            elif active and line:
+                if header is None:
+                    header = line.split("\t"); continue
+                rows.append({key: float(value) for key, value in zip(header, line.split("\t"))})
+    return rows
 
 
 def load_transport_samples(path):
@@ -215,6 +235,7 @@ def analyze(report, sender, target_ms, sender_log=None):
     sender_rounds = load_sender_rounds(sender_log, stream_id)
     processing, heartbeats = load_receiver_timing(report)
     transport_samples = load_transport_samples(sender_log)
+    online = load_online_playback(report)
     clock_offsets = [time - packets[sequence]["send_at_ns"] for time, sequence in arrivals
                      if sequence in packets and "send_at_ns" in packets[sequence]]
     clock_offset = min(clock_offsets) if clock_offsets else None
@@ -266,10 +287,29 @@ def analyze(report, sender, target_ms, sender_log=None):
                              for sequence in received if sequence in processing]
         heartbeat_delays = [(row["at_ns"] - row["scheduled_at_ns"]) / 1_000_000
                             for row in round_heartbeats]
+        actual = [row for row in online if row["round"] == round_info["round"]]
         yield {
             "round": round_info["round"], "transport": round_info["transport"],
             "repeat": round_info.get("repeat"),
             "variant": round_info.get("variant"),
+            "controller": round_info.get("controller"), "repair": round_info.get("repair"),
+            "correction_percent": round_info.get("correction_percent"),
+            "online_consumption": {
+                "implementation": "ideal_virtual_source_consumer",
+                "played_frames": sum(row["played_frames"] for row in actual),
+                "concealed_frames": sum(row["concealed_frames"] for row in actual),
+                "waiting_frames": sum(row.get("waiting_frames", 0) for row in actual),
+                "skipped_frames": sum(row["skipped_frames"] for row in actual),
+                "repaired_packets": max((row.get("repaired_packets", 0) for row in actual), default=0),
+                "buffer_ms": metric_summary([row["buffered_frames"] / 48 for row in actual]),
+                "target_ms": metric_summary([row["target_ms"] for row in actual if row["target_ms"] > 0]),
+                "correction": metric_summary([row["correction"] for row in actual]),
+                "maximum_source_age_ms": max((row["maximum_age_ms"] for row in actual), default=None),
+            } if actual else None,
+            "replay_clock_model": "offline_minimum_transit_optimistic",
+            "datagram_submit_to_sent_ms": metric_summary([
+                (row["transport_sent_at_ns"] - row["send_at_ns"]) / 1_000_000
+                for row in sender_rows.values() if row.get("transport_sent_at_ns", 0)]),
             "payload_bytes": round_info["payload_bytes"],
             "packets_per_second": round_info["packets_per_second"],
             "burst_packets": round_info["burst_packets"],

@@ -30,7 +30,7 @@ private struct StoredDiagnosticReport: Codable {
 }
 
 public final class DebugReportTransfer: @unchecked Sendable {
-    public static let maximumReportBytes = 32 * 1024 * 1024
+    public static let maximumReportBytes = 128 * 1024 * 1024
 
     private let directory: URL
     private let reportURL: URL

@@ -18,6 +18,7 @@ void WriteU32(std::vector<std::byte>& bytes, std::size_t offset,
 
 std::string_view ProbeSendStatusName(ProbeSendStatus status) noexcept {
   switch (status) {
+    case ProbeSendStatus::expired: return "expired";
     case ProbeSendStatus::accepted: return "accepted";
     case ProbeSendStatus::disconnected: return "disconnected";
     case ProbeSendStatus::stream_unavailable: return "stream_unavailable";

@@ -57,6 +57,7 @@ std::vector<std::byte> EncodeTimedAudioRecord(const TimedAudioRecord& record) {
   if (record.stream_id == 0 || record.generation == 0 || record.captured_at_ns == 0 ||
       record.frame_count == 0 || kind > 4 || record.payload.empty() ||
       record.payload.size() > 992 ||
+      (record.source_frame > UINT64_MAX - record.frame_count) ||
       (pcm && (record.frame_count != 120 || record.payload.size() != 960))) {
     throw std::invalid_argument("invalid timed audio record");
   }
@@ -95,6 +96,7 @@ std::optional<TimedAudioRecord> DecodeTimedAudioRecord(std::span<const std::byte
   const bool pcm = kind == 0;
   if (record.stream_id == 0 || record.generation == 0 || record.captured_at_ns == 0 ||
       record.frame_count == 0 || kind > 4 ||
+      (record.source_frame > UINT64_MAX - record.frame_count) ||
       (pcm && (record.frame_count != 120 || record.payload.size() != 960))) return std::nullopt;
   return record;
 }

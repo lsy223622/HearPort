@@ -22,7 +22,7 @@ public struct TimedAudioRecord: Equatable, Sendable {
                 sourceFrame: UInt64, payload: Data) throws {
         let pcm = kind == .audio
         guard streamID != 0, generation != 0, capturedAt != 0, frameCount != 0,
-              !payload.isEmpty, payload.count <= 992,
+              !payload.isEmpty, payload.count <= 992, sourceFrame <= UInt64.max - UInt64(frameCount),
               !pcm || (frameCount == 120 && payload.count == 960) else {
             throw AudioDatagramError.invalidLength(payload.count + 32)
         }

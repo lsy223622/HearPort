@@ -3,6 +3,33 @@ import XCTest
 @testable import HearPortReceiver
 
 final class DebugSessionDiagnosticsTests: XCTestCase {
+    func testCoordinatedReportTracksLostRoundWithoutCountingParityAsAudio() throws {
+        let directory = try temporaryDirectory("CoordinatedProbeTrace")
+        let diagnostics = HearPortDiagnostics(directory: directory.appendingPathComponent("logs"))
+        let transfer = DebugReportTransfer(directory: directory.appendingPathComponent("reports"))
+        let capture = DebugSessionDiagnostics(capacity: 100, reportTransfer: transfer, diagnostics: diagnostics)
+        let round: [UInt8] = [3, 224, 1, 144, 1, 1, 0, 1, 2, 1, 5, 0]
+        capture.configureProbePlan(try CoordinatedProbePlan(encoded: Data([1, 2, 30, 0] + round + round)))
+        capture.begin(sessionID: Data(repeating: 0x29, count: 16), streamID: 7,
+                      durationSeconds: 70, networkProbe: true, networkProbeRepeat: true)
+        let now = DispatchTime.now().uptimeNanoseconds
+        let original = try TimedAudioRecord(streamID: 7, generation: 1, sequence: 0,
+            frameCount: 120, kind: .probe, capturedAt: now, sourceFrame: 0,
+            payload: Data(repeating: 1, count: 960))
+        capture.recordProbePacket(original.encoded, receivedAt: now, mappedCapturedAt: now)
+        _ = capture.tickProbe(at: now, roundTrip: 0)
+        _ = capture.tickProbe(at: now + 30_010_000_000, roundTrip: 0)
+        _ = try capture.finish(reason: "test", diagnostics: diagnostics)
+        let pending = try XCTUnwrap(transfer.pendingReport())
+        let report = try XCTUnwrap(String(data: pending.data, encoding: .utf8))
+        XCTAssertTrue(report.contains("network_probe_rounds_v4"))
+        XCTAssertTrue(report.contains("network_probe_trace_v3"))
+        XCTAssertTrue(report.contains("network_probe_playback_v1"))
+        XCTAssertTrue(report.contains("repaired_packets\twaiting_frames"))
+        XCTAssertTrue(report.contains("\n2\t\(now + 30_010_000_000)\t"))
+        XCTAssertTrue(report.contains("trace_dropped=0"))
+    }
+
     func testConcurrentProbeRecordingKeepsEveryPacket() throws {
         let directory = try temporaryDirectory("ConcurrentProbeTrace")
         let diagnostics = HearPortDiagnostics(directory: directory.appendingPathComponent("logs"))

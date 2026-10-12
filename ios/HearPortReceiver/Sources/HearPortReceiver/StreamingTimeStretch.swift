@@ -11,15 +11,16 @@ public struct StreamingTimeStretch: Sendable {
     public mutating func process(_ stereo: [Float], correction: Double) -> [Float] {
         let frames = stereo.count / 2
         inputFrames += UInt64(frames)
-        guard stereo.count.isMultiple(of: 2), frames >= 720, correction.isFinite,
+        guard stereo.count.isMultiple(of: 2), correction.isFinite,
               abs(correction) > 0.001 else {
             outputFrames += UInt64(frames)
             return stereo
         }
         let bounded = min(0.1, max(-0.1, correction))
         if frameDebt * bounded < 0 { frameDebt = 0 }
-        frameDebt = min(Double(frames), max(-Double(frames),
+        frameDebt = min(Double(max(720, frames)), max(-Double(max(720, frames)),
             frameDebt + Double(frames) * bounded / (1 + bounded)))
+        guard frames >= 720 else { outputFrames += UInt64(frames); return stereo }
         let limit = min(frames / 6, Int(abs(frameDebt)))
         guard limit >= 48 else { outputFrames += UInt64(frames); return stereo }
         let middle = frames / 2

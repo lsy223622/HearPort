@@ -17,6 +17,8 @@
 #include <thread>
 
 #include "hearport/session_state.h"
+#include "hearport/repair_window.h"
+#include "hearport/wire/control_message.h"
 #include "hearport/windows/audio_metrics.h"
 #include "hearport/windows/debug_session_trace.h"
 #include "hearport/windows/packetizer.h"
@@ -67,7 +69,11 @@ class SenderService {
   }
   bool ObserveAudioProgress(std::uint32_t stream_id, std::uint32_t generation,
                             std::optional<std::uint32_t> latest_received,
-                            std::uint64_t feedback_at_ns = 0);
+                            std::uint64_t feedback_at_ns = 0,
+                            std::optional<std::uint64_t> played_source = std::nullopt,
+                            std::uint32_t buffered_ms = 0);
+  bool HandleRepairRequest(const wire::ControlEnvelope& request);
+  std::vector<NetworkProbeRound> network_probe_rounds() const;
   void ConfigureDebugDuration(std::optional<std::chrono::seconds> duration);
   std::optional<std::chrono::seconds> debug_duration() const;
   void SetDebugOutputDirectory(std::filesystem::path directory);
@@ -159,6 +165,12 @@ class SenderService {
   std::atomic<std::uint32_t> probe_packets_processed_ = 0;
   std::atomic<std::uint32_t> probe_stream_id_ = 0;
   bool network_probe_ = false;
+  RepairWindow probe_repair_window_;
+  std::atomic<std::uint8_t> probe_repair_mode_ = 0;
+  std::atomic<std::uint64_t> probe_repair_sent_bytes_ = 0;
+  std::uint64_t repair_window_at_ = 0, repair_original_bytes_ = 0, repair_extra_bytes_ = 0;
+  std::uint32_t last_buffered_ms_ = 0;
+  bool repair_pressure_ = false;
   bool stop_diagnostics_ = false;
   bool capture_reset_pending_ = false;
   bool datagram_ready_ = false;

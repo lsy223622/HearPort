@@ -25,6 +25,15 @@ final class PlayoutControllerTests: XCTestCase {
                        1_100_000_000)
     }
 
+    func testClockRelearnsAfterMappingExpires() {
+        var clock = ClockMapping()
+        clock.observe(localSent: 1_000_000_000, remoteReceived: 1_000_500_000,
+                      remoteSent: 1_000_500_000, localReceived: 1_001_000_000)
+        XCTAssertTrue(clock.observe(localSent: 7_000_000_000, remoteReceived: 7_010_000_000,
+                      remoteSent: 7_010_000_000, localReceived: 7_020_000_000))
+        XCTAssertEqual(clock.map(remoteNanoseconds: 7_010_000_000, at: 7_020_000_000), 7_010_000_000)
+    }
+
     func testPreparationDeadlineIncludesOutputAndProcessing() throws {
         let budget = try PlayoutBudget(targetMilliseconds: 50, maximumMilliseconds: 100,
                                        outputReserveMilliseconds: 10)
@@ -51,6 +60,16 @@ final class PlayoutControllerTests: XCTestCase {
                                       playableFrames: 3_840, stagedSourceFrames: 0)
         XCTAssertEqual(old.action, .resync)
         XCTAssertGreaterThanOrEqual(old.correction, 0)
+    }
+
+    func testCaptureAnchorFollowsRecentOrderedOriginalSamples() throws {
+        let budget = try PlayoutBudget(targetMilliseconds: 50, maximumMilliseconds: 100,
+                                       outputReserveMilliseconds: 10)
+        var control = PlayoutController(budget: budget)
+        control.observeArrival(sourceFrame: 0, capturedAt: 1_000_000_000, receivedAt: 1_010_000_000)
+        control.observeArrival(sourceFrame: 48_000, capturedAt: 2_000_100_000, receivedAt: 2_010_100_000)
+        control.observeArrival(sourceFrame: 0, capturedAt: 1_000_000_000, receivedAt: 2_010_100_000, original: false)
+        XCTAssertEqual(control.captureTime(sourceFrame: 48_000), 2_000_100_000)
     }
 
     func testStagedFramesAreChargedOnceAndMissingDataCannotSlowForever() throws {

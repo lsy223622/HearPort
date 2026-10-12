@@ -41,6 +41,7 @@ int main() {
   assert(trace.dropped_records() == 1);
 
   const auto report = trace.Finish("duration_expired");
+  assert(report.find("\"transport_sent_at_ns\":130") != std::string::npos);
   assert(report.find("\"session_id\":\"0102030405060708090a0b0c0d0e0f10\"") !=
          std::string::npos);
   assert(report.find("\"stream_id\":77") != std::string::npos);

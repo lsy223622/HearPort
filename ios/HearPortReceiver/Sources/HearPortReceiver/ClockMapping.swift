@@ -18,6 +18,9 @@ public struct ClockMapping: Sendable {
         let remoteProcessing = remoteSent - remoteReceived
         guard elapsed >= remoteProcessing else { return false }
         let roundTrip = elapsed - remoteProcessing
+        if remoteOrigin != nil, localReceived >= updatedAt, localReceived - updatedAt > 5_000_000_000 {
+            bestRoundTrip = .max
+        }
         guard roundTrip <= 500_000_000,
               bestRoundTrip == .max || roundTrip <= max(1_000_000, bestRoundTrip * 2)
         else { return false }

@@ -10,7 +10,7 @@ final class CoordinatedProbeTests: XCTestCase {
         XCTAssertEqual(plan.rounds[0].payloadBytes, 992)
         XCTAssertEqual(plan.rounds[0].repair, 1)
         let envelope = ControlEnvelope(.probeManifest(streamID: 7, manifest: bytes))
-        XCTAssertEqual(try ControlCodec.decode(ControlCodec.encode(envelope)), envelope)
+        XCTAssertEqual(try ControlEnvelope.decode(envelope.encoded()), envelope)
         var invalid = bytes
         invalid[10] = 1
         XCTAssertThrowsError(try CoordinatedProbePlan(encoded: invalid))

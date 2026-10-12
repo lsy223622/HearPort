@@ -43,9 +43,10 @@ class QuicServer {
   virtual bool SendAudio(std::span<const std::byte> datagram) = 0;
   virtual ProbeSendOutcome SendProbe(std::span<const std::byte> datagram,
                                      std::uint32_t stream_id,
-                                     std::uint32_t sequence, bool reliable) = 0;
+                                     std::uint32_t sequence, bool reliable, bool auxiliary = false) = 0;
   virtual bool StartReliableAudio(std::uint32_t stream_id,
                                   std::uint32_t generation) = 0;
+  virtual void StopReliableAudio() = 0;
   virtual void CloseConnection() = 0;
   virtual void Stop() = 0;
 };

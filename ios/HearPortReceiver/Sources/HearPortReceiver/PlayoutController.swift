@@ -43,21 +43,25 @@ public struct PlayoutDecision: Sendable {
 public struct PlayoutController: Sendable {
     public let budget: PlayoutBudget
     public let maximumCorrection: Double
+    private let adaptive: Bool
     public private(set) var targetMilliseconds: Double
     private var anchor: (sourceFrame: UInt64, capturedAt: UInt64)?
     private var delays: [Double] = []
     private var lastDecisionAt: UInt64?
     private var correction = 0.0
 
-    public init(budget: PlayoutBudget, maximumCorrection: Double = 0.05) {
+    public init(budget: PlayoutBudget, maximumCorrection: Double = 0.05, adaptive: Bool = true) {
         self.budget = budget
+        self.adaptive = adaptive
         self.maximumCorrection = min(0.2, max(0, maximumCorrection))
         targetMilliseconds = budget.targetMilliseconds
     }
 
     public mutating func observeArrival(sourceFrame: UInt64, capturedAt: UInt64,
                                         receivedAt: UInt64, original: Bool = true) {
-        if anchor == nil { anchor = (sourceFrame, capturedAt) }
+        if anchor == nil || (original && sourceFrame >= anchor!.sourceFrame) {
+            anchor = (sourceFrame, capturedAt)
+        }
         guard original, receivedAt >= capturedAt else { return }
         delays.append(Double(receivedAt - capturedAt) / 1_000_000)
         if delays.count > 256 { delays.removeFirst(delays.count - 256) }
@@ -80,7 +84,7 @@ public struct PlayoutController: Sendable {
                                   hasFuturePacket: Bool = false) -> PlayoutDecision {
         let elapsed = lastDecisionAt.map { now >= $0 ? Double(now - $0) / 1_000_000 : 0 } ?? 5
         lastDecisionAt = now
-        if delays.count >= 8 {
+        if adaptive, delays.count >= 8 {
             let sorted = delays.sorted()
             let tail = sorted[min(sorted.count - 1, Int(Double(sorted.count - 1) * 0.98))]
             let desired = min(budget.maximumMilliseconds, max(budget.targetMilliseconds,
