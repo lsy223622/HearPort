@@ -29,7 +29,8 @@ public struct JitterBuffer {
     public private(set) var mode: JitterMode = .startup
     public private(set) var stats = JitterStats()
 
-    public let targetPackets: Int
+    public private(set) var targetPackets: Int
+    private var recoveryPackets: Int
     public let maximumPackets: Int
     private var packets: [UInt32: AudioDatagram] = [:]
     private var nextSequence: UInt32?
@@ -41,6 +42,7 @@ public struct JitterBuffer {
         precondition(maximumPackets >= targetPackets)
         self.streamID = streamID
         self.targetPackets = targetPackets
+        recoveryPackets = targetPackets
         self.maximumPackets = maximumPackets
     }
 
@@ -56,6 +58,30 @@ public struct JitterBuffer {
 
     public var fillPackets: Int { packets.count }
     public var expectedSequence: UInt32? { nextSequence }
+    public var bufferedSequences: [UInt32] { Array(packets.keys) }
+    public var contiguousPackets: Int {
+        guard var sequence = nextSequence else { return 0 }
+        var count = 0
+        while packets[sequence] != nil, count < maximumPackets {
+            count += 1
+            sequence = SequenceNumber.next(sequence)
+        }
+        return count
+    }
+
+    public mutating func setTargetPackets(_ target: Int, recoveryPackets: Int) {
+        targetPackets = min(maximumPackets, max(1, target))
+        self.recoveryPackets = min(maximumPackets, max(targetPackets, recoveryPackets))
+    }
+
+    public mutating func skip(to sequence: UInt32) {
+        for key in Array(packets.keys) where SequenceNumber.isBefore(key, sequence) {
+            packets.removeValue(forKey: key)
+            unreportedTrimmedSequences.append(key)
+            stats.trimmedPackets += 1
+        }
+        nextSequence = sequence
+    }
 
     public var hasFuturePacket: Bool {
         guard let expected = nextSequence else { return false }
@@ -87,8 +113,11 @@ public struct JitterBuffer {
             return .wrongStream
         }
         if let expected = nextSequence, SequenceNumber.isBefore(packet.sequence, expected) {
-            stats.latePackets += 1
-            return .late
+            if mode == .running {
+                stats.latePackets += 1
+                return .late
+            }
+            nextSequence = packet.sequence
         }
         if packets[packet.sequence] != nil {
             stats.duplicatePackets += 1
@@ -108,9 +137,9 @@ public struct JitterBuffer {
     }
 
     @discardableResult
-    public mutating func startIfReady() -> Bool {
+    public mutating func startIfReady(allowGaps: Bool = true) -> Bool {
         guard mode != .running, nextSequence != nil,
-              packets.count >= targetPackets else { return false }
+              (allowGaps ? packets.count : contiguousPackets) >= targetPackets else { return false }
         mode = .running
         trimToTarget()
         return true
@@ -140,7 +169,7 @@ public struct JitterBuffer {
     mutating func trimToTarget(stagedFrames: Int = 0) {
         let stagedPackets = (max(0, stagedFrames) + AudioDatagram.framesPerPacket - 1) /
             AudioDatagram.framesPerPacket
-        let limit = max(0, targetPackets - stagedPackets)
+        let limit = max(0, recoveryPackets - stagedPackets)
         guard mode == .running, packets.count > limit else { return }
         guard let expected = nextSequence else { return }
 

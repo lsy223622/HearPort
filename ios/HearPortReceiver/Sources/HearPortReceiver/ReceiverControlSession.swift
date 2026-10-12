@@ -92,9 +92,10 @@ public final class ReceiverControlSession {
                 _ = self.receiver.receiveDatagram(data)
             }
         }
-        self.transport.onReliableAudioGeneration = { [weak receiver] streamID, _ in
-            receiver?.beginReliableGeneration(streamID) ?? false
+        self.transport.onReliableAudioGeneration = { [weak receiver] streamID, generation in
+            receiver?.beginReliableGeneration(streamID, generation: generation) ?? false
         }
+        self.transport.audioProgressTiming = { [weak receiver] in receiver?.progressTiming() }
         self.transport.onControlData = { [weak self] data in
             self?.receiveControlBytes(data)
         }

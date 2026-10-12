@@ -45,4 +45,14 @@ public struct ClockMapping: Sendable {
         guard mapped >= 0, mapped < Double(UInt64.max) else { return nil }
         return UInt64(mapped.rounded())
     }
+
+    public func remote(localNanoseconds: UInt64, at now: UInt64) -> UInt64? {
+        guard let origin = remoteOrigin, now >= updatedAt,
+              now - updatedAt <= 5_000_000_000 else { return nil }
+        let delta = localNanoseconds >= localOrigin
+            ? Double(localNanoseconds - localOrigin) : -Double(localOrigin - localNanoseconds)
+        let timestamp = Double(origin) + delta / localPerRemote
+        guard timestamp >= 0, timestamp < Double(UInt64.max) else { return nil }
+        return UInt64(timestamp.rounded())
+    }
 }
