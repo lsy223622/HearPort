@@ -269,10 +269,13 @@ final class DebugSessionDiagnosticsTests: XCTestCase {
             let packet = try AudioDatagram(streamID: 12, sequence: sequence, pcm: pcm)
             XCTAssertEqual(receiver.receiveDatagram(packet.encoded), .accepted)
         }
-        for _ in 0..<4 {
+        let deadline = DispatchTime.now().uptimeNanoseconds + 1_000_000_000
+        while receiver.jitterStats?.lostPackets == 0,
+              DispatchTime.now().uptimeNanoseconds < deadline {
             _ = receiver.renderFrames(AudioDatagram.framesPerPacket)
-            Thread.sleep(forTimeInterval: 0.02)
+            Thread.sleep(forTimeInterval: 0.005)
         }
+        XCTAssertEqual(receiver.jitterStats?.lostPackets, 1)
 
         _ = try capture.finish(reason: "duration_expired", diagnostics: diagnostics)
         let pendingReport = try XCTUnwrap(transfer.pendingReport())
