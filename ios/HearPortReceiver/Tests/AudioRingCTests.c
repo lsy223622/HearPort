@@ -110,7 +110,23 @@ static void test_concurrent_resets_never_replay_older_pcm(void) {
     hearport_audio_ring_destroy(test.ring);
 }
 
+static void test_timed_source_progress_and_expiry(void) {
+    HearPortAudioRing *ring = hearport_audio_ring_create(8);
+    const float samples[8] = {1, -1, 2, -2, 3, -3, 4, -4};
+    float output[8] = {0};
+    assert(hearport_audio_ring_push_timed(ring, samples, 4, 100, 106, 1000000000) == 4);
+    assert(hearport_audio_ring_source_fill(ring) == 6);
+    assert(hearport_audio_ring_pop_at(ring, output, 2, 1010000000, 90000000) == 2);
+    assert(hearport_audio_ring_last_source(ring) == 103);
+    assert(hearport_audio_ring_source_fill(ring) == 3);
+    assert(hearport_audio_ring_pop_at(ring, output, 2, 1100000000, 90000000) == 0);
+    assert(hearport_audio_ring_last_source(ring) == 106);
+    assert(hearport_audio_ring_expired_frames(ring) == 2);
+    hearport_audio_ring_destroy(ring);
+}
+
 int main(void) {
+    test_timed_source_progress_and_expiry();
     test_order_capacity_and_underflow();
     test_reset_discards_old_audio_and_converges();
     test_concurrent_publication_has_no_torn_or_duplicate_frames();
