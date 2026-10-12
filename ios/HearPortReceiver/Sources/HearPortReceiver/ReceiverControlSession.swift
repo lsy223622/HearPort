@@ -85,7 +85,12 @@ public final class ReceiverControlSession {
         }
         self.transport.onAudioDatagram = { [weak self] data in
             guard let self else { return }
-            _ = self.receiver.receiveDatagram(data)
+            if (self.peerFeatures & ControlFeature.coordinatedAudio) != 0 {
+                guard let record = try? TimedAudioRecord(encoded: data) else { return }
+                _ = self.receiver.receiveTimedRecord(record)
+            } else {
+                _ = self.receiver.receiveDatagram(data)
+            }
         }
         self.transport.onReliableAudioGeneration = { [weak receiver] streamID, _ in
             receiver?.beginReliableGeneration(streamID) ?? false
@@ -482,6 +487,9 @@ public final class ReceiverControlSession {
             }
             ready = true
             peerFeatures = features
+            if (features & ControlFeature.coordinatedAudio) != 0 {
+                transport.acceptCoordinatedAudio()
+            }
             setNetworkProbe((features & ControlFeature.networkProbe) != 0)
             if isNetworkProbe { transport.enableNetworkProbe() }
             if audioMode == .reliable && !isNetworkProbe { transport.acceptReliableAudio() }

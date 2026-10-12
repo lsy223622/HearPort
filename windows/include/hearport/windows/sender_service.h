@@ -87,14 +87,15 @@ class SenderService {
     wire::AudioDatagram packet;
     std::int64_t captured_at_ns = 0;
     std::int64_t queued_at_ns = 0;
+    std::uint64_t source_frame = 0;
   };
 
   void EnqueueAudio(const wire::AudioDatagram& packet,
-                    std::int64_t captured_at_ns);
+                    std::int64_t captured_at_ns, std::uint64_t source_frame);
   void AudioWorker();
   void ProbeWorker(std::uint32_t stream_id);
   void HandleCapturePacket(std::span<const std::byte> bytes,
-                           const PcmFormat& format);
+                           const PcmFormat& format, std::uint64_t captured_at_ns);
   void HandleCaptureReset();
   void DiagnosticsWorker();
   void LogAudioSummary();

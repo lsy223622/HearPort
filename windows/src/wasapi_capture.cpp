@@ -182,8 +182,9 @@ struct WasapiLoopbackCapture::Impl {
           BYTE* data = nullptr;
           UINT32 frames = 0;
           DWORD flags = 0;
+          UINT64 capture_qpc = 0;
           const auto buffer_result = capture_client->GetBuffer(
-              &data, &frames, &flags, nullptr, nullptr);
+              &data, &frames, &flags, nullptr, &capture_qpc);
           if (FAILED(buffer_result)) {
             reset = buffer_result == AUDCLNT_E_DEVICE_INVALIDATED ||
                     buffer_result == AUDCLNT_E_RESOURCES_INVALIDATED ||
@@ -192,6 +193,11 @@ struct WasapiLoopbackCapture::Impl {
           }
 
           const auto byte_count = static_cast<std::size_t>(frames) * block_bytes;
+          if ((flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR) != 0) {
+            capture_client->ReleaseBuffer(frames);
+            reset = true;
+            break;
+          }
           if (frames > kMaxCaptureFrames) {
             capture_client->ReleaseBuffer(frames);
             reset = true;
@@ -206,7 +212,7 @@ struct WasapiLoopbackCapture::Impl {
           }
           if (on_packet) {
             on_packet(std::span<const std::byte>(scratch.data(), byte_count),
-                      format);
+                      format, capture_qpc * 100);
           }
           capture_client->ReleaseBuffer(frames);
           packet_result = capture_client->GetNextPacketSize(&packet_frames);

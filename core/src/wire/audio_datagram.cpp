@@ -51,4 +51,52 @@ std::optional<AudioDatagram> DecodeAudioDatagram(
   return packet;
 }
 
+std::vector<std::byte> EncodeTimedAudioRecord(const TimedAudioRecord& record) {
+  const auto kind = static_cast<std::uint16_t>(record.kind);
+  const bool pcm = kind == 0 || kind == 2 || kind == 3;
+  if (record.stream_id == 0 || record.generation == 0 || record.captured_at_ns == 0 ||
+      record.frame_count == 0 || kind > 4 || record.payload.empty() ||
+      record.payload.size() > 992 ||
+      (pcm && (record.frame_count != 120 || record.payload.size() != 960))) {
+    throw std::invalid_argument("invalid timed audio record");
+  }
+  std::vector<std::byte> bytes(32 + record.payload.size());
+  WriteBigEndian32(record.stream_id, bytes.data());
+  WriteBigEndian32(record.generation, bytes.data() + 4);
+  WriteBigEndian32(record.sequence, bytes.data() + 8);
+  bytes[12] = std::byte(record.frame_count >> 8);
+  bytes[13] = std::byte(record.frame_count & 0xff);
+  bytes[14] = std::byte(kind >> 8);
+  bytes[15] = std::byte(kind & 0xff);
+  WriteBigEndian32(static_cast<std::uint32_t>(record.captured_at_ns >> 32), bytes.data() + 16);
+  WriteBigEndian32(static_cast<std::uint32_t>(record.captured_at_ns), bytes.data() + 20);
+  WriteBigEndian32(static_cast<std::uint32_t>(record.source_frame >> 32), bytes.data() + 24);
+  WriteBigEndian32(static_cast<std::uint32_t>(record.source_frame), bytes.data() + 28);
+  std::copy(record.payload.begin(), record.payload.end(), bytes.begin() + 32);
+  return bytes;
+}
+
+std::optional<TimedAudioRecord> DecodeTimedAudioRecord(std::span<const std::byte> bytes) {
+  if (bytes.size() <= 32 || bytes.size() > 1024) return std::nullopt;
+  TimedAudioRecord record;
+  record.stream_id = ReadBigEndian32(bytes.data());
+  record.generation = ReadBigEndian32(bytes.data() + 4);
+  record.sequence = ReadBigEndian32(bytes.data() + 8);
+  record.frame_count = (std::to_integer<unsigned>(bytes[12]) << 8) |
+                       std::to_integer<unsigned>(bytes[13]);
+  record.kind = static_cast<AudioRecordKind>((std::to_integer<unsigned>(bytes[14]) << 8) |
+                                            std::to_integer<unsigned>(bytes[15]));
+  record.captured_at_ns = (std::uint64_t(ReadBigEndian32(bytes.data() + 16)) << 32) |
+                          ReadBigEndian32(bytes.data() + 20);
+  record.source_frame = (std::uint64_t(ReadBigEndian32(bytes.data() + 24)) << 32) |
+                        ReadBigEndian32(bytes.data() + 28);
+  record.payload.assign(bytes.begin() + 32, bytes.end());
+  const auto kind = static_cast<unsigned>(record.kind);
+  const bool pcm = kind == 0 || kind == 2 || kind == 3;
+  if (record.stream_id == 0 || record.generation == 0 || record.captured_at_ns == 0 ||
+      record.frame_count == 0 || kind > 4 ||
+      (pcm && (record.frame_count != 120 || record.payload.size() != 960))) return std::nullopt;
+  return record;
+}
+
 }  // namespace hearport::wire

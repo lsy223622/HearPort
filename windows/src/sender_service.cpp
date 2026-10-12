@@ -163,8 +163,9 @@ bool SenderService::Start() {
   }
   diagnostics_thread_ = std::thread([this] { DiagnosticsWorker(); });
   if (!network_probe_ && !capture_.Start(
-          [this](std::span<const std::byte> bytes, const PcmFormat& format) {
-            HandleCapturePacket(bytes, format);
+          [this](std::span<const std::byte> bytes, const PcmFormat& format,
+                 std::uint64_t captured_at_ns) {
+            HandleCapturePacket(bytes, format, captured_at_ns);
           },
           [this] { HandleCaptureReset(); })) {
     Stop();
@@ -564,7 +565,7 @@ std::uint64_t SenderService::dropped_audio_packets() const noexcept {
 }
 
 void SenderService::EnqueueAudio(const wire::AudioDatagram& packet,
-                                 std::int64_t captured_at_ns) {
+                                  std::int64_t captured_at_ns, std::uint64_t source_frame) {
   std::lock_guard lock(queue_mutex_);
   if (audio_queue_.size() >= kAudioQueueCapacity) {
     ++dropped_audio_packets_;
@@ -574,7 +575,7 @@ void SenderService::EnqueueAudio(const wire::AudioDatagram& packet,
     return;
   }
   audio_queue_.push_back(
-      QueuedAudioPacket{packet, captured_at_ns, MonotonicNanoseconds()});
+      QueuedAudioPacket{packet, captured_at_ns, MonotonicNanoseconds(), source_frame});
   audio_metrics_.record_queued();
   audio_metrics_.set_queue_state(audio_queue_.size(), datagram_ready_,
                                  datagram_max_payload_);
@@ -621,7 +622,25 @@ void SenderService::AudioWorker() {
         continue;
       }
     }
-    const auto encoded = wire::EncodeAudioDatagram(queued.packet);
+    std::vector<std::byte> encoded;
+    if (coordinated_audio_.load()) {
+      std::uint32_t generation = 1;
+      if (reliable_mode_.load()) {
+        std::lock_guard reliable_lock(reliable_mutex_);
+        generation = reliable_generation_;
+      }
+      wire::TimedAudioRecord record;
+      record.stream_id = queued.packet.stream_id;
+      record.generation = generation;
+      record.sequence = queued.packet.sequence;
+      record.captured_at_ns = static_cast<std::uint64_t>(queued.captured_at_ns);
+      record.source_frame = queued.source_frame;
+      record.payload.assign(queued.packet.pcm.begin(), queued.packet.pcm.end());
+      encoded = wire::EncodeTimedAudioRecord(record);
+    } else {
+      const auto bytes = wire::EncodeAudioDatagram(queued.packet);
+      encoded.assign(bytes.begin(), bytes.end());
+    }
     bool trace_this_packet = false;
     {
       std::lock_guard debug_lock(debug_mutex_);
@@ -652,7 +671,7 @@ void SenderService::AudioWorker() {
 }
 
 void SenderService::HandleCapturePacket(std::span<const std::byte> bytes,
-                                         const PcmFormat& format) {
+                                         const PcmFormat& format, std::uint64_t captured_at_ns) {
   audio_metrics_.record_capture(bytes.size(), format);
   std::lock_guard capture_lock(capture_mutex_);
   {
@@ -668,9 +687,14 @@ void SenderService::HandleCapturePacket(std::span<const std::byte> bytes,
     normalizer_format_ = format;
     normalizer_.emplace(format);
   }
+  const auto normalized_start = static_cast<std::uint64_t>(
+      static_cast<std::int64_t>(captured_at_ns) + static_cast<std::int64_t>(
+          normalizer_->next_sample_offset() * 1'000'000'000.0 / format.sample_rate_hz));
   const auto samples = normalizer_->Convert(bytes);
   audio_metrics_.record_normalized_frames(samples.size() / 2);
-  packetizer_.Push(samples, [this](const wire::AudioDatagram& packet) {
+  packetizer_.PushTimed(samples, normalized_start,
+                       [this](const wire::AudioDatagram& packet, std::uint64_t capture_time,
+                              std::uint64_t source_frame) {
     audio_metrics_.record_packetized(packet.stream_id, packet.sequence);
     bool accepted = false;
     {
@@ -682,7 +706,7 @@ void SenderService::HandleCapturePacket(std::span<const std::byte> bytes,
         std::lock_guard reliable_lock(reliable_mutex_);
         reliable_lag_.Produced(packet.sequence);
       }
-      EnqueueAudio(packet, MonotonicNanoseconds());
+      EnqueueAudio(packet, static_cast<std::int64_t>(capture_time), source_frame);
     }
   });
 }

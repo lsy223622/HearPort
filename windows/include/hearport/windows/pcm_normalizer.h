@@ -29,6 +29,7 @@ class PcmNormalizer {
   std::vector<float> Convert(std::span<const std::byte> source_bytes);
 
   const PcmFormat& source_format() const noexcept { return source_format_; }
+  double next_sample_offset() const noexcept { return source_position_; }
 
  private:
   PcmFormat source_format_;
