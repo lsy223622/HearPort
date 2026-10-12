@@ -25,6 +25,13 @@ public enum ControlFeature {
     public static let reliableAudio: UInt32 = 2
     public static let networkProbe: UInt32 = 4
     public static let networkProbeRepeat: UInt32 = 8
+    public static let coordinatedAudio: UInt32 = 16
+}
+
+public struct AudioProgressTiming: Equatable, Sendable {
+    public let playedSourceFrame: UInt64?
+    public let generatedAt: UInt64
+    public let bufferedMilliseconds: UInt32
 }
 
 let diagnosticReportChunkMaxBytes = 60 * 1024
@@ -51,7 +58,13 @@ public enum ControlMessage: Equatable, Sendable {
     case diagnosticsReportEnd(sessionID: Data)
     case diagnosticsReportReceived(sessionID: Data)
     case audioProgress(streamID: UInt32, generation: UInt32,
-                       latestReceivedSequence: UInt32?)
+                       latestReceivedSequence: UInt32?, timing: AudioProgressTiming? = nil)
+    case audioSetup(streamID: UInt32, budget: PlayoutBudget)
+    case clockRequest(requestID: UInt32, localSent: UInt64)
+    case clockResponse(requestID: UInt32, localSent: UInt64,
+                       remoteReceived: UInt64, remoteSent: UInt64)
+    case repairRequest(streamID: UInt32, generation: UInt32,
+                       remainingMilliseconds: UInt32, sequences: [UInt32])
 
     public var diagnosticName: String {
         switch self {
@@ -75,6 +88,10 @@ public enum ControlMessage: Equatable, Sendable {
         case .diagnosticsReportEnd: return "diagnostics_report_end"
         case .diagnosticsReportReceived: return "diagnostics_report_received"
         case .audioProgress: return "audio_progress"
+        case .audioSetup: return "audio_setup"
+        case .clockRequest: return "clock_request"
+        case .clockResponse: return "clock_response"
+        case .repairRequest: return "repair_request"
         }
     }
 }
@@ -216,7 +233,7 @@ public struct ControlEnvelope: Equatable, Sendable {
             guard sessionID.count == 16 else { throw ControlMessageError.invalidMessage }
             body = Self.singleBytesBody(sessionID)
             field = 38
-        case let .audioProgress(streamID, generation, latestReceivedSequence):
+        case let .audioProgress(streamID, generation, latestReceivedSequence, timing):
             guard streamID != 0, generation != 0 else {
                 throw ControlMessageError.invalidMessage
             }
@@ -226,8 +243,53 @@ public struct ControlEnvelope: Equatable, Sendable {
             if let latestReceivedSequence {
                 writer.writeVarintField(3, value: latestReceivedSequence)
             }
+            if let timing {
+                if let frame = timing.playedSourceFrame { writer.writeWideField(4, value: frame) }
+                if timing.generatedAt != 0 { writer.writeWideField(5, value: timing.generatedAt) }
+                if timing.bufferedMilliseconds != 0 {
+                    writer.writeVarintField(6, value: timing.bufferedMilliseconds)
+                }
+            }
             body = writer.data
             field = 39
+        case let .audioSetup(streamID, budget):
+            guard streamID != 0 else { throw ControlMessageError.invalidMessage }
+            var writer = ProtoWriter()
+            writer.writeVarintField(1, value: streamID)
+            writer.writeVarintField(2, value: UInt32(budget.targetMilliseconds.rounded()))
+            writer.writeVarintField(3, value: UInt32(budget.maximumMilliseconds.rounded()))
+            writer.writeVarintField(4, value: UInt32(budget.outputReserveMilliseconds.rounded()))
+            body = writer.data
+            field = 40
+        case let .clockRequest(requestID, localSent):
+            guard requestID != 0, localSent != 0 else { throw ControlMessageError.invalidMessage }
+            var writer = ProtoWriter()
+            writer.writeVarintField(1, value: requestID)
+            writer.writeWideField(2, value: localSent)
+            body = writer.data
+            field = 41
+        case let .clockResponse(requestID, localSent, remoteReceived, remoteSent):
+            guard requestID != 0, localSent != 0, remoteReceived != 0,
+                  remoteSent >= remoteReceived else { throw ControlMessageError.invalidMessage }
+            var writer = ProtoWriter()
+            writer.writeVarintField(1, value: requestID)
+            writer.writeWideField(2, value: localSent)
+            writer.writeWideField(3, value: remoteReceived)
+            writer.writeWideField(4, value: remoteSent)
+            body = writer.data
+            field = 42
+        case let .repairRequest(streamID, generation, remainingMilliseconds, sequences):
+            guard streamID != 0, generation != 0, (1...2000).contains(remainingMilliseconds),
+                  !sequences.isEmpty, sequences.count <= 16 else {
+                throw ControlMessageError.invalidMessage
+            }
+            var writer = ProtoWriter()
+            writer.writeVarintField(1, value: streamID)
+            writer.writeVarintField(2, value: generation)
+            writer.writeVarintField(3, value: remainingMilliseconds)
+            for sequence in sequences { writer.writeVarintField(4, value: sequence) }
+            body = writer.data
+            field = 43
         }
         var writer = ProtoWriter()
         writer.writeBytesField(field, value: body)
@@ -250,7 +312,7 @@ public struct ControlEnvelope: Equatable, Sendable {
                 continue
             }
             switch outer.field {
-            case 1, 2, 3, 10, 11, 12, 13, 14, 20, 21, 30, 31, 32...39:
+            case 1, 2, 3, 10, 11, 12, 13, 14, 20, 21, 30, 31, 32...43:
                 selected = (outer.field, body)
             default:
                 lastUnknownField = outer.field
@@ -281,6 +343,7 @@ public struct ControlEnvelope: Equatable, Sendable {
         case 37: message = try parseSessionMessage(selected.body, make: ControlMessage.diagnosticsReportEnd)
         case 38: message = try parseSessionMessage(selected.body, make: ControlMessage.diagnosticsReportReceived)
         case 39: message = try parseAudioProgress(selected.body)
+        case 40...43: message = try parseCoordinated(selected.body, field: selected.field)
         default: throw ControlMessageError.unknownField(selected.field)
         }
         return ControlEnvelope(message)
@@ -481,12 +544,76 @@ public struct ControlEnvelope: Equatable, Sendable {
             throw ControlMessageError.invalidMessage
         }
         return .audioProgress(streamID: streamID, generation: generation,
-                              latestReceivedSequence: latestReceivedSequence)
+                              latestReceivedSequence: latestReceivedSequence,
+                              timing: fields[4] != nil || fields[5] != nil || fields[6] != nil
+                                ? AudioProgressTiming(playedSourceFrame: try wide(fields[4]),
+                                    generatedAt: try wide(fields[5]) ?? 0,
+                                    bufferedMilliseconds: try scalar(fields[6]) ?? 0) : nil)
+    }
+
+    private static func scalar(_ value: ProtoField?) throws -> UInt32? {
+        guard let value else { return nil }
+        guard case let .varint(number) = value else { throw ControlMessageError.invalidMessage }
+        return number
+    }
+
+    private static func wide(_ value: ProtoField?) throws -> UInt64? {
+        guard let value else { return nil }
+        switch value {
+        case let .varint(number): return UInt64(number)
+        case let .wide(number): return number
+        default: throw ControlMessageError.invalidMessage
+        }
+    }
+
+    private static func parseCoordinated(_ data: Data, field: UInt32) throws -> ControlMessage {
+        let fields = try parseFields(data)
+        guard let first = try scalar(fields[1]), first != 0 else {
+            throw ControlMessageError.invalidMessage
+        }
+        if field == 40 {
+            guard let target = try scalar(fields[2]), let maximum = try scalar(fields[3]),
+                  let output = try scalar(fields[4]) else { throw ControlMessageError.invalidMessage }
+            return .audioSetup(streamID: first, budget: try PlayoutBudget(
+                targetMilliseconds: Double(target), maximumMilliseconds: Double(maximum),
+                outputReserveMilliseconds: Double(output)))
+        }
+        if field == 43 {
+            guard let generation = try scalar(fields[2]), generation != 0,
+                  let remaining = try scalar(fields[3]), (1...2000).contains(remaining) else {
+                throw ControlMessageError.invalidMessage
+            }
+            var reader = ProtoReader(data)
+            var sequences: [UInt32] = []
+            while !reader.isAtEnd {
+                let item = try reader.readField()
+                if item.field == 4 {
+                    guard let number = try scalar(item.value), sequences.count < 16 else {
+                        throw ControlMessageError.invalidMessage
+                    }
+                    sequences.append(number)
+                }
+            }
+            guard !sequences.isEmpty else { throw ControlMessageError.invalidMessage }
+            return .repairRequest(streamID: first, generation: generation,
+                                  remainingMilliseconds: remaining, sequences: sequences)
+        }
+        guard let sent = try wide(fields[2]), sent != 0 else {
+            throw ControlMessageError.invalidMessage
+        }
+        if field == 41 { return .clockRequest(requestID: first, localSent: sent) }
+        guard let received = try wide(fields[3]), received != 0,
+              let remoteSent = try wide(fields[4]), remoteSent >= received else {
+            throw ControlMessageError.invalidMessage
+        }
+        return .clockResponse(requestID: first, localSent: sent,
+                              remoteReceived: received, remoteSent: remoteSent)
     }
 }
 
 private enum ProtoField {
     case varint(UInt32)
+    case wide(UInt64)
     case bytes(Data)
     case ignored
 }
@@ -506,6 +633,16 @@ private struct ProtoWriter {
     mutating func writeVarintField(_ field: UInt32, value: UInt32) {
         writeVarint((field << 3) | 0)
         writeVarint(value)
+    }
+
+    mutating func writeWideField(_ field: UInt32, value: UInt64) {
+        writeVarint(field << 3)
+        var remaining = value
+        while remaining >= 0x80 {
+            data.append(UInt8((remaining & 0x7f) | 0x80))
+            remaining >>= 7
+        }
+        data.append(UInt8(remaining))
     }
 
     mutating func writeBytesField(_ field: UInt32, value: Data) {
@@ -544,7 +681,8 @@ private struct ProtoReader {
         guard field != 0 else { throw ControlMessageError.malformedField }
         switch wire {
         case 0:
-            return (field, .varint(try readVarint()))
+            let value = try readWideVarint()
+            return (field, value <= UInt32.max ? .varint(UInt32(value)) : .wide(value))
         case 1:
             guard offset + 8 <= bytes.count else { throw ControlMessageError.malformedField }
             offset += 8
@@ -570,10 +708,23 @@ private struct ProtoReader {
         }
     }
 
+    private mutating func readWideVarint() throws -> UInt64 {
+        var value: UInt64 = 0
+        for index in 0..<10 {
+            guard offset < bytes.count else { throw ControlMessageError.malformedVarint }
+            let byte = bytes[offset]
+            offset += 1
+            if index == 9 && byte > 1 { throw ControlMessageError.malformedVarint }
+            value |= UInt64(byte & 0x7f) << (index * 7)
+            if byte & 0x80 == 0 { return value }
+        }
+        throw ControlMessageError.malformedVarint
+    }
+
     private mutating func skipField(_ wire: UInt8) throws {
         switch wire {
         case 0:
-            _ = try readVarint()
+            _ = try readWideVarint()
         case 1:
             guard offset + 8 <= bytes.count else { throw ControlMessageError.malformedField }
             offset += 8

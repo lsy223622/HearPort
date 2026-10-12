@@ -54,6 +54,9 @@ class SenderService {
                    std::span<const std::byte> debug_session_id = {});
   bool MarkStartStreamAckWritten(std::uint32_t stream_id);
   void ConfigureReliableAudio(bool enabled);
+  void ConfigureCoordinatedAudio(bool enabled);
+  bool ConfigurePlayoutBudget(std::uint32_t target_ms, std::uint32_t maximum_ms,
+                              std::uint32_t output_reserve_ms);
   void ConfigureNetworkProbe(bool enabled);
   bool network_probe() const noexcept { return network_probe_; }
   std::uint32_t network_probe_packets_processed() const noexcept {
@@ -123,6 +126,10 @@ class SenderService {
   mutable std::mutex reliable_mutex_;
   ReliableAudioLag reliable_lag_;
   std::atomic<bool> reliable_mode_ = false;
+  std::atomic<bool> coordinated_audio_ = false;
+  std::atomic<std::uint32_t> target_ms_ = 50;
+  std::atomic<std::uint32_t> maximum_ms_ = 100;
+  std::atomic<std::uint32_t> output_reserve_ms_ = 10;
   std::uint32_t reliable_generation_ = 0;
   DebugSessionTrace debug_trace_;
   mutable std::mutex debug_mutex_;

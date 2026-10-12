@@ -31,6 +31,15 @@ public final class ReceiverControlSession {
     private var ready = false
     private var receiverReadyNotified = false
     private var peerFeatures: UInt32 = 0
+    public var requestedBudget = try! PlayoutBudget(targetMilliseconds: 50,
+        maximumMilliseconds: 100, outputReserveMilliseconds: 10)
+    private let clockLock = NSLock()
+    private var clockTimer: DispatchSourceTimer?
+    private var clockRequestID: UInt32 = 0
+    private var clockSentAt: UInt64 = 0
+    private var pendingStreamAck: UInt32?
+    private var budgetAccepted = false
+    private var clockAccepted = false
     private let probeModeLock = NSLock()
     private var probeMode = false
     public var isNetworkProbe: Bool {
@@ -141,6 +150,7 @@ public final class ReceiverControlSession {
         self.ready = false
         self.receiverReadyNotified = false
         self.peerFeatures = 0
+        stopClockUpdates()
         setNetworkProbe(false)
         self.activeDebugSessionID = nil
         self.activeDebugStreamID = nil
@@ -222,6 +232,7 @@ public final class ReceiverControlSession {
     }
 
     public func cancel() {
+        stopClockUpdates()
         diagnostics.log(
             .info,
             category: .control,
@@ -242,7 +253,7 @@ public final class ReceiverControlSession {
         guard mode == .remembered || (mode == .pair || mode == .oneTime) else { return }
         let peerID = credential?.peerID ?? Data()
         let features = ControlFeature.diagnosticsUpload | ControlFeature.networkProbe |
-            ControlFeature.networkProbeRepeat |
+            ControlFeature.networkProbeRepeat | ControlFeature.coordinatedAudio |
             (audioMode == .reliable ? ControlFeature.reliableAudio : 0)
         let envelope = ControlEnvelope(.connectRequest(authMode: mode,
                                                        peerID: peerID,
@@ -528,32 +539,35 @@ public final class ReceiverControlSession {
                 transport.expectReliableAudio(streamID: streamID,
                                               latestReceivedSequence: { nil })
             }
-            send(.startStreamAck(streamID), completion: { [weak self] error in
-                guard let self else { return }
-                guard error == nil else {
-                    self.diagnostics.log(
-                        .error,
-                        category: .control,
-                        message: "start_stream_ack_failed",
-                        fields: [
-                            "event": "start_stream_ack_failed",
-                            "stream_id": "\(streamID)",
-                            "error": "\(String(describing: error))"
-                        ]
-                    )
-                    self.onError?("Unable to write StartStreamAck")
-                    return
-                }
-                self.diagnostics.log(
-                    .info,
-                    category: .control,
-                    message: "start_stream_ack_written",
-                    fields: ["event": "start_stream_ack_written", "stream_id": "\(streamID)"]
-                )
-                if !self.isNetworkProbe {
-                    _ = self.receiver.acknowledgeStartStream(streamID)
-                }
-            })
+            if (peerFeatures & ControlFeature.coordinatedAudio) != 0 {
+                clockLock.lock()
+                pendingStreamAck = streamID
+                budgetAccepted = false
+                clockAccepted = false
+                clockLock.unlock()
+                send(.audioSetup(streamID: streamID, budget: requestedBudget))
+                requestClock()
+            } else {
+                acknowledgeStream(streamID)
+            }
+        case let .audioSetup(streamID, budget):
+            clockLock.lock()
+            let matches = pendingStreamAck == streamID && budget == requestedBudget
+            if matches { budgetAccepted = true }
+            clockLock.unlock()
+            guard matches else { throw ControlMessageError.invalidMessage }
+            receiver.configurePlayout(budget)
+            finishCoordinatedStart()
+        case let .clockResponse(requestID, localSent, remoteReceived, remoteSent):
+            let received = DispatchTime.now().uptimeNanoseconds
+            clockLock.lock()
+            let matches = requestID == clockRequestID && localSent == clockSentAt && localSent != 0
+            if matches { clockAccepted = true; clockSentAt = 0 }
+            clockLock.unlock()
+            guard matches else { return }
+            receiver.observeClock(localSent: localSent, remoteReceived: remoteReceived,
+                                  remoteSent: remoteSent, localReceived: received)
+            finishCoordinatedStart()
         case let .error(code, message):
             diagnostics.log(
                 .warning,
@@ -652,9 +666,65 @@ public final class ReceiverControlSession {
         case .connectRequest, .pairSpakeB, .pairConfirmB,
              .authResponse, .startStreamAck, .receiverReady,
              .diagnosticsReportStart, .diagnosticsReportChunk,
-             .diagnosticsReportEnd, .audioProgress:
+             .diagnosticsReportEnd, .audioProgress, .clockRequest, .repairRequest:
             throw PairingSecurityError.providerFailure(-4)
         }
+    }
+
+    private func acknowledgeStream(_ streamID: UInt32) {
+        send(.startStreamAck(streamID), completion: { [weak self] error in
+            guard let self else { return }
+            guard error == nil else {
+                self.onError?("Unable to write StartStreamAck")
+                return
+            }
+            self.diagnostics.log(.info, category: .control, message: "start_stream_ack_written",
+                fields: ["event": "start_stream_ack_written", "stream_id": "\(streamID)"])
+            if !self.isNetworkProbe { _ = self.receiver.acknowledgeStartStream(streamID) }
+        })
+    }
+
+    private func requestClock() {
+        let now = DispatchTime.now().uptimeNanoseconds
+        clockLock.lock()
+        if clockSentAt != 0 && now >= clockSentAt && now - clockSentAt < 2_000_000_000 {
+            clockLock.unlock()
+            return
+        }
+        clockRequestID = clockRequestID &+ 1
+        if clockRequestID == 0 { clockRequestID = 1 }
+        let requestID = clockRequestID
+        clockSentAt = now
+        clockLock.unlock()
+        send(.clockRequest(requestID: requestID, localSent: now))
+    }
+
+    private func finishCoordinatedStart() {
+        clockLock.lock()
+        guard budgetAccepted, clockAccepted, let streamID = pendingStreamAck else {
+            clockLock.unlock()
+            return
+        }
+        pendingStreamAck = nil
+        let timer = DispatchSource.makeTimerSource(queue: debugQueue)
+        timer.schedule(deadline: .now() + .seconds(2), repeating: .seconds(2))
+        timer.setEventHandler { [weak self] in self?.requestClock() }
+        clockTimer?.cancel()
+        clockTimer = timer
+        timer.resume()
+        clockLock.unlock()
+        acknowledgeStream(streamID)
+    }
+
+    private func stopClockUpdates() {
+        clockLock.lock()
+        clockTimer?.cancel()
+        clockTimer = nil
+        pendingStreamAck = nil
+        clockSentAt = 0
+        budgetAccepted = false
+        clockAccepted = false
+        clockLock.unlock()
     }
 
     private func beginReportUpload(_ report: PendingDiagnosticReport, chunks: [Data]) {

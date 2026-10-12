@@ -415,6 +415,25 @@ void SenderService::ConfigureReliableAudio(bool enabled) {
   reliable_generation_ = 0;
 }
 
+void SenderService::ConfigureCoordinatedAudio(bool enabled) {
+  coordinated_audio_.store(enabled);
+}
+
+bool SenderService::ConfigurePlayoutBudget(std::uint32_t target_ms,
+                                           std::uint32_t maximum_ms,
+                                           std::uint32_t output_reserve_ms) {
+  if (target_ms <= output_reserve_ms || maximum_ms < target_ms || maximum_ms > 2000) {
+    return false;
+  }
+  target_ms_.store(target_ms);
+  maximum_ms_.store(maximum_ms);
+  output_reserve_ms_.store(output_reserve_ms);
+  LogDiagnostic("audio_budget target_ms=" + std::to_string(target_ms) +
+                " maximum_ms=" + std::to_string(maximum_ms) +
+                " output_reserve_ms=" + std::to_string(output_reserve_ms));
+  return true;
+}
+
 bool SenderService::ObserveAudioProgress(
     std::uint32_t stream_id, std::uint32_t generation,
     std::optional<std::uint32_t> latest_received) {

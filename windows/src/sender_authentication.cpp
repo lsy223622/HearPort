@@ -120,6 +120,8 @@ bool SenderAuthentication::HandleConnect(
       (wire::kFeatureNetworkProbe | wire::kFeatureNetworkProbeRepeat);
   peer_wants_reliable_ =
       (envelope.feature_bits & wire::kFeatureReliableAudio) != 0;
+  peer_coordinated_audio_ = (envelope.feature_bits & wire::kFeatureCoordinatedAudio) != 0;
+  service_.ConfigureCoordinatedAudio(peer_coordinated_audio_);
 
   if (envelope.auth_mode == AuthMode::remembered) {
     const auto credential = credential_store_.Load();
@@ -242,6 +244,7 @@ bool SenderAuthentication::CompleteAuthentication(bool remember) {
                            ? wire::kFeatureDiagnosticsUpload
                            : 0;
   if (peer_wants_reliable_) ready.feature_bits |= wire::kFeatureReliableAudio;
+  if (peer_coordinated_audio_) ready.feature_bits |= wire::kFeatureCoordinatedAudio;
   if (service_.network_probe()) {
     ready.feature_bits |=
         wire::kFeatureNetworkProbe | wire::kFeatureNetworkProbeRepeat;
@@ -381,6 +384,29 @@ bool SenderAuthentication::HandleControlPayload(
     return Fail(ErrorCode::protocol, "malformed control envelope");
   }
   switch (envelope->type) {
+    case wire::ControlMessageType::audio_setup:
+      if (!authenticated_ || !peer_coordinated_audio_ || envelope->stream_id != stream_id_ ||
+          !service_.ConfigurePlayoutBudget(envelope->target_ms, envelope->maximum_ms,
+                                          envelope->output_reserve_ms)) {
+        return Fail(ErrorCode::stream_state, "unexpected AudioSetup");
+      }
+      return Send(*envelope);
+    case wire::ControlMessageType::clock_request: {
+      if (!authenticated_ || !peer_coordinated_audio_) {
+        return Fail(ErrorCode::stream_state, "unexpected ClockRequest");
+      }
+      wire::ControlEnvelope response;
+      response.type = wire::ControlMessageType::clock_response;
+      response.request_id = envelope->request_id;
+      response.local_sent_ns = envelope->local_sent_ns;
+      response.remote_received_ns = static_cast<std::uint64_t>(
+          std::chrono::duration_cast<std::chrono::nanoseconds>(
+              std::chrono::steady_clock::now().time_since_epoch()).count());
+      response.remote_sent_ns = static_cast<std::uint64_t>(
+          std::chrono::duration_cast<std::chrono::nanoseconds>(
+              std::chrono::steady_clock::now().time_since_epoch()).count());
+      return Send(response);
+    }
     case wire::ControlMessageType::connect_request:
       return HandleConnect(*envelope);
     case wire::ControlMessageType::pair_spake_b:
