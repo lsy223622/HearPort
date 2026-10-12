@@ -32,12 +32,17 @@ enum class ControlMessageType : std::uint8_t {
   diagnostics_report_end,
   diagnostics_report_received,
   audio_progress,
+  audio_setup,
+  clock_request,
+  clock_response,
+  repair_request,
 };
 
 inline constexpr std::uint32_t kFeatureDiagnosticsUpload = 1u;
 inline constexpr std::uint32_t kFeatureReliableAudio = 2u;
 inline constexpr std::uint32_t kFeatureNetworkProbe = 4u;
 inline constexpr std::uint32_t kFeatureNetworkProbeRepeat = 8u;
+inline constexpr std::uint32_t kFeatureCoordinatedAudio = 16u;
 inline constexpr std::size_t kDiagnosticReportChunkMaxBytes = 60u * 1024u;
 
 // This is the small, schema-shaped value used at the platform boundary. The
@@ -61,6 +66,18 @@ struct ControlEnvelope {
   std::uint32_t audio_generation = 0;
   std::uint32_t audio_sequence = 0;
   bool has_audio_sequence = false;
+  std::uint32_t target_ms = 0;
+  std::uint32_t maximum_ms = 0;
+  std::uint32_t output_reserve_ms = 0;
+  std::uint32_t request_id = 0;
+  std::uint64_t local_sent_ns = 0;
+  std::uint64_t remote_received_ns = 0;
+  std::uint64_t remote_sent_ns = 0;
+  std::uint64_t played_source_frame = 0;
+  bool has_played_source_frame = false;
+  std::uint64_t feedback_at_ns = 0;
+  std::uint32_t buffered_ms = 0;
+  std::vector<std::uint32_t> repair_sequences;
 };
 
 std::vector<std::byte> EncodeControlEnvelope(const ControlEnvelope& envelope);

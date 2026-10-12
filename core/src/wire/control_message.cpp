@@ -15,7 +15,7 @@ std::uint8_t ByteValue(std::byte value) noexcept {
   return std::to_integer<std::uint8_t>(value);
 }
 
-void AppendVarint(std::uint32_t value, std::vector<std::byte>& output) {
+void AppendVarint(std::uint64_t value, std::vector<std::byte>& output) {
   while (value >= 0x80u) {
     output.push_back(std::byte{static_cast<unsigned char>(value | 0x80u)});
     value >>= 7;
@@ -54,17 +54,20 @@ class Reader {
  public:
   explicit Reader(std::span<const std::byte> bytes) : bytes_(bytes) {}
 
-  bool ReadVarint(std::uint32_t& value) noexcept {
+  template <typename T>
+  bool ReadVarint(T& value) noexcept {
     value = 0;
-    for (std::size_t index = 0; index < 5; ++index) {
+    constexpr auto bits = sizeof(T) * 8;
+    constexpr auto count = (bits + 6) / 7;
+    for (std::size_t index = 0; index < count; ++index) {
       if (offset_ == bytes_.size()) {
         return false;
       }
       const auto byte = ByteValue(bytes_[offset_++]);
-      if (index == 4 && byte > 0x0fu) {
+      if (index == count - 1 && byte >= (1u << (bits - index * 7))) {
         return false;
       }
-      value |= static_cast<std::uint32_t>(byte & 0x7fu) << (index * 7);
+      value |= static_cast<T>(byte & 0x7fu) << (index * 7);
       if ((byte & 0x80u) == 0) {
         return true;
       }
@@ -86,7 +89,7 @@ class Reader {
   bool Skip(std::uint8_t wire_type) noexcept {
     switch (wire_type) {
       case 0: {
-        std::uint32_t value = 0;
+        std::uint64_t value = 0;
         return ReadVarint(value);
       }
       case 1:
@@ -163,11 +166,31 @@ bool NoControlHeaderFields(const ControlEnvelope& envelope) noexcept {
 
 bool ValidateEnvelope(const ControlEnvelope& envelope) noexcept {
   if (envelope.type != ControlMessageType::audio_progress &&
+      envelope.type != ControlMessageType::repair_request &&
       (envelope.audio_generation != 0 || envelope.audio_sequence != 0 ||
        envelope.has_audio_sequence)) {
     return false;
   }
   switch (envelope.type) {
+    case ControlMessageType::audio_setup:
+      return NoControlHeaderFields(envelope) && NoDiagnosticFields(envelope) &&
+             envelope.stream_id != 0 && envelope.maximum_ms <= 2000 &&
+             envelope.target_ms > envelope.output_reserve_ms &&
+             envelope.maximum_ms >= envelope.target_ms;
+    case ControlMessageType::clock_request:
+      return NoControlHeaderFields(envelope) && NoDiagnosticFields(envelope) &&
+             envelope.request_id != 0 && envelope.local_sent_ns != 0;
+    case ControlMessageType::clock_response:
+      return NoControlHeaderFields(envelope) && NoDiagnosticFields(envelope) &&
+             envelope.request_id != 0 && envelope.local_sent_ns != 0 &&
+             envelope.remote_received_ns != 0 &&
+             envelope.remote_sent_ns >= envelope.remote_received_ns;
+    case ControlMessageType::repair_request:
+      return NoControlHeaderFields(envelope) && NoDiagnosticFields(envelope) &&
+             envelope.stream_id != 0 && envelope.audio_generation != 0 &&
+             !envelope.repair_sequences.empty() && envelope.repair_sequences.size() <= 16 &&
+             envelope.duration_seconds == 0 && envelope.maximum_ms > 0 &&
+             envelope.maximum_ms <= 2000;
     case ControlMessageType::connect_request:
       return IsValidAuthMode(envelope.auth_mode) &&
              ((envelope.auth_mode == AuthMode::remembered &&
@@ -526,11 +549,57 @@ bool ParseAudioProgress(std::span<const std::byte> bytes,
     } else if (field == 3 && wire_type == 0) {
       if (!reader.ReadVarint(envelope.audio_sequence)) return false;
       envelope.has_audio_sequence = true;
+    } else if (field == 4 && wire_type == 0) {
+      if (!reader.ReadVarint(envelope.played_source_frame)) return false;
+      envelope.has_played_source_frame = true;
+    } else if (field == 5 && wire_type == 0) {
+      if (!reader.ReadVarint(envelope.feedback_at_ns)) return false;
+    } else if (field == 6 && wire_type == 0) {
+      if (!reader.ReadVarint(envelope.buffered_ms)) return false;
     } else if (!reader.Skip(wire_type)) {
       return false;
     }
   }
   return stream_seen && generation_seen;
+}
+
+bool ParseCoordinated(std::span<const std::byte> bytes,
+                      ControlEnvelope& envelope) noexcept {
+  Reader reader(bytes);
+  unsigned seen = 0;
+  while (!reader.AtEnd()) {
+    std::uint32_t field = 0;
+    std::uint8_t wire = 0;
+    if (!reader.ReadTag(field, wire)) return false;
+    if (wire != 0 || field > 4) {
+      if (!reader.Skip(wire)) return false;
+      continue;
+    }
+    seen |= 1u << (field - 1);
+    if (envelope.type == ControlMessageType::audio_setup) {
+      auto* value = field == 1 ? &envelope.stream_id : field == 2 ? &envelope.target_ms :
+                    field == 3 ? &envelope.maximum_ms : &envelope.output_reserve_ms;
+      if (!reader.ReadVarint(*value)) return false;
+    } else if (envelope.type == ControlMessageType::repair_request) {
+      if (field == 4) {
+        std::uint32_t sequence = 0;
+        if (!reader.ReadVarint(sequence) || envelope.repair_sequences.size() >= 16) return false;
+        envelope.repair_sequences.push_back(sequence);
+      } else {
+        auto* value = field == 1 ? &envelope.stream_id : field == 2 ?
+                      &envelope.audio_generation : &envelope.maximum_ms;
+        if (!reader.ReadVarint(*value)) return false;
+      }
+    } else if (field == 1) {
+      if (!reader.ReadVarint(envelope.request_id)) return false;
+    } else {
+      auto* value = field == 2 ? &envelope.local_sent_ns : field == 3 ?
+                    &envelope.remote_received_ns : &envelope.remote_sent_ns;
+      if (!reader.ReadVarint(*value)) return false;
+    }
+  }
+  return (seen & (envelope.type == ControlMessageType::clock_request ? 3u : 15u)) ==
+                 (envelope.type == ControlMessageType::clock_request ? 3u : 15u);
 }
 
 }  // namespace
@@ -540,7 +609,32 @@ std::vector<std::byte> EncodeControlEnvelope(const ControlEnvelope& envelope) {
     throw std::invalid_argument("invalid HearPort control envelope");
   }
   std::vector<std::byte> submessage;
+  auto scalar = [&](std::uint32_t field, std::uint64_t value) {
+    AppendTag(field, 0, submessage);
+    AppendVarint(value, submessage);
+  };
   switch (envelope.type) {
+    case ControlMessageType::audio_setup:
+      scalar(1, envelope.stream_id);
+      scalar(2, envelope.target_ms);
+      scalar(3, envelope.maximum_ms);
+      scalar(4, envelope.output_reserve_ms);
+      break;
+    case ControlMessageType::clock_request:
+    case ControlMessageType::clock_response:
+      scalar(1, envelope.request_id);
+      scalar(2, envelope.local_sent_ns);
+      if (envelope.type == ControlMessageType::clock_response) {
+        scalar(3, envelope.remote_received_ns);
+        scalar(4, envelope.remote_sent_ns);
+      }
+      break;
+    case ControlMessageType::repair_request:
+      scalar(1, envelope.stream_id);
+      scalar(2, envelope.audio_generation);
+      scalar(3, envelope.maximum_ms);
+      for (auto sequence : envelope.repair_sequences) scalar(4, sequence);
+      break;
     case ControlMessageType::connect_request:
       AppendTag(1, 0, submessage);
       AppendVarint(static_cast<std::uint32_t>(envelope.auth_mode), submessage);
@@ -624,6 +718,9 @@ std::vector<std::byte> EncodeControlEnvelope(const ControlEnvelope& envelope) {
         AppendTag(3, 0, submessage);
         AppendVarint(envelope.audio_sequence, submessage);
       }
+      if (envelope.has_played_source_frame) scalar(4, envelope.played_source_frame);
+      if (envelope.feedback_at_ns != 0) scalar(5, envelope.feedback_at_ns);
+      if (envelope.buffered_ms != 0) scalar(6, envelope.buffered_ms);
       break;
   }
 
@@ -649,6 +746,10 @@ std::vector<std::byte> EncodeControlEnvelope(const ControlEnvelope& envelope) {
       case ControlMessageType::diagnostics_report_end: return 37u;
       case ControlMessageType::diagnostics_report_received: return 38u;
       case ControlMessageType::audio_progress: return 39u;
+      case ControlMessageType::audio_setup: return 40u;
+      case ControlMessageType::clock_request: return 41u;
+      case ControlMessageType::clock_response: return 42u;
+      case ControlMessageType::repair_request: return 43u;
     }
     return 0u;
   }();
@@ -676,7 +777,7 @@ std::optional<ControlEnvelope> DecodeControlEnvelope(
         field == 1 || field == 2 || field == 3 || field == 10 ||
         field == 11 || field == 12 || field == 13 || field == 14 ||
         field == 20 || field == 21 || field == 30 || field == 31 ||
-        (field >= 32 && field <= 39);
+        (field >= 32 && field <= 43);
     if (!known_field || wire_type != 2) {
       if (!reader.Skip(wire_type)) return std::nullopt;
       continue;
@@ -690,6 +791,16 @@ std::optional<ControlEnvelope> DecodeControlEnvelope(
   ControlEnvelope envelope;
   bool parsed = false;
   switch (selected_field) {
+    case 40:
+    case 41:
+    case 42:
+    case 43:
+      envelope.type = selected_field == 40 ? ControlMessageType::audio_setup :
+                      selected_field == 41 ? ControlMessageType::clock_request :
+                      selected_field == 42 ? ControlMessageType::clock_response :
+                                             ControlMessageType::repair_request;
+      parsed = ParseCoordinated(selected_submessage, envelope);
+      break;
     case 1:
       envelope.type = ControlMessageType::connect_request;
       parsed = ParseConnect(selected_submessage, envelope);

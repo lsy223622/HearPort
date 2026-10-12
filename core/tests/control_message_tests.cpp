@@ -225,5 +225,24 @@ int main() {
                 BytesField(3, maximum_chunk)}));
   Require(!hearport::wire::DecodeControlEnvelope(oversized_chunk_message).has_value(),
           "report chunks larger than 60 KiB are rejected");
+  const auto setup = Envelope(40, Join({VarintField(1, 7), VarintField(2, 50),
+                                       VarintField(3, 100), VarintField(4, 10)}));
+  const auto decoded_setup = hearport::wire::DecodeControlEnvelope(setup);
+  Require(decoded_setup.has_value(), "coordinated audio setup decodes");
+  Require(hearport::wire::EncodeControlEnvelope(*decoded_setup) == setup,
+          "audio setup keeps its budget on the wire");
+  const std::vector<std::byte> clock_body{
+      std::byte{8}, std::byte{1}, std::byte{16}, std::byte{0x80},
+      std::byte{0x80}, std::byte{0x80}, std::byte{0x80}, std::byte{0x80},
+      std::byte{0x20}, std::byte{0}};
+  const auto clock = Envelope(41, std::span(clock_body).first(9));
+  const auto decoded_clock = hearport::wire::DecodeControlEnvelope(clock);
+  Require(decoded_clock.has_value(), "64-bit clock request decodes");
+  Require(hearport::wire::EncodeControlEnvelope(*decoded_clock) == clock,
+          "clock timestamps are not truncated to 32 bits");
+  Require(!hearport::wire::DecodeControlEnvelope(
+              Envelope(40, Join({VarintField(1, 7), VarintField(2, 100),
+                                 VarintField(3, 50), VarintField(4, 10)}))),
+          "target cannot exceed maximum budget");
   return 0;
 }
