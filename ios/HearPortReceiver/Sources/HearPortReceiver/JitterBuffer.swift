@@ -53,6 +53,7 @@ public struct JitterBuffer {
         precondition(maximumPackets >= configuration.targetPackets)
         self.streamID = streamID
         self.targetPackets = configuration.targetPackets
+        recoveryPackets = configuration.targetPackets
         self.maximumPackets = maximumPackets
     }
 
