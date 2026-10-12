@@ -38,6 +38,15 @@ class EchoProtocol(QuicConnectionProtocol):
                 return
             self._quic.send_stream_data(event.stream_id, event.data, end_stream=False)
             self.reliable_requests.extend(event.data)
+            if b"NETWORK_PROBE" in self.reliable_requests:
+                probe_stream = self._quic.get_next_available_stream_id(is_unidirectional=True)
+                preface = (1).to_bytes(4, "big") + (1).to_bytes(4, "big")
+                packet = (1).to_bytes(4, "big") + (1).to_bytes(4, "big") + bytes(480)
+                self._quic.send_stream_data(probe_stream, preface[:3], end_stream=False)
+                self._quic.send_stream_data(probe_stream,
+                                            preface[3:] + len(packet).to_bytes(2, "big") + packet,
+                                            end_stream=True)
+                self.reliable_requests.clear()
             if b"RELIABLE_CYCLE_" in self.reliable_requests and self.cycle_generation < 10:
                 self.cycle_generation += 1
                 audio_stream = self._quic.get_next_available_stream_id(

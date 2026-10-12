@@ -17,17 +17,20 @@ int main() {
   const auto rounds = MakeNetworkProbeRounds(7);
   static_assert(kNetworkProbeRoundCount == 20);
   constexpr std::array<std::uint8_t, 20> expected_variants{
-      2, 1, 3, 0, 4, 4, 0, 3, 1, 2,
-      0, 4, 2, 3, 1, 1, 3, 2, 4, 0};
+      2, 2, 1, 1, 3, 3, 0, 0, 4, 4,
+      4, 4, 0, 0, 3, 3, 1, 1, 2, 2};
   for (std::size_t index = 0; index < rounds.size(); ++index) {
     assert(rounds[index].variant == expected_variants[index]);
-    assert(rounds[index].reliable == (index >= 10));
+    assert(rounds[index].reliable == ((index % 2) != (index / 10)));
+    assert(rounds[index].repeat == index / 10 + 1);
   }
-  assert(rounds[4].payload_bytes == 488);
-  assert(rounds[4].packets_per_second == 400);
-  assert(rounds[4].burst_packets == 1);
-  assert(rounds[9].variant == rounds[0].variant);
-  assert(rounds[19].variant == rounds[10].variant);
+  assert(rounds[8].payload_bytes == 488);
+  assert(rounds[8].packets_per_second == 400);
+  assert(rounds[8].burst_packets == 1);
+  for (std::size_t index = 0; index < 10; ++index) {
+    assert(rounds[index].variant == rounds[19 - index].variant);
+    assert(rounds[index].reliable == rounds[19 - index].reliable);
+  }
   std::uint32_t total = 0;
   for (std::size_t index = 0; index < rounds.size(); ++index) {
     total += rounds[index].packets_per_second *

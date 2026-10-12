@@ -33,11 +33,7 @@ bool SenderDiagnosticLogger::Start(const std::filesystem::path& path) {
 }
 
 bool SenderDiagnosticLogger::TryLog(std::string_view line) noexcept {
-  std::unique_lock lock(mutex_, std::try_to_lock);
-  if (!lock.owns_lock()) {
-    dropped_.fetch_add(1, std::memory_order_relaxed);
-    return false;
-  }
+  std::unique_lock lock(mutex_);
   if (!started_ || stopping_ || line.size() >= QueueSlot{}.bytes.size() ||
       count_ >= capacity_) {
     dropped_.fetch_add(1, std::memory_order_relaxed);

@@ -16,25 +16,39 @@ void WriteU32(std::vector<std::byte>& bytes, std::size_t offset,
 
 }  // namespace
 
+std::string_view ProbeSendStatusName(ProbeSendStatus status) noexcept {
+  switch (status) {
+    case ProbeSendStatus::accepted: return "accepted";
+    case ProbeSendStatus::disconnected: return "disconnected";
+    case ProbeSendStatus::stream_unavailable: return "stream_unavailable";
+    case ProbeSendStatus::pending_limit: return "pending_limit";
+    case ProbeSendStatus::invalid_size: return "invalid_size";
+    case ProbeSendStatus::datagram_unavailable: return "datagram_unavailable";
+    case ProbeSendStatus::transport_rejected: return "transport_rejected";
+  }
+  return "unknown";
+}
+
 std::array<NetworkProbeRound, kNetworkProbeRoundCount> MakeNetworkProbeRounds(
     std::uint32_t stream_id) {
   std::array<NetworkProbeRound, kNetworkProbeRoundCount> rounds{};
   std::uint32_t state = stream_id ^ 0xa5a55a5au;
   if (state == 0) state = 1;
   std::size_t next = 0;
-  for (int mode = 0; mode < 2; ++mode) {
-    std::array<std::uint8_t, kNetworkProbeVariants.size()> order{0, 1, 2, 3, 4};
-    for (std::size_t remaining = order.size(); remaining > 1; --remaining) {
-      state ^= state << 13;
-      state ^= state >> 17;
-      state ^= state << 5;
-      std::swap(order[remaining - 1], order[state % remaining]);
-    }
-    for (int repeat = 0; repeat < 2; ++repeat) {
-      for (std::size_t offset = 0; offset < order.size(); ++offset) {
+  std::array<std::uint8_t, kNetworkProbeVariants.size()> order{0, 1, 2, 3, 4};
+  for (std::size_t remaining = order.size(); remaining > 1; --remaining) {
+    state ^= state << 13;
+    state ^= state >> 17;
+    state ^= state << 5;
+    std::swap(order[remaining - 1], order[state % remaining]);
+  }
+  for (int repeat = 0; repeat < 2; ++repeat) {
+    for (std::size_t offset = 0; offset < order.size(); ++offset) {
+      for (int mode = 0; mode < 2; ++mode) {
         rounds[next] = kNetworkProbeVariants[
             order[repeat == 0 ? offset : order.size() - 1 - offset]];
-        rounds[next].reliable = mode == 1;
+        rounds[next].reliable = mode != repeat;
+        rounds[next].repeat = static_cast<std::uint8_t>(repeat + 1);
         ++next;
       }
     }

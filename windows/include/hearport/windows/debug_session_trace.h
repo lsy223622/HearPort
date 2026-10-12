@@ -5,10 +5,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
 #include <vector>
+#include "hearport/windows/network_probe.h"
 
 namespace hearport::windows {
 
@@ -34,7 +36,10 @@ class DebugSessionTrace {
              std::uint32_t stream_id);
   bool RecordPacket(std::uint32_t sequence, std::int64_t captured_at_ns,
                     std::int64_t queued_at_ns, std::int64_t send_at_ns,
-                    bool send_accepted) noexcept;
+                    bool send_accepted,
+                    std::optional<ProbeSendOutcome> probe = std::nullopt) noexcept;
+  bool RecordSendComplete(std::uint32_t stream_id, std::uint32_t sequence,
+                          bool canceled, std::int64_t completed_at_ns) noexcept;
   bool RecordSendState(std::uint32_t stream_id, std::uint32_t sequence,
                        DebugSendState state,
                        std::int64_t state_at_ns) noexcept;
@@ -55,6 +60,9 @@ class DebugSessionTrace {
     bool has_send_state = false;
     bool has_final_state = false;
     bool send_accepted = false;
+    std::optional<ProbeSendOutcome> probe;
+    std::int64_t send_completed_at_ns = 0;
+    bool send_canceled = false;
   };
 
   std::size_t capacity_;

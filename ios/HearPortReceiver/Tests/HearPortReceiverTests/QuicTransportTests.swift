@@ -5,6 +5,47 @@ import XCTest
 @testable import HearPortReceiver
 
 final class QuicTransportTests: XCTestCase {
+    func testNetworkProbeReceivesBothModesAndQueueHeartbeats() throws {
+        guard ProcessInfo.processInfo.environment["HEARPORT_QUIC_INTEGRATION"] == "1" else {
+            throw XCTSkip("Requires the loopback QUIC echo server")
+        }
+        let diagnostics = HearPortDiagnostics(
+            directory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
+        let transport = HearPortQuicTransport(diagnostics: diagnostics)
+        let datagram = expectation(description: "Datagram probe")
+        let reliable = expectation(description: "Reliable stream probe")
+        let heartbeat = expectation(description: "Receive queue heartbeat")
+        heartbeat.assertForOverFulfill = false
+        transport.onStateChange = { state in
+            if state == .ready {
+                transport.enableNetworkProbe()
+                transport.expectReliableAudio(streamID: 1, latestReceivedSequence: { nil })
+                try? transport.sendControl(Data("NETWORK_PROBE".utf8))
+            }
+        }
+        transport.onProbePacket = { data, at, bytes, count in
+            XCTAssertGreaterThan(at, 0)
+            XCTAssertGreaterThan(bytes, 0)
+            XCTAssertGreaterThan(count, 0)
+            if data.count == 488 {
+                reliable.fulfill()
+            } else {
+                XCTAssertEqual(data.count, 968)
+                datagram.fulfill()
+            }
+        }
+        transport.onProbeHeartbeat = { at, scheduledAt in
+            XCTAssertGreaterThan(at, 0)
+            XCTAssertGreaterThan(scheduledAt, 0)
+            heartbeat.fulfill()
+        }
+        transport.onAudioDatagram = { _ in XCTFail("Probe data reached the audio handler") }
+        defer { transport.cancel() }
+        transport.connect(host: "127.0.0.1", port: 44330,
+                          tlsPolicy: .pairing(onPeerSPKIHash: { _ in }))
+        wait(for: [datagram, reliable, heartbeat], timeout: 15)
+    }
+
     private final class AudioCycleState: @unchecked Sendable {
         private let lock = NSLock()
         private var nextSequence: UInt32 = 0

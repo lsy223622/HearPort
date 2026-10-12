@@ -1004,10 +1004,23 @@ class Application {
   }
 
   void StopService() {
+    const auto session_directory = service_ ? service_->debug_session_directory()
+                                             : std::filesystem::path{};
     if (service_) service_->Stop();
     authentication_.reset();
     service_.reset();
     logger_.Stop();
+    if (!session_directory.empty()) {
+      std::error_code archive_error;
+      std::filesystem::copy_file(data_dir_ / L"HearPort-sender.log",
+                                 session_directory / L"sender.log",
+                                 std::filesystem::copy_options::overwrite_existing,
+                                 archive_error);
+      if (archive_error) {
+        error_ = Tr(L"Could not save the sender session log.",
+                    L"无法保存本轮服务端日志。");
+      }
+    }
     running_ = false;
     connected_ = false;
     reliable_ = false;

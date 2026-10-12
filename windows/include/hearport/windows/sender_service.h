@@ -67,6 +67,7 @@ class SenderService {
   void ConfigureDebugDuration(std::optional<std::chrono::seconds> duration);
   std::optional<std::chrono::seconds> debug_duration() const;
   void SetDebugOutputDirectory(std::filesystem::path directory);
+  std::filesystem::path debug_session_directory() const;
   bool WaitForDebugCompletion(std::chrono::milliseconds timeout);
   void MarkDebugReportCommitted(std::span<const std::byte> session_id);
   void LogDiagnostic(std::string_view line) const;

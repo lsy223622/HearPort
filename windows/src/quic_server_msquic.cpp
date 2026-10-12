@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstring>
 #include <iostream>
@@ -27,6 +28,7 @@ struct SendBufferContext {
   QUIC_BUFFER buffer{};
   std::function<void(std::uint32_t, std::uint32_t, DebugSendState)>
       on_send_state;
+  std::function<void(std::uint32_t, std::uint32_t, bool)> on_probe_send_complete;
   std::uint32_t stream_id = 0;
   std::uint32_t sequence = 0;
   std::uint64_t audio_epoch = 0;
@@ -226,11 +228,11 @@ class MsQuicServer final : public QuicServer {
 
   ProbeSendOutcome SendProbe(std::span<const std::byte> datagram,
                              std::uint32_t stream_id,
-                             std::uint32_t sequence) override {
+                             std::uint32_t sequence, bool reliable) override {
     std::lock_guard lock(mutex_);
     if (!started_ || connection_ == nullptr || api_ == nullptr ||
         datagram.empty()) return {ProbeSendStatus::disconnected};
-    if (reliable_mode_) {
+    if (reliable) {
       const auto pending = pending_reliable_sends_.load();
       if (audio_stream_ == nullptr) {
         return {ProbeSendStatus::stream_unavailable, pending};
@@ -247,6 +249,9 @@ class MsQuicServer final : public QuicServer {
       std::copy(datagram.begin(), datagram.end(), framed.begin() + 2);
       auto* context = new SendBufferContext(framed);
       context->audio_epoch = audio_epoch_.load();
+      context->stream_id = stream_id;
+      context->sequence = sequence;
+      context->on_probe_send_complete = callbacks_.on_probe_send_complete;
       pending_reliable_sends_.fetch_add(1);
       const auto status = api_->StreamSend(audio_stream_, &context->buffer, 1,
                                            QUIC_SEND_FLAG_NONE, context);
@@ -360,6 +365,7 @@ class MsQuicServer final : public QuicServer {
   static QUIC_STATUS QUIC_API ConnectionCallback(
       HQUIC connection, void* context, QUIC_CONNECTION_EVENT* event) {
     auto* server = static_cast<MsQuicServer*>(context);
+    server->LogProbeStatistics(connection);
     switch (event->Type) {
       case QUIC_CONNECTION_EVENT_CONNECTED: {
         std::function<void()> on_connected;
@@ -576,6 +582,12 @@ class MsQuicServer final : public QuicServer {
   static QUIC_STATUS QUIC_API AudioStreamCallback(
       HQUIC stream, void* context, QUIC_STREAM_EVENT* event) {
     auto* server = static_cast<MsQuicServer*>(context);
+    HQUIC connection = nullptr;
+    if (server->options_.network_probe) {
+      std::lock_guard lock(server->mutex_);
+      connection = server->connection_;
+    }
+    if (connection) server->LogProbeStatistics(connection, stream);
     switch (event->Type) {
       case QUIC_STREAM_EVENT_START_COMPLETE: {
         std::ostringstream line;
@@ -591,6 +603,11 @@ class MsQuicServer final : public QuicServer {
                 event->SEND_COMPLETE.ClientContext)) {
           if (send_context->audio_epoch == server->audio_epoch_.load()) {
             server->pending_reliable_sends_.fetch_sub(1);
+          }
+          if (send_context->on_probe_send_complete) {
+            send_context->on_probe_send_complete(send_context->stream_id,
+                                                 send_context->sequence,
+                                                 event->SEND_COMPLETE.Canceled != FALSE);
           }
           delete send_context;
         }
@@ -609,6 +626,51 @@ class MsQuicServer final : public QuicServer {
         break;
     }
     return QUIC_STATUS_SUCCESS;
+  }
+
+  void LogProbeStatistics(HQUIC connection, HQUIC stream = nullptr) {
+    if (!options_.network_probe) return;
+    const auto now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    auto previous = last_probe_statistics_ns_.load();
+    if (now - previous < 100'000'000 ||
+        !last_probe_statistics_ns_.compare_exchange_strong(previous, now)) return;
+    QUIC_STATISTICS_V2 statistics{};
+    std::uint32_t size = sizeof(statistics);
+    const auto status = api_->GetParam(connection, QUIC_PARAM_CONN_STATISTICS_V2,
+                                       &size, &statistics);
+    std::ostringstream line;
+    line << "network_probe_transport at_ns=" << now
+         << " query_status=" << static_cast<std::uint32_t>(status)
+         << " pending_reliable_sends=" << pending_reliable_sends_.load();
+    if (QUIC_SUCCEEDED(status)) {
+      line << " rtt_us=" << statistics.Rtt
+           << " min_rtt_us=" << statistics.MinRtt
+           << " max_rtt_us=" << statistics.MaxRtt
+           << " sent_packets=" << statistics.SendTotalPackets
+           << " suspected_lost_packets=" << statistics.SendSuspectedLostPackets
+           << " spurious_lost_packets=" << statistics.SendSpuriousLostPackets
+           << " congestion_events=" << statistics.SendCongestionCount
+           << " persistent_congestion_events=" << statistics.SendPersistentCongestionCount
+           << " congestion_window_bytes=" << statistics.SendCongestionWindow
+           << " ack_frames=" << statistics.RecvValidAckFrames
+           << " path_mtu=" << statistics.SendPathMtu;
+    }
+    if (stream) {
+      QUIC_STREAM_STATISTICS blocked{};
+      size = sizeof(blocked);
+      const auto stream_status = api_->GetParam(stream, QUIC_PARAM_STREAM_STATISTICS,
+                                               &size, &blocked);
+      line << " stream_query_status=" << static_cast<std::uint32_t>(stream_status);
+      if (QUIC_SUCCEEDED(stream_status)) {
+        line << " blocked_scheduling_us=" << blocked.ConnBlockedBySchedulingUs
+             << " blocked_pacing_us=" << blocked.ConnBlockedByPacingUs
+             << " blocked_congestion_us=" << blocked.ConnBlockedByCongestionControlUs
+             << " blocked_connection_flow_us=" << blocked.ConnBlockedByFlowControlUs
+             << " blocked_stream_flow_us=" << blocked.StreamBlockedByFlowControlUs;
+      }
+    }
+    Log(line.str());
   }
 
   void StopLocked(std::unique_lock<std::mutex>& lock) {
@@ -660,6 +722,7 @@ class MsQuicServer final : public QuicServer {
   bool reliable_mode_ = false;
   std::atomic<std::uint64_t> audio_epoch_ = 0;
   std::atomic<std::size_t> pending_reliable_sends_ = 0;
+  std::atomic<std::int64_t> last_probe_statistics_ns_ = 0;
   bool started_ = false;
 };
 
@@ -686,7 +749,7 @@ class UnavailableQuicServer final : public QuicServer {
   bool SendControl(std::span<const std::byte>) override { return false; }
   bool SendAudio(const wire::EncodedAudioDatagram&) override { return false; }
   ProbeSendOutcome SendProbe(std::span<const std::byte>, std::uint32_t,
-                             std::uint32_t) override {
+                             std::uint32_t, bool) override {
     return {ProbeSendStatus::disconnected};
   }
   bool StartReliableAudio(std::uint32_t, std::uint32_t) override { return false; }

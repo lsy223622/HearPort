@@ -41,22 +41,22 @@ enum NetworkProbePlan {
         if state == 0 { state = 1 }
         var rounds: [Round] = []
         rounds.reserveCapacity(20)
-        for mode in 0..<2 {
-            var order = Array(0..<variants.count)
-            for remaining in stride(from: order.count, through: 2, by: -1) {
-                state ^= state &<< 13
-                state ^= state >> 17
-                state ^= state &<< 5
-                order.swapAt(remaining - 1, Int(state % UInt32(remaining)))
-            }
-            for repeatIndex in 1...2 {
-                for offset in 0..<order.count {
+        var order = Array(0..<variants.count)
+        for remaining in stride(from: order.count, through: 2, by: -1) {
+            state ^= state &<< 13
+            state ^= state >> 17
+            state ^= state &<< 5
+            order.swapAt(remaining - 1, Int(state % UInt32(remaining)))
+        }
+        for repeatIndex in 1...2 {
+            for offset in 0..<order.count {
+                for mode in 0..<2 {
                     let variant = order[repeatIndex == 1 ? offset : order.count - 1 - offset]
                     let spec = variants[variant]
                     rounds.append(Round(
                         variant: variant, payloadBytes: spec.bytes,
                         packetsPerSecond: spec.rate, burstPackets: spec.burst,
-                        reliable: mode == 1, repeatIndex: repeatIndex
+                        reliable: mode != repeatIndex - 1, repeatIndex: repeatIndex
                     ))
                 }
             }
@@ -67,6 +67,9 @@ enum NetworkProbePlan {
 
 private struct DebugProbePacketRecord {
     let receivedAt: UInt64
+    let recordedAt: UInt64
+    let callbackBytes: Int
+    let callbackPackets: Int
     let streamID: UInt32
     let sequence: UInt32
     let payloadBytes: Int
@@ -99,6 +102,7 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
     private var records: [DebugPacketTraceRecord] = []
     private var jitterDecisions: [DebugJitterDecisionRecord] = []
     private var probePackets: [DebugProbePacketRecord] = []
+    private var probeHeartbeats: [(at: UInt64, scheduledAt: UInt64)] = []
 
     public init(capacity: Int = DebugSessionDiagnostics.defaultCapacity,
                 bufferTargetPackets: Int = 8,
@@ -120,8 +124,10 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
         records.removeAll(keepingCapacity: true)
         jitterDecisions.removeAll(keepingCapacity: true)
         probePackets.removeAll(keepingCapacity: true)
+        probeHeartbeats.removeAll(keepingCapacity: true)
         if networkProbe {
             probePackets.reserveCapacity(capacity)
+            probeHeartbeats.reserveCapacity(min(capacity, Int(durationSeconds) * 10 + 10))
         } else {
             records.reserveCapacity(capacity)
             jitterDecisions.reserveCapacity(capacity)
@@ -151,12 +157,11 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
         )
     }
 
-    public func recordProbePacket(_ data: Data) {
+    public func recordProbePacket(_ data: Data,
+                                  receivedAt: UInt64 = DispatchTime.now().uptimeNanoseconds,
+                                  callbackBytes: Int? = nil, callbackPackets: Int = 1) {
         guard recording.load() != 0 else { return }
-        guard lock.try() else {
-            dropped.increment()
-            return
-        }
+        lock.lock()
         defer { lock.unlock() }
         guard recording.load() != 0, let session, session.networkProbe else { return }
         guard data.count >= 8 else { dropped.increment(); return }
@@ -165,11 +170,23 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
         let sequence = data.dropFirst(4).prefix(4).reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
         guard probePackets.count < capacity else { dropped.increment(); return }
         probePackets.append(DebugProbePacketRecord(
-            receivedAt: DispatchTime.now().uptimeNanoseconds,
+            receivedAt: receivedAt,
+            recordedAt: DispatchTime.now().uptimeNanoseconds,
+            callbackBytes: callbackBytes ?? data.count,
+            callbackPackets: callbackPackets,
             streamID: streamID,
             sequence: sequence,
             payloadBytes: data.count
         ))
+    }
+
+    public func recordProbeHeartbeat(at: UInt64, scheduledAt: UInt64) {
+        guard recording.load() != 0 else { return }
+        lock.lock()
+        defer { lock.unlock() }
+        guard recording.load() != 0, session?.networkProbe == true else { return }
+        guard probeHeartbeats.count < capacity else { dropped.increment(); return }
+        probeHeartbeats.append((at: at, scheduledAt: scheduledAt))
     }
 
     public func recordPacket(streamID: UInt32,
@@ -239,6 +256,7 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
         let capturedRecords: [DebugPacketTraceRecord]
         let capturedJitterDecisions: [DebugJitterDecisionRecord]
         let capturedProbePackets: [DebugProbePacketRecord]
+        let capturedProbeHeartbeats: [(at: UInt64, scheduledAt: UInt64)]
         let dropCount: UInt64
         lock.lock()
         guard recording.load() != 0, let current = session else {
@@ -250,6 +268,7 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
         capturedRecords = records
         capturedJitterDecisions = jitterDecisions
         capturedProbePackets = probePackets
+        capturedProbeHeartbeats = probeHeartbeats
         dropCount = dropped.load()
         lock.unlock()
 
@@ -262,6 +281,7 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
                 records: capturedRecords,
                 jitterDecisions: capturedJitterDecisions,
                 probePackets: capturedProbePackets,
+                probeHeartbeats: capturedProbeHeartbeats,
                 dropCount: dropCount,
                 reason: reason,
                 safeDiagnostics: safeDiagnostics,
@@ -278,6 +298,7 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
                 records.removeAll(keepingCapacity: true)
                 jitterDecisions.removeAll(keepingCapacity: true)
                 probePackets.removeAll(keepingCapacity: true)
+                probeHeartbeats.removeAll(keepingCapacity: true)
                 session = nil
             }
             lock.unlock()
@@ -304,6 +325,7 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
                                    records: [DebugPacketTraceRecord],
                                    jitterDecisions: [DebugJitterDecisionRecord],
                                    probePackets: [DebugProbePacketRecord],
+                                   probeHeartbeats: [(at: UInt64, scheduledAt: UInt64)],
                                    dropCount: UInt64,
                                    reason: String,
                                    safeDiagnostics: String,
@@ -341,8 +363,8 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
             let specs: [NetworkProbePlan.Round]
             if metadata.networkProbeRepeat {
                 specs = NetworkProbePlan.rounds(streamID: metadata.streamID)
-                lines.append("probe_plan=shuffled_reverse_repeat_v2")
-                lines.append("\nnetwork_probe_rounds_v2")
+                lines.append("probe_plan=paired_reverse_repeat_v3")
+                lines.append("\nnetwork_probe_rounds_v3")
                 lines.append("round\ttransport\trepeat\tvariant\tseconds\tpayload_bytes\tpackets_per_second\tburst_packets\tfirst_sequence\tplanned\treceived\tunique\tduplicates\tnot_received\twrong_size")
             } else {
                 let legacy: [(Int, Int, Int)] = [
@@ -375,10 +397,15 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
                 lines.append("\(prefix)\t30\t\(spec.payloadBytes)\t\(spec.packetsPerSecond)\t\(spec.burstPackets)\t\(firstSequence)\t\(planned)\t\(received.count)\t\(unique)\t\(received.count - unique)\t\(planned - unique)\t\(wrongSize)")
                 firstSequence = lastSequence
             }
-            lines.append("\nnetwork_probe_trace_v1")
-            lines.append("received_at_ns\tstream_id\tsequence\tpayload_bytes")
+            lines.append("\nnetwork_probe_trace_v2")
+            lines.append("received_at_ns\tstream_id\tsequence\tpayload_bytes\trecorded_at_ns\tcallback_bytes\tcallback_packets")
             for packet in probePackets {
-                lines.append("\(packet.receivedAt)\t\(packet.streamID)\t\(packet.sequence)\t\(packet.payloadBytes)")
+                lines.append("\(packet.receivedAt)\t\(packet.streamID)\t\(packet.sequence)\t\(packet.payloadBytes)\t\(packet.recordedAt)\t\(packet.callbackBytes)\t\(packet.callbackPackets)")
+            }
+            lines.append("\nnetwork_probe_heartbeat_v1")
+            lines.append("at_ns\tscheduled_at_ns")
+            for heartbeat in probeHeartbeats {
+                lines.append("\(heartbeat.at)\t\(heartbeat.scheduledAt)")
             }
             lines.append("\napp_diagnostics_v1")
             lines.append(safeDiagnostics.trimmingCharacters(in: .newlines))
