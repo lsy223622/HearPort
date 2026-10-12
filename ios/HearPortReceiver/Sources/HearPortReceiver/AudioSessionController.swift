@@ -221,6 +221,10 @@ public final class PlatformAudioOutputController {
                           userInfo: [NSLocalizedDescriptionKey:
                                         "HearPort v1 requires a stereo output route"])
         }
+        if let budget = receiver.playoutBudget,
+           ceil((audioSession.outputLatency + audioSession.ioBufferDuration) * 1_000) + 1 > budget.outputReserveMilliseconds {
+            throw ControlMessageError.invalidMessage
+        }
         outputSampleRate = audioSession.sampleRate
         receiver.recordAudioOutput(route: output.portName, sampleRate: outputSampleRate)
         drift = DriftController(nominalRatio: 48_000.0 / outputSampleRate)
@@ -299,7 +303,7 @@ public final class PlatformAudioOutputController {
         let fillError = Double(fillFrames - receiver.jitterTargetFrames)
         let ratio = drift.update(
             fillError: fillError,
-            validAudio: receiver.isRenderActive && abs(receiver.dynamicCorrection) <= 0.001
+            validAudio: receiver.isRenderActive && !receiver.isConcealing && abs(receiver.dynamicCorrection) <= 0.001
         )
         let sourceFrames = max(
             1,

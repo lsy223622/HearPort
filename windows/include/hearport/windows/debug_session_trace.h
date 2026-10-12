@@ -29,7 +29,7 @@ bool IsFinalDebugSendState(DebugSendState state) noexcept;
 
 class DebugSessionTrace {
  public:
-  static constexpr std::size_t kMaximumPackets = 240'000;
+  static constexpr std::size_t kMaximumPackets = 1'000'000;
 
   explicit DebugSessionTrace(std::size_t capacity = kMaximumPackets);
   bool Begin(std::span<const std::byte> session_id,
@@ -54,6 +54,7 @@ class DebugSessionTrace {
     std::int64_t queued_at_ns = 0;
     std::int64_t send_at_ns = 0;
     std::int64_t send_state_at_ns = 0;
+    std::int64_t transport_sent_at_ns = 0;
     DebugSendState send_state = DebugSendState::unknown;
     std::uint64_t generation = 0;
     bool has_packet = false;

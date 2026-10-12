@@ -26,6 +26,10 @@ public struct HearPortApp: View {
     @AppStorage("hearport.autoConnect") private var autoConnect = false
     @AppStorage("hearport.audioTransportMode") private var audioTransportModeRaw = AudioTransportMode.datagram.rawValue
     @AppStorage("hearport.jitterStartupPackets") private var jitterBufferTargetPackets = 8
+    @AppStorage("hearport.targetLatencyMs") private var targetLatencyMs = 50
+    @AppStorage("hearport.maximumLatencyMs") private var maximumLatencyMs = 100
+    @State private var activeTargetLatencyMs = 50
+    @State private var activeMaximumLatencyMs = 100
     @State private var diagnosticsSnapshot = HearPortDiagnostics.shared.snapshot()
     @State private var exportedDiagnosticsURL: URL?
     @State private var diagnosticsStatus: String?
@@ -270,7 +274,7 @@ public struct HearPortApp: View {
                         Text("Buffer target")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                        Text(Self.bufferDescription(for: activeBufferTargetPackets))
+                        Text("\(activeTargetLatencyMs) / \(activeMaximumLatencyMs) ms")
                     }
                     .frame(maxWidth: .infinity)
                 }
@@ -339,16 +343,14 @@ public struct HearPortApp: View {
                     Text("Low latency").tag(AudioTransportMode.datagram.rawValue)
                     Text("Stability").tag(AudioTransportMode.reliable.rawValue)
                 }
-                Picker("Buffer target", selection: $jitterBufferTargetPackets) {
-                    ForEach(JitterBufferConfiguration.supportedTargetPacketCounts, id: \.self) { packets in
-                        Text("\(Self.jitterLabel(for: packets)) · \(Self.bufferDescription(for: packets))")
-                            .tag(packets)
-                    }
-                }
+                Stepper("Normal target: \(targetLatencyMs) ms", value: $targetLatencyMs,
+                        in: 10...max(10, maximumLatencyMs), step: 10)
+                Stepper("Maximum total delay: \(maximumLatencyMs) ms", value: $maximumLatencyMs,
+                        in: max(20, targetLatencyMs)...2_000, step: 10)
             } header: {
                 Text("Playback")
             } footer: {
-                Text("Both modes use the selected buffer target. Changes take effect on the next connection. A larger buffer may reduce interruptions but adds delay.")
+                Text("The target and maximum include transport, processing and output. Changes take effect on the next connection. A higher maximum can tolerate longer interruptions.")
             }
             Section {
                 Toggle("Connect on launch", isOn: $autoConnect)
@@ -467,6 +469,20 @@ public struct HearPortApp: View {
             audioMode: audioMode,
             provider: PairingSecurity.defaultSpake2Provider()
         )
+        activeTargetLatencyMs = targetLatencyMs
+        activeMaximumLatencyMs = maximumLatencyMs
+        let target = targetLatencyMs, maximum = maximumLatencyMs
+        session.requestedBudget = try! PlayoutBudget(targetMilliseconds: Double(target),
+            maximumMilliseconds: Double(maximum), outputReserveMilliseconds: 1)
+        session.preparePlayoutBudget = {
+            let audioSession = AVAudioSession.sharedInstance()
+            try audioSession.setCategory(.playback, mode: .default, options: [])
+            try audioSession.setPreferredIOBufferDuration(0.005)
+            try audioSession.setActive(true)
+            let reserve = ceil((audioSession.outputLatency + audioSession.ioBufferDuration) * 1_000) + 1
+            return try PlayoutBudget(targetMilliseconds: Double(target),
+                maximumMilliseconds: Double(maximum), outputReserveMilliseconds: reserve)
+        }
         session.onTransportState = { newState in
             DispatchQueue.main.async {
                 guard connectionID == activeConnectionID else { return }

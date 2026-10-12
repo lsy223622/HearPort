@@ -31,6 +31,7 @@ public final class ReceiverControlSession {
     private var ready = false
     private var receiverReadyNotified = false
     private var peerFeatures: UInt32 = 0
+    public var preparePlayoutBudget: (() throws -> PlayoutBudget)?
     public var requestedBudget = try! PlayoutBudget(targetMilliseconds: 50,
         maximumMilliseconds: 100, outputReserveMilliseconds: 10)
     private let clockLock = NSLock()
@@ -76,9 +77,19 @@ public final class ReceiverControlSession {
         debugSessionDiagnostics = receiver.debugSessionDiagnostics
         debugReportTransfer = receiver.debugSessionDiagnostics.reportTransfer
         self.transport.onProbePacket = { [weak self] data, receivedAt, bytes, count in
-            self?.debugSessionDiagnostics.recordProbePacket(
-                data, receivedAt: receivedAt, callbackBytes: bytes, callbackPackets: count
-            )
+            guard let self else { return }
+            let record = try? TimedAudioRecord(encoded: data)
+            let mapped = record.flatMap { self.receiver.mappedCapture($0, at: receivedAt) }
+            self.debugSessionDiagnostics.recordProbePacket(data, receivedAt: receivedAt,
+                callbackBytes: bytes, callbackPackets: count,
+                mappedCapturedAt: mapped?.0, uncertainty: mapped?.1 ?? 0)
+            if let record { self.transport.noteProbeGeneration(record.generation) }
+        }
+        self.transport.onProbeTick = { [weak self] at in
+            guard let self else { return }
+            if let request = self.debugSessionDiagnostics.tickProbe(at: at, roundTrip: self.receiver.estimatedRoundTrip) {
+                self.send(request)
+            }
         }
         self.transport.onProbeHeartbeat = { [weak self] at, scheduledAt in
             self?.debugSessionDiagnostics.recordProbeHeartbeat(at: at, scheduledAt: scheduledAt)
@@ -95,7 +106,14 @@ public final class ReceiverControlSession {
         self.transport.onReliableAudioGeneration = { [weak receiver] streamID, generation in
             receiver?.beginReliableGeneration(streamID, generation: generation) ?? false
         }
-        self.transport.audioProgressTiming = { [weak receiver] in receiver?.progressTiming() }
+        self.transport.audioProgressTiming = { [weak self] in
+            guard let self, let timing = self.receiver.progressTiming() else { return nil }
+            if self.isNetworkProbe, let progress = self.debugSessionDiagnostics.probeProgress() {
+                return AudioProgressTiming(playedSourceFrame: progress.played,
+                    generatedAt: timing.generatedAt, bufferedMilliseconds: progress.buffered)
+            }
+            return timing
+        }
         self.transport.onControlData = { [weak self] data in
             self?.receiveControlBytes(data)
         }
@@ -158,6 +176,7 @@ public final class ReceiverControlSession {
         self.receiverReadyNotified = false
         self.peerFeatures = 0
         stopClockUpdates()
+        debugSessionDiagnostics.configureProbePlan(nil)
         setNetworkProbe(false)
         self.activeDebugSessionID = nil
         self.activeDebugStreamID = nil
@@ -547,7 +566,9 @@ public final class ReceiverControlSession {
             }
             if isNetworkProbe {
                 transport.expectReliableAudio(streamID: streamID,
-                                              latestReceivedSequence: { nil })
+                                              latestReceivedSequence: { [weak self] in
+                    self?.debugSessionDiagnostics.probeProgress()?.sequence
+                })
             }
             if (peerFeatures & ControlFeature.coordinatedAudio) != 0 {
                 clockLock.lock()
@@ -555,6 +576,14 @@ public final class ReceiverControlSession {
                 budgetAccepted = false
                 clockAccepted = false
                 clockLock.unlock()
+                if !isNetworkProbe, let preparePlayoutBudget {
+                    do { requestedBudget = try preparePlayoutBudget() }
+                    catch {
+                        onError?("Selected delay budget is too small for this audio output.")
+                        transport.cancel()
+                        return
+                    }
+                }
                 send(.audioSetup(streamID: streamID, budget: requestedBudget))
                 startClockUpdates()
                 requestClock()
@@ -568,6 +597,7 @@ public final class ReceiverControlSession {
             clockLock.unlock()
             guard matches else { throw ControlMessageError.invalidMessage }
             receiver.configurePlayout(budget)
+            debugSessionDiagnostics.configureProbeBudget(budget)
             finishCoordinatedStart()
         case let .clockResponse(requestID, localSent, remoteReceived, remoteSent):
             let received = DispatchTime.now().uptimeNanoseconds
@@ -607,6 +637,10 @@ public final class ReceiverControlSession {
                 displayMessage = "The Windows PC reported a connection error."
             }
             onError?(displayMessage)
+        case let .probeManifest(streamID, manifest):
+            guard isNetworkProbe, (peerFeatures & ControlFeature.coordinatedAudio) != 0,
+                  activeDebugSessionID == nil, streamID != 0 else { throw ControlMessageError.invalidMessage }
+            debugSessionDiagnostics.configureProbePlan(try CoordinatedProbePlan(encoded: manifest))
         case let .diagnosticsStart(sessionID, streamID, durationSeconds):
             guard (peerFeatures & ControlFeature.diagnosticsUpload) != 0,
                   activeDebugSessionID == nil,
@@ -697,6 +731,8 @@ public final class ReceiverControlSession {
             if !self.isNetworkProbe { _ = self.receiver.acknowledgeStartStream(streamID) }
         })
     }
+
+    deinit { clockTimer?.cancel() }
 
     private func requestClock() {
         let now = DispatchTime.now().uptimeNanoseconds

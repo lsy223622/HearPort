@@ -123,6 +123,8 @@ message AudioProgress {
   uint32 buffered_ms = 6;
 }
 
+message ProbeManifest { uint32 stream_id = 1; bytes manifest = 2; }
+
 message AudioSetup {
   uint32 stream_id = 1;
   uint32 target_ms = 2;
@@ -178,5 +180,6 @@ message ControlEnvelope {
     ClockRequest clock_request = 41;
     ClockResponse clock_response = 42;
     RepairRequest repair_request = 43;
+    ProbeManifest probe_manifest = 44;
   }
 }

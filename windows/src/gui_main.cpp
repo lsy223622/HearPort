@@ -814,8 +814,7 @@ class Application {
                                   L"音频来源：Windows 默认输出设备");
     if (running_ && network_probe_active_ && connected_) {
       const std::uint32_t processed = service_->network_probe_packets_processed();
-      const auto rounds = hearport::windows::MakeNetworkProbeRounds(
-          service_->network_probe_stream_id());
+      const auto rounds = service_->network_probe_rounds();
       std::uint32_t before_round = 0;
       std::size_t round_index = 0;
       for (; round_index < rounds.size(); ++round_index) {
@@ -836,12 +835,12 @@ class Application {
             round_index * hearport::windows::kNetworkProbeSecondsPerRound +
             round_seconds;
         heading = Tr(L"Network test ", L"网络测试 ") +
-                  std::to_wstring(round_index + 1) + L"/20 · " +
+                  std::to_wstring(round_index + 1) + L"/" + std::to_wstring(rounds.size()) + L" · " +
                   (round.reliable ? L"Reliable stream" : L"Datagram");
         detail = Tr(L"Round ", L"本组 ") + std::to_wstring(round_seconds) +
                  Tr(L"/30 s · Total ", L"/30 秒 · 总计 ") +
                  std::to_wstring(total_seconds) +
-                 Tr(L"/600 s", L"/600 秒");
+                 L"/" + std::to_wstring(rounds.size() * 30) + Tr(L" s", L" 秒");
         audio_label = Tr(L"Packet: ", L"数据包：") +
                       std::to_wstring(round.payload_bytes) +
                       Tr(L" B · ", L" 字节 · ") +
@@ -851,8 +850,8 @@ class Application {
       }
     } else if (running_ && network_probe_active_) {
       heading = Tr(L"Network test ready", L"网络测试待连接");
-      detail = Tr(L"Connect the iPad to begin twenty rounds.",
-                  L"连接 iPad 后开始二十组测试。");
+      detail = Tr(L"Connect the iPad to begin the network test.",
+                  L"连接 iPad 后开始网络测试。");
       audio_label = Tr(L"Test data only; no audio is sent.",
                        L"仅传输测试数据，不发送音频。");
     } else if (running_ && connected_) {
@@ -1075,7 +1074,7 @@ class Application {
   void StartNetworkProbe() {
     StopService();
     StartService(std::chrono::seconds(
-                     hearport::windows::kNetworkProbeDurationSeconds), true);
+                     hearport::windows::kCoordinatedProbeDurationSeconds), true);
     if (!running_) {
       SetWindowTextW(diagnostic_status_,
                      Tr(L"Could not start the network test. Check the overview and log.",

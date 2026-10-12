@@ -19,6 +19,7 @@ private struct DebugSessionMetadata {
     let startedAt: UInt64
     let networkProbe: Bool
     let networkProbeRepeat: Bool
+    let coordinatedPlan: CoordinatedProbePlan?
 }
 
 enum NetworkProbePlan {
@@ -73,6 +74,9 @@ private struct DebugProbePacketRecord {
     let streamID: UInt32
     let sequence: UInt32
     let payloadBytes: Int
+    let capturedAt, sourceFrame, mappedCapturedAt, uncertainty: UInt64
+    let generation: UInt32
+    let kind: UInt16
 }
 
 enum DebugJitterDecision: String {
@@ -89,7 +93,7 @@ private struct DebugJitterDecisionRecord {
 }
 
 public final class DebugSessionDiagnostics: @unchecked Sendable {
-    public static let defaultCapacity = 240_000
+    public static let defaultCapacity = 1_000_000
     public let reportTransfer: DebugReportTransfer
 
     private let capacity: Int
@@ -102,6 +106,19 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
     private var records: [DebugPacketTraceRecord] = []
     private var jitterDecisions: [DebugJitterDecisionRecord] = []
     private var probePackets: [DebugProbePacketRecord] = []
+    private var coordinatedPlan: CoordinatedProbePlan?
+    private var probeBudget = try! PlayoutBudget(targetMilliseconds: 50, maximumMilliseconds: 100,
+                                                outputReserveMilliseconds: 10)
+    private var consumer: ProbeConsumer?
+    private var consumerRound = -1
+    private var consumerGeneration: UInt32 = 0
+    private var playback: [String] = []
+    private var lastPlaybackAt: UInt64 = 0
+    private var accumulatedPlayed = 0, accumulatedConcealed = 0
+    private var accumulatedSkipped: UInt64 = 0
+    private var accumulatedWaiting = 0
+    private var probeStartedAt: UInt64?
+    private var maximumAge = 0.0
     private var probeHeartbeats: [(at: UInt64, scheduledAt: UInt64)] = []
 
     public init(capacity: Int = DebugSessionDiagnostics.defaultCapacity,
@@ -125,6 +142,10 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
         jitterDecisions.removeAll(keepingCapacity: true)
         probePackets.removeAll(keepingCapacity: true)
         probeHeartbeats.removeAll(keepingCapacity: true)
+        playback.removeAll(keepingCapacity: true)
+        consumer = nil; consumerRound = -1; consumerGeneration = 0
+        lastPlaybackAt = 0; accumulatedPlayed = 0; accumulatedConcealed = 0
+        accumulatedSkipped = 0; accumulatedWaiting = 0; maximumAge = 0; probeStartedAt = nil
         if networkProbe {
             probePackets.reserveCapacity(capacity)
             probeHeartbeats.reserveCapacity(min(capacity, Int(durationSeconds) * 10 + 10))
@@ -139,7 +160,8 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
             durationSeconds: durationSeconds,
             startedAt: DispatchTime.now().uptimeNanoseconds,
             networkProbe: networkProbe,
-            networkProbeRepeat: networkProbeRepeat
+            networkProbeRepeat: networkProbeRepeat,
+            coordinatedPlan: coordinatedPlan
         )
         recording.store(1)
         lock.unlock()
@@ -159,7 +181,8 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
 
     public func recordProbePacket(_ data: Data,
                                   receivedAt: UInt64 = DispatchTime.now().uptimeNanoseconds,
-                                  callbackBytes: Int? = nil, callbackPackets: Int = 1) {
+                                  callbackBytes: Int? = nil, callbackPackets: Int = 1,
+                                  mappedCapturedAt: UInt64? = nil, uncertainty: UInt64 = 0) {
         guard recording.load() != 0 else { return }
         lock.lock()
         defer { lock.unlock() }
@@ -167,7 +190,32 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
         guard data.count >= 8 else { dropped.increment(); return }
         let streamID = data.prefix(4).reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
         guard streamID == session.streamID else { dropped.increment(); return }
-        let sequence = data.dropFirst(4).prefix(4).reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
+        let timed = session.coordinatedPlan != nil ? try? TimedAudioRecord(encoded: data) : nil
+        if session.coordinatedPlan != nil && timed == nil { dropped.increment(); return }
+        let sequence = timed?.sequence ?? data.dropFirst(4).prefix(4).reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
+        if let timed, let plan = session.coordinatedPlan, let mappedCapturedAt {
+            if probeStartedAt == nil {
+                let sourceTime = UInt64(Double(timed.sourceFrame) / 48_000 * 1e9)
+                if mappedCapturedAt >= sourceTime { probeStartedAt = mappedCapturedAt - sourceTime }
+            }
+            advanceProbeRound(at: receivedAt, plan: plan)
+            var first: UInt32 = 0
+            for (index, round) in plan.rounds.enumerated() {
+                let last = first + UInt32(round.packetsPerSecond * 30)
+                if (first..<last).contains(sequence) {
+                    if index < consumerRound { break }
+                    if index != consumerRound {
+                        consumerRound = index
+                        consumer = ProbeConsumer(round: round, budget: probeBudget,
+                            firstSequence: first, sourceFrame: UInt64(index) * 30 * 48_000)
+                    }
+                    consumer?.receive(timed, capturedAt: mappedCapturedAt, uncertainty: uncertainty, now: receivedAt)
+                    consumerGeneration = consumer?.generation ?? 0
+                    break
+                }
+                first = last
+            }
+        }
         guard probePackets.count < capacity else { dropped.increment(); return }
         probePackets.append(DebugProbePacketRecord(
             receivedAt: receivedAt,
@@ -176,8 +224,72 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
             callbackPackets: callbackPackets,
             streamID: streamID,
             sequence: sequence,
-            payloadBytes: data.count
+            payloadBytes: data.count,
+            capturedAt: timed?.capturedAt ?? 0, sourceFrame: timed?.sourceFrame ?? 0,
+            mappedCapturedAt: mappedCapturedAt ?? 0, uncertainty: uncertainty,
+            generation: timed?.generation ?? 0, kind: timed?.kind.rawValue ?? 0
         ))
+    }
+
+    public func configureProbePlan(_ plan: CoordinatedProbePlan?) {
+        lock.lock(); coordinatedPlan = plan; lock.unlock()
+    }
+
+    public func configureProbeBudget(_ budget: PlayoutBudget) {
+        lock.lock(); probeBudget = budget; lock.unlock()
+    }
+
+    func probeProgress() -> (sequence: UInt32?, played: UInt64?, buffered: UInt32)? {
+        lock.lock(); defer { lock.unlock() }
+        guard let consumer else { return nil }
+        return (consumer.latestReceivedSequence, consumer.playedSourceFrame,
+                UInt32(consumer.bufferedFrames / 48))
+    }
+
+    private func advanceProbeRound(at now: UInt64, plan: CoordinatedProbePlan) {
+        guard let start = probeStartedAt, now >= start else { return }
+        let index = min(plan.rounds.count - 1, Int((now - start) / 30_000_000_000))
+        guard index > consumerRound else { return }
+        if consumerRound >= 0 {
+            playback.append("\(consumerRound + 1)\t\(now)\t\(consumer?.playedSourceFrame ?? 0)\t\(consumer?.bufferedFrames ?? 0)\t0\t0\t\(accumulatedPlayed)\t\(accumulatedConcealed)\t\(accumulatedSkipped)\t\(maximumAge)\t\(consumer?.repairedPackets ?? 0)\t\(accumulatedWaiting)")
+        }
+        accumulatedPlayed = 0; accumulatedConcealed = 0; accumulatedWaiting = 0
+        accumulatedSkipped = 0; maximumAge = 0
+        let first = plan.rounds.prefix(index).reduce(UInt32(0)) { $0 + UInt32($1.packetsPerSecond * 30) }
+        consumer = ProbeConsumer(round: plan.rounds[index], budget: probeBudget,
+            firstSequence: first, sourceFrame: UInt64(index) * 30 * 48_000)
+        consumerRound = index; consumerGeneration = 0
+    }
+
+    func tickProbe(at now: UInt64, roundTrip: UInt64) -> ControlMessage? {
+        lock.lock(); defer { lock.unlock() }
+        guard recording.load() != 0, let session else { return nil }
+        if let plan = session.coordinatedPlan {
+            advanceProbeRound(at: now, plan: plan)
+            if let start = probeStartedAt, now >= start,
+               Double(now - start) / 1e9 > Double(plan.rounds.count * 30) + probeBudget.maximumMilliseconds / 1_000 {
+                return nil
+            }
+        }
+        guard var current = consumer else { return nil }
+        let request = current.requestRepair(now: now, roundTrip: roundTrip)
+        let result = current.tick(now: now)
+        consumer = current
+        accumulatedPlayed += result.playedFrames
+        accumulatedConcealed += result.concealedFrames
+        accumulatedWaiting += result.waitingFrames
+        accumulatedSkipped += result.skippedFrames
+        maximumAge = max(maximumAge, result.sourceAgeMilliseconds ?? 0)
+        if now >= lastPlaybackAt && now - lastPlaybackAt >= 100_000_000 {
+            if playback.count < capacity {
+                playback.append("\(consumerRound + 1)\t\(now)\t\(current.playedSourceFrame ?? 0)\t\(current.bufferedFrames)\t\(result.targetMilliseconds)\t\(result.correction)\t\(accumulatedPlayed)\t\(accumulatedConcealed)\t\(accumulatedSkipped)\t\(maximumAge)\t\(current.repairedPackets)\t\(accumulatedWaiting)")
+            } else { dropped.increment() }
+            lastPlaybackAt = now; accumulatedPlayed = 0; accumulatedConcealed = 0
+            accumulatedSkipped = 0; accumulatedWaiting = 0; maximumAge = 0
+        }
+        guard let request else { return nil }
+        return .repairRequest(streamID: session.streamID, generation: consumerGeneration,
+                              remainingMilliseconds: request.1, sequences: [request.0])
     }
 
     public func recordProbeHeartbeat(at: UInt64, scheduledAt: UInt64) {
@@ -258,6 +370,8 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
         let capturedProbePackets: [DebugProbePacketRecord]
         let capturedProbeHeartbeats: [(at: UInt64, scheduledAt: UInt64)]
         let dropCount: UInt64
+        let capturedPlayback: [String]
+        let capturedBudget: PlayoutBudget
         lock.lock()
         guard recording.load() != 0, let current = session else {
             lock.unlock()
@@ -270,6 +384,8 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
         capturedProbePackets = probePackets
         capturedProbeHeartbeats = probeHeartbeats
         dropCount = dropped.load()
+        capturedPlayback = playback
+        capturedBudget = probeBudget
         lock.unlock()
 
         do {
@@ -282,6 +398,8 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
                 jitterDecisions: capturedJitterDecisions,
                 probePackets: capturedProbePackets,
                 probeHeartbeats: capturedProbeHeartbeats,
+                playback: capturedPlayback,
+                budget: capturedBudget,
                 dropCount: dropCount,
                 reason: reason,
                 safeDiagnostics: safeDiagnostics,
@@ -326,6 +444,8 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
                                    jitterDecisions: [DebugJitterDecisionRecord],
                                    probePackets: [DebugProbePacketRecord],
                                    probeHeartbeats: [(at: UInt64, scheduledAt: UInt64)],
+                                   playback: [String],
+                                   budget: PlayoutBudget,
                                    dropCount: UInt64,
                                    reason: String,
                                    safeDiagnostics: String,
@@ -359,9 +479,22 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
         lines.reserveCapacity(records.count + jitterDecisions.count + probePackets.count + 30)
         if metadata.networkProbe {
             lines.insert("probe_mode=network", at: 5)
+            if metadata.coordinatedPlan != nil {
+                lines.append("target_ms=\(budget.targetMilliseconds)")
+                lines.append("maximum_ms=\(budget.maximumMilliseconds)")
+                lines.append("output_reserve_ms=\(budget.outputReserveMilliseconds)")
+                lines.append("consumer=online_source_frames_v1")
+            }
             lines.insert("probe_trace_records=\(probePackets.count)", at: 6)
             let specs: [NetworkProbePlan.Round]
-            if metadata.networkProbeRepeat {
+            if let plan = metadata.coordinatedPlan {
+                specs = plan.rounds.map { NetworkProbePlan.Round(variant: $0.variant,
+                    payloadBytes: $0.payloadBytes, packetsPerSecond: $0.packetsPerSecond,
+                    burstPackets: $0.burstPackets, reliable: $0.reliable, repeatIndex: $0.repeatIndex) }
+                lines.append("probe_plan=coordinated_manifest_v4")
+                lines.append("\nnetwork_probe_rounds_v4")
+                lines.append("round\ttransport\trepeat\tvariant\tseconds\tpayload_bytes\tpackets_per_second\tburst_packets\tfirst_sequence\tplanned\treceived\tunique\tduplicates\tnot_received\twrong_size\tcontroller\trepair\tcorrection_percent")
+            } else if metadata.networkProbeRepeat {
                 specs = NetworkProbePlan.rounds(streamID: metadata.streamID)
                 lines.append("probe_plan=paired_reverse_repeat_v3")
                 lines.append("\nnetwork_probe_rounds_v3")
@@ -386,7 +519,7 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
                 let planned = spec.packetsPerSecond * 30
                 let lastSequence = firstSequence + planned
                 let received = probePackets.filter {
-                    (firstSequence..<lastSequence).contains(Int($0.sequence))
+                    (firstSequence..<lastSequence).contains(Int($0.sequence)) && $0.kind != 1
                 }
                 let unique = Set(received.map(\.sequence)).count
                 let wrongSize = received.filter { $0.payloadBytes != spec.payloadBytes }.count
@@ -394,13 +527,27 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
                 let prefix = metadata.networkProbeRepeat
                     ? "\(index + 1)\t\(transport)\t\(spec.repeatIndex)\t\(spec.variant)"
                     : "\(index + 1)\t\(transport)"
-                lines.append("\(prefix)\t30\t\(spec.payloadBytes)\t\(spec.packetsPerSecond)\t\(spec.burstPackets)\t\(firstSequence)\t\(planned)\t\(received.count)\t\(unique)\t\(received.count - unique)\t\(planned - unique)\t\(wrongSize)")
+                var row = "\(prefix)\t30\t\(spec.payloadBytes)\t\(spec.packetsPerSecond)\t\(spec.burstPackets)\t\(firstSequence)\t\(planned)\t\(received.count)\t\(unique)\t\(received.count - unique)\t\(planned - unique)\t\(wrongSize)"
+                if let plan = metadata.coordinatedPlan {
+                    let policy = plan.rounds[index]
+                    row += "\t\(policy.controller)\t\(policy.repair)\t\(policy.correctionPercent)"
+                }
+                lines.append(row)
                 firstSequence = lastSequence
             }
-            lines.append("\nnetwork_probe_trace_v2")
-            lines.append("received_at_ns\tstream_id\tsequence\tpayload_bytes\trecorded_at_ns\tcallback_bytes\tcallback_packets")
+            lines.append(metadata.coordinatedPlan == nil ? "\nnetwork_probe_trace_v2" : "\nnetwork_probe_trace_v3")
+            var header = "received_at_ns\tstream_id\tsequence\tpayload_bytes\trecorded_at_ns\tcallback_bytes\tcallback_packets"
+            if metadata.coordinatedPlan != nil { header += "\tcaptured_at_ns\tsource_frame\tgeneration\tkind\tmapped_captured_at_ns\tuncertainty_ns" }
+            lines.append(header)
             for packet in probePackets {
-                lines.append("\(packet.receivedAt)\t\(packet.streamID)\t\(packet.sequence)\t\(packet.payloadBytes)\t\(packet.recordedAt)\t\(packet.callbackBytes)\t\(packet.callbackPackets)")
+                var row = "\(packet.receivedAt)\t\(packet.streamID)\t\(packet.sequence)\t\(packet.payloadBytes)\t\(packet.recordedAt)\t\(packet.callbackBytes)\t\(packet.callbackPackets)"
+                if metadata.coordinatedPlan != nil { row += "\t\(packet.capturedAt)\t\(packet.sourceFrame)\t\(packet.generation)\t\(packet.kind)\t\(packet.mappedCapturedAt)\t\(packet.uncertainty)" }
+                lines.append(row)
+            }
+            if metadata.coordinatedPlan != nil {
+                lines.append("\nnetwork_probe_playback_v1")
+                lines.append("round\tat_ns\tplayed_source_frame\tbuffered_frames\ttarget_ms\tcorrection\tplayed_frames\tconcealed_frames\tskipped_frames\tmaximum_age_ms\trepaired_packets\twaiting_frames")
+                lines.append(contentsOf: playback)
             }
             lines.append("\nnetwork_probe_heartbeat_v1")
             lines.append("at_ns\tscheduled_at_ns")

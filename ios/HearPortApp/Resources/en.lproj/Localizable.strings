@@ -88,3 +88,8 @@
 "Unable to finish the diagnostic report upload" = "Unable to finish the diagnostic report upload";
 "Unable to send the diagnostic report" = "Unable to send the diagnostic report";
 "Unable to resume the audio session" = "Unable to resume the audio session";
+
+"Normal target: %lld ms" = "Normal target: %lld ms";
+"Maximum total delay: %lld ms" = "Maximum total delay: %lld ms";
+"The target and maximum include transport, processing and output. Changes take effect on the next connection. A higher maximum can tolerate longer interruptions." = "The target and maximum include transport, processing and output. Changes take effect on the next connection. A higher maximum can tolerate longer interruptions.";
+"Selected delay budget is too small for this audio output." = "Selected delay budget is too small for this audio output.";

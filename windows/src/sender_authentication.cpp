@@ -274,6 +274,17 @@ bool SenderAuthentication::StartMediaStream(bool diagnostic) {
   if (diagnostic) {
     if (!security::RandomBytes(MutableSpan(debug_session_id_))) return false;
     if (!service_.BeginStream(stream_id_, Span(debug_session_id_))) return false;
+    if (service_.network_probe()) {
+      service_.ConfigureDebugDuration(std::chrono::seconds(peer_coordinated_audio_
+          ? kCoordinatedProbeDurationSeconds : kNetworkProbeDurationSeconds));
+      if (peer_coordinated_audio_) {
+        wire::ControlEnvelope manifest;
+        manifest.type = wire::ControlMessageType::probe_manifest;
+        manifest.stream_id = stream_id_;
+        manifest.bytes1 = EncodeProbeManifest(MakeCoordinatedProbeRounds(stream_id_));
+        if (!Send(manifest)) return false;
+      }
+    }
     const auto duration = service_.debug_duration();
     if (!duration.has_value()) return false;
     wire::ControlEnvelope diagnostics_start;
@@ -386,6 +397,7 @@ bool SenderAuthentication::HandleControlPayload(
   switch (envelope->type) {
     case wire::ControlMessageType::audio_setup:
       if (!authenticated_ || !peer_coordinated_audio_ || envelope->stream_id != stream_id_ ||
+          (flow_ != Flow::stream_ack && flow_ != Flow::debug_stream_ack) ||
           !service_.ConfigurePlayoutBudget(envelope->target_ms, envelope->maximum_ms,
                                           envelope->output_reserve_ms)) {
         return Fail(ErrorCode::stream_state, "unexpected AudioSetup");
@@ -434,7 +446,7 @@ bool SenderAuthentication::HandleControlPayload(
       if (connection_handler_) connection_handler_(true, peer_wants_reliable_);
       return true;
     case wire::ControlMessageType::audio_progress:
-      if (!peer_wants_reliable_ || !authenticated_) {
+      if ((!peer_wants_reliable_ && !service_.network_probe()) || !authenticated_) {
         return Fail(ErrorCode::stream_state, "unexpected AudioProgress");
       }
       if (flow_ != Flow::idle && flow_ != Flow::debug_stream_active) {
@@ -445,10 +457,17 @@ bool SenderAuthentication::HandleControlPayload(
               envelope->has_audio_sequence
                   ? std::optional<std::uint32_t>(envelope->audio_sequence)
                   : std::nullopt,
-              envelope->feedback_at_ns)) {
+              envelope->feedback_at_ns,
+              envelope->has_played_source_frame ? std::optional(envelope->played_source_frame) : std::nullopt,
+              envelope->buffered_ms)) {
         return Fail(ErrorCode::stream_state, "unexpected AudioProgress");
       }
       return true;
+    case wire::ControlMessageType::repair_request:
+      if (!authenticated_ || !peer_coordinated_audio_) {
+        return Fail(ErrorCode::stream_state, "unexpected RepairRequest");
+      }
+      return service_.HandleRepairRequest(*envelope);
     default:
       return Fail(ErrorCode::protocol, "unexpected control message");
   }
@@ -473,6 +492,7 @@ void SenderAuthentication::Reset() noexcept {
   peer_supports_diagnostics_ = false;
   peer_supports_network_probe_ = false;
   peer_wants_reliable_ = false;
+  peer_coordinated_audio_ = false;
   report_upload_active_ = false;
   report_upload_session_id_.fill(std::byte{0});
   debug_session_id_.fill(std::byte{0});

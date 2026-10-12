@@ -130,6 +130,7 @@ bool DebugSessionTrace::RecordSendState(std::uint32_t stream_id,
   }
   if (record.has_final_state) return false;
   record.sequence = sequence;
+  if (state == DebugSendState::sent) record.transport_sent_at_ns = state_at_ns;
   record.send_state = state;
   record.send_state_at_ns = state_at_ns;
   record.has_send_state = true;
@@ -202,7 +203,8 @@ std::string DebugSessionTrace::Finish(std::string_view reason) {
            << (record.send_accepted ? "true" : "false")
            << ",\"send_state\":\""
            << DebugSendStateName(record.send_state)
-           << "\",\"send_state_at_ns\":" << record.send_state_at_ns;
+           << "\",\"send_state_at_ns\":" << record.send_state_at_ns
+           << ",\"transport_sent_at_ns\":" << record.transport_sent_at_ns;
     if (record.probe) {
       output << ",\"send_status\":\"" << ProbeSendStatusName(record.probe->status)
              << "\",\"pending_reliable_sends\":" << record.probe->pending_reliable_sends

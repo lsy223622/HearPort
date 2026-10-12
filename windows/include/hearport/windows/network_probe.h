@@ -10,7 +10,7 @@ namespace hearport::windows {
 
 enum class ProbeSendStatus {
   accepted, disconnected, stream_unavailable, pending_limit, invalid_size,
-  datagram_unavailable, transport_rejected,
+  datagram_unavailable, transport_rejected, expired,
 };
 
 struct ProbeSendOutcome {

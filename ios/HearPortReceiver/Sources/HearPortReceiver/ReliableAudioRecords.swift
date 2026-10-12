@@ -98,7 +98,7 @@ struct ReliableProbeRecords {
         var consumed = 0
         while pending.count - consumed >= 2 {
             let length = (Int(pending[consumed]) << 8) | Int(pending[consumed + 1])
-            guard (8...968).contains(length) else {
+            guard (8...1024).contains(length) else {
                 throw ReliableAudioRecordsError.invalidRecord
             }
             guard pending.count - consumed >= length + 2 else { break }

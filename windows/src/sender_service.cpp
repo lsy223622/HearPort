@@ -274,8 +274,8 @@ bool SenderService::MarkStartStreamAckWritten(std::uint32_t stream_id) {
     std::lock_guard reliable_lock(reliable_mutex_);
     reliable_generation_ = 1;
     reliable_lag_.Begin(stream_id, 1, ReliableAudioLag::Clock::now(),
-        std::chrono::milliseconds(coordinated_audio_.load()
-            ? maximum_ms_.load() - output_reserve_ms_.load() : 400));
+        coordinated_audio_.load() ? std::optional(std::chrono::milliseconds(
+            maximum_ms_.load() - output_reserve_ms_.load())) : std::nullopt);
   }
   std::lock_guard debug_lock(debug_mutex_);
   if (pending_debug_session_) {
@@ -309,7 +309,7 @@ void SenderService::ProbeWorker(std::uint32_t stream_id) {
   using Clock = std::chrono::steady_clock;
   probe_packets_processed_.store(0);
   probe_stream_id_.store(stream_id);
-  const auto rounds = MakeNetworkProbeRounds(stream_id);
+  const auto rounds = network_probe_rounds();
   const auto close_timer = [](HANDLE handle) { CloseHandle(handle); };
   std::unique_ptr<void, decltype(close_timer)> timer(
       CreateWaitableTimerExW(nullptr, nullptr,
@@ -322,22 +322,35 @@ void SenderService::ProbeWorker(std::uint32_t stream_id) {
   const auto began = Clock::now();
   LogDiagnostic("network_probe_trace_fields captured_at_ns=scheduled queued_at_ns=woke send_at_ns=send_call");
   std::uint32_t sequence = 0;
-  bool reliable_started = false;
+  std::uint64_t source_frame = 0;
   for (std::size_t index = 0; index < rounds.size(); ++index) {
     const auto& round = rounds[index];
     const bool reliable = round.reliable;
     const auto round_start = began +
         std::chrono::seconds(index * kNetworkProbeSecondsPerRound);
-    if (reliable && !reliable_started) {
-      if (!quic_->StartReliableAudio(stream_id, 1)) {
-        LogDiagnostic("network_probe_reliable_stream_start_failed");
-        return;
+    {
+      std::lock_guard send_lock(audio_send_mutex_);
+      std::lock_guard reliable_lock(reliable_mutex_);
+      reliable_mode_.store(reliable);
+      reliable_generation_ = reliable_generation_ == UINT32_MAX ? 1 : reliable_generation_ + 1;
+      probe_repair_window_.Reset();
+      probe_repair_mode_.store(round.repair);
+      probe_repair_sent_bytes_.store(0);
+      repair_window_at_ = repair_original_bytes_ = repair_extra_bytes_ = 0;
+      repair_pressure_ = false; last_buffered_ms_ = 0;
+      if (!reliable) quic_->StopReliableAudio();
+      if (reliable) {
+        if (!quic_->StartReliableAudio(stream_id, reliable_generation_)) {
+          LogDiagnostic("network_probe_reliable_stream_start_failed"); return;
+        }
+        reliable_lag_.Begin(stream_id, reliable_generation_, Clock::now(),
+            coordinated_audio_.load() ? std::optional(std::chrono::milliseconds(
+                maximum_ms_.load() - output_reserve_ms_.load())) : std::nullopt);
       }
-      reliable_started = true;
     }
     const auto count = round.packets_per_second * kNetworkProbeSecondsPerRound;
     std::uint32_t accepted = 0;
-    std::array<std::uint32_t, 7> outcomes{};
+    std::array<std::uint32_t, 8> outcomes{};
     std::size_t pending_peak = 0;
     std::uint32_t first_transport_status = 0;
     LogDiagnostic("network_probe_round_start round=" + std::to_string(index + 1) +
@@ -348,12 +361,16 @@ void SenderService::ProbeWorker(std::uint32_t stream_id) {
                   " payload_bytes=" + std::to_string(round.payload_bytes) +
                   " packets_per_second=" + std::to_string(round.packets_per_second) +
                   " burst_packets=" + std::to_string(round.burst_packets) +
+                  " controller=" + std::to_string(round.controller) +
+                  " repair=" + std::to_string(round.repair) +
+                  " correction_percent=" + std::to_string(round.correction_percent) +
                   " sequence=" + std::to_string(sequence));
     for (std::uint32_t packet = 0; packet < count; ++packet, ++sequence) {
       const auto tick = packet / round.burst_packets;
       const auto target = round_start + std::chrono::nanoseconds(
-          (static_cast<std::uint64_t>(tick) * round.burst_packets *
-           1'000'000'000ull) / round.packets_per_second);
+          (static_cast<std::uint64_t>(tick) * round.burst_packets +
+           (coordinated_audio_.load() ? round.burst_packets - 1 : 0)) *
+           1'000'000'000ull / round.packets_per_second);
       const auto remaining = target - Clock::now();
       if (remaining > Clock::duration::zero()) {
         LARGE_INTEGER due_time{};
@@ -369,8 +386,8 @@ void SenderService::ProbeWorker(std::uint32_t stream_id) {
       }
       if (stop_probe_.load()) return;
       const auto woke_at = MonotonicNanoseconds();
-      const auto datagram = MakeNetworkProbeDatagram(
-          stream_id, sequence, round.payload_bytes);
+      auto datagram = MakeNetworkProbeDatagram(stream_id, sequence,
+          coordinated_audio_.load() ? round.payload_bytes - 24 : round.payload_bytes);
       std::lock_guard send_lock(audio_send_mutex_);
       bool trace = false;
       {
@@ -381,7 +398,25 @@ void SenderService::ProbeWorker(std::uint32_t stream_id) {
       }
       if (!trace) return;
       const auto sent_at = MonotonicNanoseconds();
-      const auto outcome = quic_->SendProbe(datagram, stream_id, sequence, reliable);
+      const auto captured_at = std::chrono::duration_cast<std::chrono::nanoseconds>(
+          (round_start + std::chrono::nanoseconds(std::uint64_t(packet) * 1'000'000'000ull /
+                                                round.packets_per_second)).time_since_epoch()).count();
+      wire::TimedAudioRecord record;
+      const auto frames = static_cast<std::uint16_t>(48000 / round.packets_per_second);
+      if (coordinated_audio_.load()) {
+        record = {stream_id, reliable_generation_, sequence, frames, wire::AudioRecordKind::probe,
+                  static_cast<std::uint64_t>(captured_at), source_frame,
+                  std::vector<std::byte>(datagram.begin() + 8, datagram.end())};
+        datagram = wire::EncodeTimedAudioRecord(record);
+        if (reliable) {
+          std::lock_guard reliable_lock(reliable_mutex_);
+          reliable_lag_.Produced(sequence, source_frame + frames, frames);
+        }
+      }
+      const bool expired = coordinated_audio_.load() && AudioDeadline(maximum_ms_.load(),
+          output_reserve_ms_.load()).Expired(captured_at, sent_at);
+      const auto outcome = expired ? ProbeSendOutcome{ProbeSendStatus::expired} :
+          quic_->SendProbe(datagram, stream_id, sequence, reliable);
       const bool sent = outcome.status == ProbeSendStatus::accepted;
       ++outcomes[static_cast<std::size_t>(outcome.status)];
       pending_peak = std::max(pending_peak, outcome.pending_reliable_sends);
@@ -392,7 +427,33 @@ void SenderService::ProbeWorker(std::uint32_t stream_id) {
       if (sent) ++accepted;
       const auto scheduled_at = std::chrono::duration_cast<std::chrono::nanoseconds>(
           target.time_since_epoch()).count();
-      debug_trace_.RecordPacket(sequence, scheduled_at, woke_at, sent_at, sent, outcome);
+      debug_trace_.RecordPacket(sequence, coordinated_audio_.load() ? captured_at : scheduled_at,
+                                woke_at, sent_at, sent, outcome);
+      if (coordinated_audio_.load() && !reliable && sent && round.repair != 0) {
+        const auto now = static_cast<std::uint64_t>(sent_at);
+        if (now - repair_window_at_ >= 100'000'000) {
+          repair_window_at_ = now; repair_original_bytes_ = repair_extra_bytes_ = 0;
+        }
+        repair_original_bytes_ += datagram.size();
+        const auto parity = probe_repair_window_.Add(record, now +
+            AudioDeadline(maximum_ms_.load(), output_reserve_ms_.load()).RemainingNanoseconds(captured_at, now));
+        std::optional<wire::TimedAudioRecord> extra;
+        if (round.repair == 1) extra = parity;
+        if (round.repair == 3 && packet >= 4 && sequence % 4 == 0) {
+          extra = probe_repair_window_.Retry(sequence - 4, now);
+          if (extra) extra->kind = wire::AudioRecordKind::repeated;
+        }
+        if (extra && !repair_pressure_) {
+          const auto bytes = wire::EncodeTimedAudioRecord(*extra);
+          if ((repair_extra_bytes_ + bytes.size()) * 10 <= repair_original_bytes_ * 3) {
+            const auto result = quic_->SendProbe(bytes, stream_id, extra->sequence, false, true);
+            if (result.status == ProbeSendStatus::accepted) {
+              repair_extra_bytes_ += bytes.size(); probe_repair_sent_bytes_.fetch_add(bytes.size());
+            }
+          }
+        }
+      }
+      source_frame += frames;
       if (!sent) CompleteDebugSend(stream_id);
       probe_packets_processed_.store(sequence + 1);
     }
@@ -401,6 +462,8 @@ void SenderService::ProbeWorker(std::uint32_t stream_id) {
                   " sequence=" + std::to_string(sequence) +
                   " send_accepted=" + std::to_string(accepted) +
                   " send_rejected=" + std::to_string(count - accepted) +
+                  " repair_sent_bytes=" + std::to_string(probe_repair_sent_bytes_.load()) +
+                  " expired_before_send=" + std::to_string(outcomes[7]) +
                   " pending_peak=" + std::to_string(pending_peak) +
                   " reject_disconnected=" + std::to_string(outcomes[1]) +
                   " reject_stream_unavailable=" + std::to_string(outcomes[2]) +
@@ -410,6 +473,37 @@ void SenderService::ProbeWorker(std::uint32_t stream_id) {
                   " reject_transport=" + std::to_string(outcomes[6]) +
                   " transport_status=" + std::to_string(first_transport_status));
   }
+}
+
+std::vector<NetworkProbeRound> SenderService::network_probe_rounds() const {
+  const auto stream = probe_stream_id_.load();
+  if (coordinated_audio_.load()) return MakeCoordinatedProbeRounds(stream);
+  const auto rounds = MakeNetworkProbeRounds(stream);
+  return {rounds.begin(), rounds.end()};
+}
+
+bool SenderService::HandleRepairRequest(const wire::ControlEnvelope& request) {
+  std::lock_guard send_lock(audio_send_mutex_);
+  if (!network_probe_ || !coordinated_audio_.load() || reliable_mode_.load() ||
+      probe_repair_mode_.load() != 2 || request.stream_id != probe_stream_id_.load() ||
+      request.audio_generation != reliable_generation_) return true;
+  const auto now = static_cast<std::uint64_t>(MonotonicNanoseconds());
+  for (const auto sequence : request.repair_sequences) {
+    const auto extra = probe_repair_window_.Retry(sequence, now);
+    if (!extra) continue;
+    const auto bytes = wire::EncodeTimedAudioRecord(*extra);
+    bool accepted = false;
+    if (!repair_pressure_ && now - repair_window_at_ < 100'000'000 &&
+        (repair_extra_bytes_ + bytes.size()) * 10 <= repair_original_bytes_ * 3) {
+      accepted = quic_->SendProbe(bytes, request.stream_id, sequence, false, true).status ==
+                 ProbeSendStatus::accepted;
+      if (accepted) { repair_extra_bytes_ += bytes.size(); probe_repair_sent_bytes_.fetch_add(bytes.size()); }
+    }
+    LogDiagnostic("network_probe_repair_request sequence=" + std::to_string(sequence) +
+                  " remaining_ms=" + std::to_string(request.maximum_ms) +
+                  " accepted=" + std::to_string(accepted));
+  }
+  return true;
 }
 
 void SenderService::ConfigureReliableAudio(bool enabled) {
@@ -440,8 +534,19 @@ bool SenderService::ConfigurePlayoutBudget(std::uint32_t target_ms,
 
 bool SenderService::ObserveAudioProgress(
     std::uint32_t stream_id, std::uint32_t generation,
-    std::optional<std::uint32_t> latest_received, std::uint64_t feedback_at_ns) {
+    std::optional<std::uint32_t> latest_received, std::uint64_t feedback_at_ns,
+    std::optional<std::uint64_t> played_source, std::uint32_t buffered_ms) {
   std::unique_lock send_lock(audio_send_mutex_);
+  if (network_probe_) {
+    if (stream_id != probe_stream_id_.load() || generation != reliable_generation_) return true;
+    const auto stamp = static_cast<std::uint64_t>(MonotonicNanoseconds());
+    if (coordinated_audio_.load() && (feedback_at_ns == 0 || feedback_at_ns > stamp + 10'000'000 ||
+        (stamp > feedback_at_ns && stamp - feedback_at_ns > 50'000'000))) return true;
+    repair_pressure_ = buffered_ms > maximum_ms_.load() - output_reserve_ms_.load() ||
+                       (last_buffered_ms_ > 0 && buffered_ms > last_buffered_ms_ + 10);
+    last_buffered_ms_ = buffered_ms;
+    if (!reliable_mode_.load()) return true;
+  }
   if (!reliable_mode_.load()) return false;
   std::optional<std::uint32_t> latest_produced;
   {
@@ -454,7 +559,7 @@ bool SenderService::ObserveAudioProgress(
           now_ns > feedback_at_ns ? (now_ns - feedback_at_ns) / 1'000'000 : 0);
     }
     if (!reliable_lag_.Observe(stream_id, generation, latest_received,
-                               ReliableAudioLag::Clock::now(), feedback_age)) {
+                               ReliableAudioLag::Clock::now(), feedback_age, played_source)) {
       return true;
     }
     latest_produced = reliable_lag_.latest_produced();
@@ -479,8 +584,8 @@ bool SenderService::ObserveAudioProgress(
     std::lock_guard reliable_lock(reliable_mutex_);
     reliable_generation_ = next_generation;
     reliable_lag_.Begin(stream_id, next_generation,
-                        ReliableAudioLag::Clock::now(), std::chrono::milliseconds(
-                          coordinated_audio_.load() ? maximum_ms_.load() - output_reserve_ms_.load() : 400));
+                        ReliableAudioLag::Clock::now(), coordinated_audio_.load() ? std::optional(std::chrono::milliseconds(
+                          maximum_ms_.load() - output_reserve_ms_.load())) : std::nullopt);
   }
   send_lock.unlock();
   LogDiagnostic("reliable_audio_live_edge_restart stream_id=" +
@@ -733,7 +838,7 @@ void SenderService::HandleCapturePacket(std::span<const std::byte> bytes,
     if (accepted) {
       if (reliable_mode_.load()) {
         std::lock_guard reliable_lock(reliable_mutex_);
-        reliable_lag_.Produced(packet.sequence);
+        reliable_lag_.Produced(packet.sequence, source_frame + 120);
       }
       EnqueueAudio(packet, static_cast<std::int64_t>(capture_time), source_frame);
     }

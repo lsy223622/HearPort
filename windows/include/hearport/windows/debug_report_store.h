@@ -19,7 +19,7 @@ enum class DebugReportBeginResult {
 class DebugReportStore {
  public:
   explicit DebugReportStore(std::filesystem::path root,
-                            std::size_t maximum_report_bytes = 32 * 1024 * 1024);
+                            std::size_t maximum_report_bytes = 128 * 1024 * 1024);
   ~DebugReportStore();
   DebugReportBeginResult Begin(std::span<const std::byte> session_id,
                                std::uint32_t format_version,
