@@ -118,6 +118,29 @@ message AudioProgress {
   uint32 stream_id = 1;              // active non-zero application stream ID
   uint32 generation = 2;             // active non-zero reliable audio generation
   optional uint32 latest_received_sequence = 3; // absent before first record
+  optional uint64 played_source_frame = 4;
+  uint64 feedback_at_ns = 5;
+  uint32 buffered_ms = 6;
+}
+
+message AudioSetup {
+  uint32 stream_id = 1;
+  uint32 target_ms = 2;
+  uint32 maximum_ms = 3;
+  uint32 output_reserve_ms = 4;
+}
+message ClockRequest { uint32 request_id = 1; uint64 local_sent_ns = 2; }
+message ClockResponse {
+  uint32 request_id = 1;
+  uint64 local_sent_ns = 2;
+  uint64 remote_received_ns = 3;
+  uint64 remote_sent_ns = 4;
+}
+message RepairRequest {
+  uint32 stream_id = 1;
+  uint32 generation = 2;
+  uint32 remaining_ms = 3;
+  repeated uint32 sequences = 4 [packed = false];
 }
 
 message ErrorMessage {
@@ -151,5 +174,9 @@ message ControlEnvelope {
     DiagnosticsReportEnd diagnostics_report_end = 37;
     DiagnosticsReportReceived diagnostics_report_received = 38;
     AudioProgress audio_progress = 39;
+    AudioSetup audio_setup = 40;
+    ClockRequest clock_request = 41;
+    ClockResponse clock_response = 42;
+    RepairRequest repair_request = 43;
   }
 }

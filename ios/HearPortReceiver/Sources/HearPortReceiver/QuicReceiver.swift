@@ -17,6 +17,9 @@ public final class HearPortReceiver {
     private let ringReserveFrames: Int
     private var loggedFirstAudioDatagram = false
     private var lastReceivedSequence: UInt32?
+    private var clockMapping = ClockMapping()
+    private var playoutController: PlayoutController?
+    public private(set) var playoutBudget: PlayoutBudget?
     private var outputRoute = "unknown"
     private var outputSampleRate = 48_000.0
     private let realtimeMetrics = RealtimeAudioMetrics()
@@ -127,6 +130,9 @@ public final class HearPortReceiver {
     public func resetForConnection() {
         lock.lock()
         session.resetForConnection()
+        clockMapping = ClockMapping()
+        playoutController = nil
+        playoutBudget = nil
         jitter = nil
         renderActiveAtomic.store(0)
         jitterFillFramesAtomic.store(0)
@@ -202,6 +208,21 @@ public final class HearPortReceiver {
         lock.lock()
         defer { lock.unlock() }
         return lastReceivedSequence
+    }
+
+    public func configurePlayout(_ budget: PlayoutBudget) {
+        lock.lock()
+        playoutBudget = budget
+        playoutController = PlayoutController(budget: budget)
+        lock.unlock()
+    }
+
+    public func observeClock(localSent: UInt64, remoteReceived: UInt64,
+                              remoteSent: UInt64, localReceived: UInt64) {
+        lock.lock()
+        clockMapping.observe(localSent: localSent, remoteReceived: remoteReceived,
+                              remoteSent: remoteSent, localReceived: localReceived)
+        lock.unlock()
     }
 
     @discardableResult
