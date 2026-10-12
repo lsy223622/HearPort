@@ -392,7 +392,7 @@ public final class HearPortReceiver {
                 }
             }
         }
-        jitterFillFramesAtomic.store(UInt64(playoutController == nil
+        jitterFillFramesAtomic.store(UInt64((playoutController == nil
             ? (jitter?.fillPackets ?? 0) : (jitter?.contiguousPackets ?? 0)) *
                                             AudioDatagram.framesPerPacket))
         lock.unlock()
@@ -453,7 +453,7 @@ public final class HearPortReceiver {
         }
         let state = lifecycle.state
         let generation = lifecycle.resetGeneration
-        jitterFillFramesAtomic.store(UInt64(playoutController == nil
+        jitterFillFramesAtomic.store(UInt64((playoutController == nil
             ? (jitter?.fillPackets ?? 0) : (jitter?.contiguousPackets ?? 0)) *
                                             AudioDatagram.framesPerPacket))
         lock.unlock()
@@ -632,7 +632,7 @@ public final class HearPortReceiver {
             guard let self else { return }
             self.lock.lock()
             self.pumpLocked()
-            self.jitterFillFramesAtomic.store(UInt64(self.playoutController == nil
+            self.jitterFillFramesAtomic.store(UInt64((self.playoutController == nil
                 ? (self.jitter?.fillPackets ?? 0) : (self.jitter?.contiguousPackets ?? 0)) *
                                                      AudioDatagram.framesPerPacket))
             self.lock.unlock()
