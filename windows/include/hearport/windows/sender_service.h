@@ -66,7 +66,8 @@ class SenderService {
     return probe_stream_id_.load();
   }
   bool ObserveAudioProgress(std::uint32_t stream_id, std::uint32_t generation,
-                            std::optional<std::uint32_t> latest_received);
+                            std::optional<std::uint32_t> latest_received,
+                            std::uint64_t feedback_at_ns = 0);
   void ConfigureDebugDuration(std::optional<std::chrono::seconds> duration);
   std::optional<std::chrono::seconds> debug_duration() const;
   void SetDebugOutputDirectory(std::filesystem::path directory);

@@ -444,7 +444,8 @@ bool SenderAuthentication::HandleControlPayload(
               envelope->stream_id, envelope->audio_generation,
               envelope->has_audio_sequence
                   ? std::optional<std::uint32_t>(envelope->audio_sequence)
-                  : std::nullopt)) {
+                  : std::nullopt,
+              envelope->feedback_at_ns)) {
         return Fail(ErrorCode::stream_state, "unexpected AudioProgress");
       }
       return true;

@@ -10,6 +10,8 @@ final class PlayoutControllerTests: XCTestCase {
         XCTAssertEqual(clock.map(remoteNanoseconds: 1_600_000_000, at: 1_010_000_000),
                        1_100_000_000)
         XCTAssertEqual(clock.uncertaintyNanoseconds, 5_000_000)
+        XCTAssertEqual(clock.remote(localNanoseconds: 1_100_000_000, at: 1_010_000_000),
+                       1_600_000_000)
         XCTAssertNil(clock.map(remoteNanoseconds: 1_600_000_000, at: 7_010_000_000))
     }
 

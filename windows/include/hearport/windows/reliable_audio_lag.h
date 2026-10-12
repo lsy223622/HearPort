@@ -11,7 +11,8 @@ class ReliableAudioLag {
   using Clock = std::chrono::steady_clock;
 
   void Begin(std::uint32_t stream_id, std::uint32_t generation,
-             Clock::time_point now) noexcept {
+             Clock::time_point now,
+             std::chrono::milliseconds maximum_lag = std::chrono::milliseconds(400)) noexcept {
     stream_id_ = stream_id;
     generation_ = generation;
     latest_produced_.reset();
@@ -19,6 +20,7 @@ class ReliableAudioLag {
     consecutive_lag_reports_ = 0;
     restart_pending_ = false;
     last_restart_ = now;
+    maximum_lag_ = maximum_lag;
   }
 
   void Produced(std::uint32_t sequence) noexcept {
@@ -29,19 +31,24 @@ class ReliableAudioLag {
 
   bool Observe(std::uint32_t stream_id, std::uint32_t generation,
                std::optional<std::uint32_t> latest_received,
-               Clock::time_point now) noexcept {
+               Clock::time_point now,
+               std::chrono::milliseconds feedback_age = std::chrono::milliseconds(0)) noexcept {
     if (stream_id != stream_id_ || generation != generation_ ||
         restart_pending_ || !latest_produced_) {
       return false;
     }
-    bool behind = produced_count_ > 160;
+    if (feedback_age > maximum_lag_ / 2) return false;
+    const auto lag_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(maximum_lag_).count();
+    bool behind = produced_count_ * 2'500'000ull > static_cast<std::uint64_t>(lag_ns);
     if (latest_received) {
       const auto distance = *latest_produced_ - *latest_received;
-      behind = distance < 0x80000000u && distance > 160;
+      behind = distance < 0x80000000u &&
+               std::uint64_t(distance) * 2'500'000ull > static_cast<std::uint64_t>(lag_ns);
     }
     consecutive_lag_reports_ = behind ? consecutive_lag_reports_ + 1 : 0;
-    if (consecutive_lag_reports_ < 2 ||
-        now - last_restart_ < std::chrono::milliseconds(500)) {
+    const bool bounded = maximum_lag_ < std::chrono::milliseconds(400);
+    if (!behind || (!bounded && (consecutive_lag_reports_ < 2 ||
+        now - last_restart_ < std::chrono::milliseconds(500)))) {
       return false;
     }
     restart_pending_ = true;
@@ -60,6 +67,7 @@ class ReliableAudioLag {
   unsigned consecutive_lag_reports_ = 0;
   bool restart_pending_ = false;
   Clock::time_point last_restart_{};
+  std::chrono::milliseconds maximum_lag_{400};
 };
 
 }  // namespace hearport::windows

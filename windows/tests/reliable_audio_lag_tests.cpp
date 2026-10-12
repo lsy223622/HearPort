@@ -53,4 +53,10 @@ int main() {
   lag.Begin(7, 4, start + std::chrono::milliseconds(2400));
   assert(!lag.Observe(7, 4, std::nullopt,
                       start + std::chrono::milliseconds(3000)));
+  lag.Begin(7, 5, start, std::chrono::milliseconds(100));
+  for (std::uint32_t sequence = 0; sequence <= 60; ++sequence) lag.Produced(sequence);
+  assert(!lag.Observe(7, 4, 0, start + std::chrono::milliseconds(10)));
+  assert(!lag.Observe(7, 5, 0, start + std::chrono::milliseconds(10),
+                      std::chrono::milliseconds(200)));
+  assert(lag.Observe(7, 5, 0, start + std::chrono::milliseconds(20)));
 }
