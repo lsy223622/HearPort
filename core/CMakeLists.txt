@@ -1,4 +1,5 @@
 add_library(hearport_core STATIC
+  src/repair_window.cpp
   src/control_messages.cpp
   src/drift_controller.cpp
   src/jitter_buffer.cpp
@@ -13,6 +14,9 @@ target_include_directories(hearport_core PUBLIC include)
 target_compile_features(hearport_core PUBLIC cxx_std_20)
 
 if(BUILD_TESTING)
+  add_executable(hearport_repair_window_tests tests/repair_window_tests.cpp)
+  target_link_libraries(hearport_repair_window_tests PRIVATE hearport_core)
+  add_test(NAME hearport_repair_window_tests COMMAND hearport_repair_window_tests)
   add_executable(hearport_wire_codec_tests tests/wire_codec_tests.cpp)
   target_link_libraries(hearport_wire_codec_tests PRIVATE hearport_core)
   add_test(NAME hearport_wire_codec_tests COMMAND hearport_wire_codec_tests)
