@@ -14,12 +14,16 @@ public final class HearPortReceiver {
     private let renderActiveAtomic = AtomicUInt64()
     private let pumpQueue = DispatchQueue(label: "com.hearport.receiver.pump", qos: .userInitiated)
     private var pumpTimer: DispatchSourceTimer?
-    private let ringReserveFrames: Int
+    private var ringReserveFrames: Int
     private var loggedFirstAudioDatagram = false
     private var lastReceivedSequence: UInt32?
     private var clockMapping = ClockMapping()
     private var playoutController: PlayoutController?
-    private var timedPackets: [UInt32: TimedAudioRecord] = [:]
+    private var timedPackets: [UInt32: (record: TimedAudioRecord, capturedAt: UInt64, uncertainty: UInt64)] = [:]
+    private var sourceAnchor: (sequence: UInt32, frame: UInt64)?
+    private let targetFramesAtomic = AtomicUInt64()
+    private let dynamicCorrectionAtomic = AtomicUInt64(Double(0).bitPattern)
+    private let renderRequestFramesAtomic = AtomicUInt64(120)
     public private(set) var playoutBudget: PlayoutBudget?
     private var outputRoute = "unknown"
     private var outputSampleRate = 48_000.0
@@ -46,6 +50,7 @@ public final class HearPortReceiver {
         renderRing = RenderRingBuffer(capacityFrames: renderCapacityFrames)
         jitterTargetPackets = normalizedBufferTarget
         let targetFrames = normalizedBufferTarget * AudioDatagram.framesPerPacket
+        targetFramesAtomic.store(UInt64(targetFrames))
         ringReserveFrames = min(renderCapacityFrames, 2_048,
                                 targetFrames - (normalizedBufferTarget > 8
                                     ? AudioDatagram.framesPerPacket : 0))
@@ -68,7 +73,7 @@ public final class HearPortReceiver {
     }
 
     public var renderFillFrames: Int {
-        renderRing.fillFrames + Int(jitterFillFramesAtomic.load())
+        renderRing.sourceFillFrames + Int(jitterFillFramesAtomic.load())
     }
 
     public var isRenderActive: Bool {
@@ -105,7 +110,7 @@ public final class HearPortReceiver {
     private let jitterTargetPackets: Int
 
     var jitterTargetFrames: Int {
-        jitterTargetPackets * AudioDatagram.framesPerPacket
+        Int(targetFramesAtomic.load())
     }
 
     @discardableResult
@@ -135,6 +140,8 @@ public final class HearPortReceiver {
         playoutController = nil
         playoutBudget = nil
         timedPackets.removeAll(keepingCapacity: true)
+        sourceAnchor = nil
+        renderRing.setMaximumAge(nanoseconds: 0)
         jitter = nil
         renderActiveAtomic.store(0)
         jitterFillFramesAtomic.store(0)
@@ -158,6 +165,8 @@ public final class HearPortReceiver {
         lock.lock()
         let accepted = session.beginStream(streamID)
         if accepted {
+            timedPackets.removeAll(keepingCapacity: true)
+            sourceAnchor = nil
             jitter = JitterBuffer(streamID: streamID,
                                   targetPackets: jitterTargetPackets)
             renderActiveAtomic.store(0)
@@ -184,13 +193,16 @@ public final class HearPortReceiver {
         return accepted
     }
 
-    public func beginReliableGeneration(_ streamID: UInt32) -> Bool {
+    public func beginReliableGeneration(_ streamID: UInt32, generation: UInt32 = 1) -> Bool {
         lock.lock()
         guard session.activeStreamID == streamID || session.pendingStreamID == streamID else {
             lock.unlock()
             return false
         }
         jitter = JitterBuffer(streamID: streamID, targetPackets: jitterTargetPackets)
+        timedPackets.removeAll(keepingCapacity: true)
+        sourceAnchor = nil
+        if let budget = playoutBudget { playoutController = PlayoutController(budget: budget) }
         renderActiveAtomic.store(0)
         jitterFillFramesAtomic.store(0)
         renderRing.requestReset()
@@ -216,6 +228,13 @@ public final class HearPortReceiver {
         lock.lock()
         playoutBudget = budget
         playoutController = PlayoutController(budget: budget)
+        renderRing.setMaximumAge(nanoseconds: UInt64(
+            (budget.maximumMilliseconds - budget.outputReserveMilliseconds) * 1_000_000))
+        let target = max(1, Int(ceil((budget.targetMilliseconds - budget.outputReserveMilliseconds) / 2.5)))
+        jitter?.setTargetPackets(target, recoveryPackets: max(target,
+            Int((budget.maximumMilliseconds - budget.outputReserveMilliseconds) / 2.5)))
+        ringReserveFrames = min(renderRing.capacityFrames, 2_048, target * 120)
+        targetFramesAtomic.store(UInt64(target * 120))
         lock.unlock()
     }
 
@@ -229,21 +248,22 @@ public final class HearPortReceiver {
 
     @discardableResult
     public func receiveTimedRecord(_ record: TimedAudioRecord) -> AudioDisposition? {
-        let now = DispatchTime.now().uptimeNanoseconds
-        lock.lock()
-        guard let captured = clockMapping.map(remoteNanoseconds: record.capturedAt, at: now),
-              record.kind == .audio || record.kind == .retransmission || record.kind == .repeated,
-              session.activeStreamID == record.streamID || session.pendingStreamID == record.streamID
-        else { lock.unlock(); return nil }
-        timedPackets[record.sequence] = record
-        playoutController?.observeArrival(sourceFrame: record.sourceFrame,
-                                          capturedAt: captured, receivedAt: now)
-        lock.unlock()
+        guard record.kind == .audio || record.kind == .retransmission || record.kind == .repeated
+        else { return nil }
         guard let packet = try? AudioDatagram(streamID: record.streamID,
                                               sequence: record.sequence, pcm: record.payload) else {
             return nil
         }
-        return receiveDatagram(packet.encoded)
+        return receiveDatagram(packet.encoded, timedRecord: record)
+    }
+
+    public func progressTiming() -> AudioProgressTiming? {
+        let now = DispatchTime.now().uptimeNanoseconds
+        lock.lock()
+        defer { lock.unlock() }
+        guard let generated = clockMapping.remote(localNanoseconds: now, at: now) else { return nil }
+        return AudioProgressTiming(playedSourceFrame: renderRing.lastSourceFrame, generatedAt: generated,
+            bufferedMilliseconds: UInt32(min(2000, renderFillFrames / 48)))
     }
 
     @discardableResult
@@ -284,7 +304,7 @@ public final class HearPortReceiver {
     }
 
     @discardableResult
-    public func receiveDatagram(_ data: Data) -> AudioDisposition? {
+    public func receiveDatagram(_ data: Data, timedRecord: TimedAudioRecord? = nil) -> AudioDisposition? {
         realtimeMetrics.recordDatagram(byteCount: data.count)
         let receivedAt = DispatchTime.now().uptimeNanoseconds
         let packet: AudioDatagram
@@ -315,6 +335,8 @@ public final class HearPortReceiver {
         var fillPackets = 0
         var disposition: AudioDisposition
         lock.lock()
+        let captured = timedRecord.flatMap { clockMapping.map(remoteNanoseconds: $0.capturedAt, at: receivedAt) }
+        if timedRecord != nil && captured == nil { lock.unlock(); return nil }
         disposition = session.acceptAudio(packet)
         realtimeMetrics.recordDisposition(disposition)
         if disposition == .accepted {
@@ -327,11 +349,20 @@ public final class HearPortReceiver {
                                          AudioDatagram.framesPerPacket)
             if let insertResult = jitter?.insert(packet, stagedFrames: stagedBeforeInsert) {
                 jitterResult = insertResult
-                let started = jitter?.startIfReady() ?? false
+                if insertResult == .inserted, let timedRecord, let captured {
+                    timedPackets[packet.sequence] = (timedRecord, captured, clockMapping.uncertaintyNanoseconds)
+                    if sourceAnchor == nil { sourceAnchor = (packet.sequence, timedRecord.sourceFrame) }
+                    if timedRecord.kind == .audio {
+                        playoutController?.observeArrival(sourceFrame: timedRecord.sourceFrame,
+                                                          capturedAt: captured, receivedAt: receivedAt)
+                    }
+                }
+                let started = playoutController == nil ? (jitter?.startIfReady() ?? false) : false
                 pumpLocked()
-                jitter?.trimToTarget(stagedFrames: renderRing.fillFrames)
+                jitter?.trimToTarget(stagedFrames: renderRing.sourceFillFrames)
                 let trimmedPackets = (jitter?.stats.trimmedPackets ?? 0) - previousTrimmedPackets
                 trimmedSequences = jitter?.takeTrimmedSequences() ?? []
+                for sequence in trimmedSequences { timedPackets.removeValue(forKey: sequence) }
                 fillPackets = jitter?.fillPackets ?? 0
                 realtimeMetrics.recordJitterResult(insertResult,
                                                    fillPackets: fillPackets,
@@ -361,7 +392,8 @@ public final class HearPortReceiver {
                 }
             }
         }
-        jitterFillFramesAtomic.store(UInt64((jitter?.fillPackets ?? 0) *
+        jitterFillFramesAtomic.store(UInt64(playoutController == nil
+            ? (jitter?.fillPackets ?? 0) : (jitter?.contiguousPackets ?? 0)) *
                                             AudioDatagram.framesPerPacket))
         lock.unlock()
 
@@ -421,7 +453,8 @@ public final class HearPortReceiver {
         }
         let state = lifecycle.state
         let generation = lifecycle.resetGeneration
-        jitterFillFramesAtomic.store(UInt64((jitter?.fillPackets ?? 0) *
+        jitterFillFramesAtomic.store(UInt64(playoutController == nil
+            ? (jitter?.fillPackets ?? 0) : (jitter?.contiguousPackets ?? 0)) *
                                             AudioDatagram.framesPerPacket))
         lock.unlock()
         diagnostics.log(
@@ -462,6 +495,7 @@ public final class HearPortReceiver {
 
     public func renderFrames(_ frameCount: Int) -> [Float] {
         guard frameCount > 0 else { return [] }
+        renderRequestFramesAtomic.store(UInt64(frameCount))
         let output = renderRing.pop(frames: frameCount)
         realtimeMetrics.recordRenderBuffer(
             fillFrames: renderRing.fillFrames,
@@ -473,6 +507,7 @@ public final class HearPortReceiver {
 
     private func pumpLocked() {
         guard jitter != nil, renderRing.isResetAcknowledged else { return }
+        if playoutController != nil { pumpCoordinatedLocked(); return }
         while renderRing.fillFrames + AudioDatagram.framesPerPacket <= ringReserveFrames {
             if let packet = jitter?.consumeNext() {
                 renderRing.push(Self.decodePCM(packet.pcm))
@@ -504,6 +539,90 @@ public final class HearPortReceiver {
         }
     }
 
+    private func sourcePosition(for sequence: UInt32) -> UInt64? {
+        if let stored = timedPackets[sequence] { return stored.record.sourceFrame }
+        guard let anchor = sourceAnchor else { return nil }
+        let delta = Int64(Int32(bitPattern: sequence &- anchor.sequence)) * 120
+        if delta < 0 { return anchor.frame >= UInt64(-delta) ? anchor.frame - UInt64(-delta) : nil }
+        return anchor.frame <= UInt64.max - UInt64(delta) ? anchor.frame + UInt64(delta) : nil
+    }
+
+    private func pumpCoordinatedLocked() {
+        let now = DispatchTime.now().uptimeNanoseconds
+        guard let expected = jitter?.expectedSequence, let source = sourcePosition(for: expected) else { return }
+        guard let decision = playoutController?.decision(now: now, nextSourceFrame: source,
+            playableFrames: (jitter?.contiguousPackets ?? 0) * 120,
+            stagedSourceFrames: renderRing.sourceFillFrames,
+            uncertaintyNanoseconds: clockMapping.uncertaintyNanoseconds,
+            hasFuturePacket: jitter?.hasFuturePacket == true) else { return }
+        let target = max(1, Int(ceil(decision.bufferTargetMilliseconds / 2.5)))
+        let recovery = max(target, Int(((playoutBudget?.maximumMilliseconds ?? 100) -
+                                        (playoutBudget?.outputReserveMilliseconds ?? 10)) / 2.5))
+        jitter?.setTargetPackets(target, recoveryPackets: recovery)
+        targetFramesAtomic.store(UInt64(target * 120))
+        dynamicCorrectionAtomic.store(decision.correction.bitPattern)
+        ringReserveFrames = min(renderRing.capacityFrames, 2_048, max(120, target * 120))
+        if decision.action == .resync, let budget = playoutBudget {
+            let ordered = (jitter?.bufferedSequences ?? []).sorted { ($0 &- expected) < ($1 &- expected) }
+            if let next = ordered.first(where: {
+                guard let stored = timedPackets[$0] else { return false }
+                return budget.prepareDeadline(capturedAt: stored.capturedAt,
+                    uncertaintyNanoseconds: stored.uncertainty) > now
+            }) {
+                jitter?.skip(to: next)
+            } else if let last = ordered.last {
+                jitter?.skip(to: SequenceNumber.next(last))
+            }
+            for sequence in jitter?.takeTrimmedSequences() ?? [] {
+                timedPackets.removeValue(forKey: sequence)
+                debugSessionDiagnostics.recordJitterDecision(streamID: jitter!.streamID,
+                    sequence: sequence, decision: .trimmed, at: now, fillPackets: jitter!.fillPackets)
+            }
+        }
+        _ = jitter?.startIfReady(allowGaps: decision.action == .conceal || decision.action == .resync)
+        var prepared = 0
+        while renderRing.fillFrames + 120 <= ringReserveFrames, prepared < 256,
+              let sequence = jitter?.expectedSequence, let position = sourcePosition(for: sequence) {
+            prepared += 1
+            let stored = timedPackets[sequence]
+            let captured = stored?.capturedAt ?? playoutController?.captureTime(sourceFrame: position)
+            guard let captured, let budget = playoutBudget else { break }
+            let deadline = budget.prepareDeadline(capturedAt: captured,
+                uncertaintyNanoseconds: stored?.uncertainty ?? clockMapping.uncertaintyNanoseconds)
+            if stored != nil, deadline <= now {
+                jitter?.skip(to: SequenceNumber.next(sequence))
+                timedPackets.removeValue(forKey: sequence)
+                continue
+            }
+            if let packet = jitter?.consumeNext() {
+                timedPackets.removeValue(forKey: sequence)
+                renderRing.pushTimed(Self.decodePCM(packet.pcm), sourceBegin: position,
+                                      sourceEnd: position + 120, capturedAt: captured)
+            } else if jitter?.mode == .running,
+                      (deadline <= now || renderRing.fillFrames <= Int(renderRequestFramesAtomic.load()) + 240),
+                      let concealed = jitter?.concealMissing() {
+                realtimeMetrics.recordConcealment()
+                debugSessionDiagnostics.recordJitterDecision(streamID: jitter!.streamID,
+                    sequence: sequence, decision: .concealed, at: now, fillPackets: jitter!.fillPackets)
+                renderRing.pushTimed(Self.decodePCM(concealed), sourceBegin: position,
+                                      sourceEnd: position + 120, capturedAt: captured)
+            } else { break }
+        }
+        jitterFillFramesAtomic.store(UInt64((jitter?.contiguousPackets ?? 0) * 120))
+        if jitter?.mode == .running, renderRing.fillFrames > 0 {
+            lifecycle.handle(.audioAvailable)
+            renderActiveAtomic.store(1)
+        } else if renderRing.fillFrames == 0, jitter?.fillPackets == 0, jitter?.mode == .running {
+            jitter?.enterSilentRebuffer()
+            timedPackets.removeAll(keepingCapacity: true)
+            sourceAnchor = nil
+            if let budget = playoutBudget { playoutController = PlayoutController(budget: budget) }
+            session.enterSilentRebuffer()
+            lifecycle.enterSilentRebuffer()
+            renderActiveAtomic.store(0)
+        }
+    }
+
     private func startPumpTimerLocked() {
         guard pumpTimer == nil else { return }
         let timer = DispatchSource.makeTimerSource(queue: pumpQueue)
@@ -513,7 +632,8 @@ public final class HearPortReceiver {
             guard let self else { return }
             self.lock.lock()
             self.pumpLocked()
-            self.jitterFillFramesAtomic.store(UInt64((self.jitter?.fillPackets ?? 0) *
+            self.jitterFillFramesAtomic.store(UInt64(self.playoutController == nil
+                ? (self.jitter?.fillPackets ?? 0) : (self.jitter?.contiguousPackets ?? 0)) *
                                                      AudioDatagram.framesPerPacket))
             self.lock.unlock()
         }
@@ -641,6 +761,7 @@ public final class HearPortQuicTransport {
     public private(set) var state: QuicReceiverState = .idle
     public var onControlData: DataHandler?
     public var onAudioDatagram: DataHandler?
+    public var audioProgressTiming: (() -> AudioProgressTiming?)?
     public var onProbePacket: (@Sendable (Data, UInt64, Int, Int) -> Void)?
     public var onProbeHeartbeat: (@Sendable (UInt64, UInt64) -> Void)?
     public var onReliableAudioGeneration: ((UInt32, UInt32) -> Bool)?
@@ -1100,8 +1221,9 @@ public final class HearPortQuicTransport {
     private func startProgressTimer() {
         guard progressTimer == nil, let connectionGroup = group else { return }
         let timer = DispatchSource.makeTimerSource(queue: queue)
-        timer.schedule(deadline: .now() + .milliseconds(100),
-                       repeating: .milliseconds(100))
+        let interval = coordinatedAudio ? 25 : 100
+        timer.schedule(deadline: .now() + .milliseconds(interval),
+                       repeating: .milliseconds(interval))
         timer.setEventHandler { [weak self] in
             guard let self, let activeGroup = self.group,
                   activeGroup === connectionGroup, !self.progressInFlight,
@@ -1110,7 +1232,7 @@ public final class HearPortQuicTransport {
             do {
                 let message = ControlEnvelope(.audioProgress(
                     streamID: streamID, generation: self.audioGeneration,
-                    latestReceivedSequence: self.progressSequence?()))
+                    latestReceivedSequence: self.progressSequence?(), timing: self.audioProgressTiming?()))
                 self.progressInFlight = true
                 try self.sendControl(message.encoded()) { [weak self] _ in
                     self?.queue.async { [weak self] in

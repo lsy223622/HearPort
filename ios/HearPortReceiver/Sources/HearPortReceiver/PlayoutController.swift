@@ -37,6 +37,7 @@ public struct PlayoutDecision: Sendable {
     public let correction: Double
     public let targetMilliseconds: Double
     public let prepareDeadline: UInt64?
+    public let bufferTargetMilliseconds: Double
 }
 
 public struct PlayoutController: Sendable {
@@ -75,7 +76,8 @@ public struct PlayoutController: Sendable {
     public mutating func decision(now: UInt64, nextSourceFrame: UInt64,
                                   playableFrames: Int, stagedSourceFrames: Int,
                                   processingMilliseconds: Double = 0,
-                                  uncertaintyNanoseconds: UInt64 = 0) -> PlayoutDecision {
+                                  uncertaintyNanoseconds: UInt64 = 0,
+                                  hasFuturePacket: Bool = false) -> PlayoutDecision {
         let elapsed = lastDecisionAt.map { now >= $0 ? Double(now - $0) / 1_000_000 : 0 } ?? 5
         lastDecisionAt = now
         if delays.count >= 8 {
@@ -101,13 +103,14 @@ public struct PlayoutController: Sendable {
         correction += min(elapsed * 0.002, max(-elapsed * 0.002, desired - correction))
         let action: PlayoutAction
         if let deadline, now >= deadline {
-            action = totalFrames == 0 ? .conceal : .resync
+            action = totalFrames == 0 && !hasFuturePacket ? .conceal : .resync
             correction = max(0, correction)
         } else {
             action = totalFrames == 0 ? .wait : .normal
         }
         if totalFrames == 0 { correction = 0 }
         return PlayoutDecision(action: action, correction: correction,
-                               targetMilliseconds: targetMilliseconds, prepareDeadline: deadline)
+                               targetMilliseconds: targetMilliseconds, prepareDeadline: deadline,
+                               bufferTargetMilliseconds: bufferTarget)
     }
 }

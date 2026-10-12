@@ -4,6 +4,7 @@ import HearPortAtomics
 final class RenderRingBuffer: @unchecked Sendable {
     let capacityFrames: Int
     private let storage: OpaquePointer
+    private let maximumAge = AtomicUInt64()
 
     init(capacityFrames: Int) {
         precondition(capacityFrames > 0)
@@ -20,6 +21,14 @@ final class RenderRingBuffer: @unchecked Sendable {
 
     var fillFrames: Int { Int(hearport_audio_ring_fill(storage)) }
     var isResetAcknowledged: Bool { hearport_audio_ring_reset_acknowledged(storage) }
+    var sourceFillFrames: Int { Int(hearport_audio_ring_source_fill(storage)) }
+    var lastSourceFrame: UInt64? {
+        let frame = hearport_audio_ring_last_source(storage)
+        return frame == UInt64.max ? nil : frame
+    }
+    var expiredFrames: UInt64 { hearport_audio_ring_expired_frames(storage) }
+
+    func setMaximumAge(nanoseconds: UInt64) { maximumAge.store(nanoseconds) }
 
     func requestReset() {
         hearport_audio_ring_request_reset(storage)
@@ -38,8 +47,19 @@ final class RenderRingBuffer: @unchecked Sendable {
         guard requestedFrames > 0 else { return ([], 0) }
         var output = Array(repeating: Float.zero, count: requestedFrames * 2)
         let rendered = output.withUnsafeMutableBufferPointer { samples in
-            Int(hearport_audio_ring_pop(storage, samples.baseAddress, requestedFrames))
+            Int(hearport_audio_ring_pop_at(storage, samples.baseAddress, requestedFrames,
+                DispatchTime.now().uptimeNanoseconds, maximumAge.load()))
         }
         return (output, rendered)
+    }
+
+    @discardableResult
+    func pushTimed(_ samples: [Float], sourceBegin: UInt64, sourceEnd: UInt64,
+                    capturedAt: UInt64) -> Int {
+        guard samples.count.isMultiple(of: 2) else { return 0 }
+        return samples.withUnsafeBufferPointer {
+            Int(hearport_audio_ring_push_timed(storage, $0.baseAddress, samples.count / 2,
+                                             sourceBegin, sourceEnd, capturedAt))
+        }
     }
 }
