@@ -3,6 +3,31 @@ import XCTest
 @testable import HearPortReceiver
 
 final class LockFreeReceiverTests: XCTestCase {
+    func testFutureTimedPacketsDoNotConcealGapBeforeDeadline() throws {
+        let receiver = readyReceiver(target: 4)
+        _ = receiver.renderFrames(120)
+        let now = DispatchTime.now().uptimeNanoseconds
+        receiver.configurePlayout(try PlayoutBudget(targetMilliseconds: 10,
+            maximumMilliseconds: 100, outputReserveMilliseconds: 1))
+        receiver.observeClock(localSent: now - 2_000_000, remoteReceived: now - 1_000_000,
+                              remoteSent: now - 1_000_000, localReceived: now)
+        for sequence: UInt32 in [0, 2, 3, 4] {
+            let packet = try AudioDatagram(encoded: datagram(stream: 7, sequence: sequence, value: 2))
+            let record = try TimedAudioRecord(streamID: 7, generation: 1, sequence: sequence,
+                frameCount: 120, kind: .audio,
+                capturedAt: now - 15_000_000 + UInt64(sequence) * 2_500_000,
+                sourceFrame: UInt64(sequence) * 120, payload: packet.pcm)
+            _ = receiver.receiveTimedRecord(record)
+        }
+        XCTAssertEqual(receiver.jitterStats?.lostPackets, 0)
+        let missing = try AudioDatagram(encoded: datagram(stream: 7, sequence: 1, value: 2))
+        _ = receiver.receiveTimedRecord(try TimedAudioRecord(streamID: 7, generation: 1,
+            sequence: 1, frameCount: 120, kind: .audio, capturedAt: now - 12_500_000,
+            sourceFrame: 120, payload: missing.pcm))
+        XCTAssertEqual(receiver.jitterStats?.latePackets, 0)
+        XCTAssertEqual(receiver.jitterStats?.lostPackets, 0)
+    }
+
     func testJitterLimitIncludesPcmAlreadyStagedInRing() throws {
         var jitter = JitterBuffer(streamID: 7, targetPackets: 4)
         for sequence in 0..<4 {
