@@ -81,12 +81,10 @@ bool DebugSessionTrace::RecordPacket(std::uint32_t sequence,
                                      std::int64_t captured_at_ns,
                                      std::int64_t queued_at_ns,
                                      std::int64_t send_at_ns,
-                                     bool send_accepted) noexcept {
-  std::unique_lock lock(mutex_, std::try_to_lock);
-  if (!lock.owns_lock()) {
-    dropped_records_.fetch_add(1, std::memory_order_relaxed);
-    return false;
-  }
+                                     bool send_accepted,
+                                     std::optional<ProbeSendOutcome> probe) noexcept {
+  if (!IsActive()) return false;
+  std::lock_guard lock(mutex_);
   if (!active_.load(std::memory_order_relaxed)) return false;
   if (sequence >= capacity_) {
     dropped_records_.fetch_add(1, std::memory_order_relaxed);
@@ -106,6 +104,7 @@ bool DebugSessionTrace::RecordPacket(std::uint32_t sequence,
   record.queued_at_ns = queued_at_ns;
   record.send_at_ns = send_at_ns;
   record.send_accepted = send_accepted;
+  record.probe = probe;
   record.has_packet = true;
   ++packet_count_;
   return true;
@@ -115,11 +114,8 @@ bool DebugSessionTrace::RecordSendState(std::uint32_t stream_id,
                                         std::uint32_t sequence,
                                         DebugSendState state,
                                         std::int64_t state_at_ns) noexcept {
-  std::unique_lock lock(mutex_, std::try_to_lock);
-  if (!lock.owns_lock()) {
-    dropped_records_.fetch_add(1, std::memory_order_relaxed);
-    return false;
-  }
+  if (!IsActive()) return false;
+  std::lock_guard lock(mutex_);
   if (!active_.load(std::memory_order_relaxed) || stream_id != stream_id_) {
     return false;
   }
@@ -144,6 +140,27 @@ bool DebugSessionTrace::RecordSendState(std::uint32_t stream_id,
   return false;
 }
 
+bool DebugSessionTrace::RecordSendComplete(std::uint32_t stream_id,
+                                          std::uint32_t sequence,
+                                          bool canceled,
+                                          std::int64_t completed_at_ns) noexcept {
+  if (!IsActive()) return false;
+  std::lock_guard lock(mutex_);
+  if (!active_.load(std::memory_order_relaxed) || stream_id != stream_id_) return false;
+  if (sequence >= capacity_) {
+    dropped_records_.fetch_add(1, std::memory_order_relaxed);
+    return false;
+  }
+  auto& record = records_[sequence];
+  if (record.generation != generation_) {
+    record = PacketRecord{};
+    record.generation = generation_;
+  }
+  record.send_completed_at_ns = completed_at_ns;
+  record.send_canceled = canceled;
+  return true;
+}
+
 bool DebugSessionTrace::IsActive() const noexcept {
   return active_.load(std::memory_order_acquire);
 }
@@ -153,21 +170,30 @@ std::uint64_t DebugSessionTrace::dropped_records() const noexcept {
 }
 
 std::string DebugSessionTrace::Finish(std::string_view reason) {
-  std::lock_guard lock(mutex_);
+  std::unique_lock lock(mutex_);
   if (!active_.load(std::memory_order_relaxed)) return {};
   active_.store(false, std::memory_order_release);
+
+  std::vector<PacketRecord> snapshot;
+  snapshot.reserve(packet_count_);
+  for (const auto& record : records_) {
+    if (record.generation == generation_ && record.has_packet) snapshot.push_back(record);
+  }
+  const auto session_id = session_id_;
+  const auto stream_id = stream_id_;
+  const auto dropped = dropped_records_.load(std::memory_order_relaxed);
+  lock.unlock();
 
   std::ostringstream output;
   output << "{\"type\":\"session\",\"format_version\":1"
          << ",\"session_id\":\""
-         << SessionHex(session_id_)
-         << "\",\"stream_id\":" << stream_id_
-         << ",\"record_count\":" << packet_count_
+         << SessionHex(session_id)
+         << "\",\"stream_id\":" << stream_id
+         << ",\"record_count\":" << snapshot.size()
          << ",\"dropped_records\":"
-         << dropped_records_.load(std::memory_order_relaxed)
+         << dropped
          << ",\"reason\":\"" << JsonString(reason) << "\"}\n";
-  for (const auto& record : records_) {
-    if (record.generation != generation_ || !record.has_packet) continue;
+  for (const auto& record : snapshot) {
     output << "{\"type\":\"packet\",\"sequence\":" << record.sequence
            << ",\"captured_at_ns\":" << record.captured_at_ns
            << ",\"queued_at_ns\":" << record.queued_at_ns
@@ -176,8 +202,15 @@ std::string DebugSessionTrace::Finish(std::string_view reason) {
            << (record.send_accepted ? "true" : "false")
            << ",\"send_state\":\""
            << DebugSendStateName(record.send_state)
-           << "\",\"send_state_at_ns\":" << record.send_state_at_ns
-           << "}\n";
+           << "\",\"send_state_at_ns\":" << record.send_state_at_ns;
+    if (record.probe) {
+      output << ",\"send_status\":\"" << ProbeSendStatusName(record.probe->status)
+             << "\",\"pending_reliable_sends\":" << record.probe->pending_reliable_sends
+             << ",\"transport_status\":" << record.probe->transport_status
+             << ",\"send_completed_at_ns\":" << record.send_completed_at_ns
+             << ",\"send_canceled\":" << (record.send_canceled ? "true" : "false");
+    }
+    output << "}\n";
   }
   return output.str();
 }

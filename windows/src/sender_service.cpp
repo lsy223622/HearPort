@@ -65,6 +65,12 @@ bool SenderService::Start() {
   }
 
   QuicServerCallbacks callbacks;
+  options_.network_probe = network_probe_;
+  callbacks.on_probe_send_complete = [this](std::uint32_t stream_id,
+                                            std::uint32_t sequence, bool canceled) {
+    debug_trace_.RecordSendComplete(stream_id, sequence, canceled, MonotonicNanoseconds());
+    CompleteDebugSend(stream_id);
+  };
   callbacks.on_control_bytes = [this](std::span<const std::byte> bytes) {
     std::vector<std::vector<std::byte>> messages;
     if (!control_decoder_.Push(bytes, messages)) {
@@ -312,15 +318,18 @@ void SenderService::ProbeWorker(std::uint32_t stream_id) {
   const auto began = Clock::now();
   LogDiagnostic("network_probe_trace_fields captured_at_ns=scheduled queued_at_ns=woke send_at_ns=send_call");
   std::uint32_t sequence = 0;
+  bool reliable_started = false;
   for (std::size_t index = 0; index < rounds.size(); ++index) {
     const auto& round = rounds[index];
     const bool reliable = round.reliable;
     const auto round_start = began +
         std::chrono::seconds(index * kNetworkProbeSecondsPerRound);
-    if (reliable && index == rounds.size() / 2 &&
-        !quic_->StartReliableAudio(stream_id, 1)) {
-      LogDiagnostic("network_probe_reliable_stream_start_failed");
-      return;
+    if (reliable && !reliable_started) {
+      if (!quic_->StartReliableAudio(stream_id, 1)) {
+        LogDiagnostic("network_probe_reliable_stream_start_failed");
+        return;
+      }
+      reliable_started = true;
     }
     const auto count = round.packets_per_second * kNetworkProbeSecondsPerRound;
     std::uint32_t accepted = 0;
@@ -329,7 +338,7 @@ void SenderService::ProbeWorker(std::uint32_t stream_id) {
     std::uint32_t first_transport_status = 0;
     LogDiagnostic("network_probe_round_start round=" + std::to_string(index + 1) +
                   " variant=" + std::to_string(round.variant) +
-                  " repeat=" + std::to_string((index % 10) / 5 + 1) +
+                  " repeat=" + std::to_string(round.repeat) +
                   " transport=" + (reliable ? std::string("reliable_stream")
                                               : std::string("datagram")) +
                   " payload_bytes=" + std::to_string(round.payload_bytes) +
@@ -364,11 +373,11 @@ void SenderService::ProbeWorker(std::uint32_t stream_id) {
         std::lock_guard debug_lock(debug_mutex_);
         trace = debug_trace_.IsActive() &&
                 active_debug_stream_id_ == stream_id && !debug_ending_;
-        if (trace && !reliable) ++outstanding_debug_sends_;
+        if (trace) ++outstanding_debug_sends_;
       }
       if (!trace) return;
       const auto sent_at = MonotonicNanoseconds();
-      const auto outcome = quic_->SendProbe(datagram, stream_id, sequence);
+      const auto outcome = quic_->SendProbe(datagram, stream_id, sequence, reliable);
       const bool sent = outcome.status == ProbeSendStatus::accepted;
       ++outcomes[static_cast<std::size_t>(outcome.status)];
       pending_peak = std::max(pending_peak, outcome.pending_reliable_sends);
@@ -379,8 +388,8 @@ void SenderService::ProbeWorker(std::uint32_t stream_id) {
       if (sent) ++accepted;
       const auto scheduled_at = std::chrono::duration_cast<std::chrono::nanoseconds>(
           target.time_since_epoch()).count();
-      debug_trace_.RecordPacket(sequence, scheduled_at, woke_at, sent_at, sent);
-      if (!sent && !reliable) CompleteDebugSend(stream_id);
+      debug_trace_.RecordPacket(sequence, scheduled_at, woke_at, sent_at, sent, outcome);
+      if (!sent) CompleteDebugSend(stream_id);
       probe_packets_processed_.store(sequence + 1);
     }
     LogDiagnostic("network_probe_round_end round=" + std::to_string(index + 1) +
@@ -506,6 +515,12 @@ void SenderService::LogDiagnostic(std::string_view line) const {
     }
   }
   std::cerr << line << '\n';
+}
+
+std::filesystem::path SenderService::debug_session_directory() const {
+  std::lock_guard lock(debug_mutex_);
+  if (active_debug_stream_id_ == 0) return {};
+  return debug_output_directory_ / SessionHex(active_debug_session_id_);
 }
 
 void SenderService::SetControlHandler(ControlHandler handler) {

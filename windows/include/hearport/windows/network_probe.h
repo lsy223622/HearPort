@@ -3,9 +3,23 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <string_view>
 #include <vector>
 
 namespace hearport::windows {
+
+enum class ProbeSendStatus {
+  accepted, disconnected, stream_unavailable, pending_limit, invalid_size,
+  datagram_unavailable, transport_rejected,
+};
+
+struct ProbeSendOutcome {
+  ProbeSendStatus status = ProbeSendStatus::disconnected;
+  std::size_t pending_reliable_sends = 0;
+  std::uint32_t transport_status = 0;
+};
+
+std::string_view ProbeSendStatusName(ProbeSendStatus status) noexcept;
 
 struct NetworkProbeRound {
   std::size_t payload_bytes;
@@ -13,6 +27,7 @@ struct NetworkProbeRound {
   std::uint32_t burst_packets;
   std::uint8_t variant;
   bool reliable;
+  std::uint8_t repeat = 1;
 };
 
 inline constexpr std::uint32_t kNetworkProbeSecondsPerRound = 30;

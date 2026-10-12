@@ -19,6 +19,7 @@ struct QuicServerOptions {
   bool has_certificate_sha1 = false;
   std::array<std::byte, 32> certificate_spki_sha256{};
   bool has_certificate_spki_sha256 = false;
+  bool network_probe = false;
   std::function<void(std::string_view)> diagnostic_log;
 };
 
@@ -29,23 +30,8 @@ struct QuicServerCallbacks {
   std::function<void()> on_datagram_unavailable;
   std::function<void(std::uint32_t, std::uint32_t, DebugSendState)>
       on_datagram_send_state;
+  std::function<void(std::uint32_t, std::uint32_t, bool)> on_probe_send_complete;
   std::function<void()> on_closed;
-};
-
-enum class ProbeSendStatus {
-  accepted,
-  disconnected,
-  stream_unavailable,
-  pending_limit,
-  invalid_size,
-  datagram_unavailable,
-  transport_rejected,
-};
-
-struct ProbeSendOutcome {
-  ProbeSendStatus status = ProbeSendStatus::disconnected;
-  std::size_t pending_reliable_sends = 0;
-  std::uint32_t transport_status = 0;
 };
 
 class QuicServer {
@@ -57,7 +43,7 @@ class QuicServer {
   virtual bool SendAudio(const wire::EncodedAudioDatagram& datagram) = 0;
   virtual ProbeSendOutcome SendProbe(std::span<const std::byte> datagram,
                                      std::uint32_t stream_id,
-                                     std::uint32_t sequence) = 0;
+                                     std::uint32_t sequence, bool reliable) = 0;
   virtual bool StartReliableAudio(std::uint32_t stream_id,
                                   std::uint32_t generation) = 0;
   virtual void CloseConnection() = 0;

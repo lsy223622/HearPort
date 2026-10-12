@@ -66,13 +66,17 @@ public final class ReceiverControlSession {
         self.keychain = keychain
         debugSessionDiagnostics = receiver.debugSessionDiagnostics
         debugReportTransfer = receiver.debugSessionDiagnostics.reportTransfer
+        self.transport.onProbePacket = { [weak self] data, receivedAt, bytes, count in
+            self?.debugSessionDiagnostics.recordProbePacket(
+                data, receivedAt: receivedAt, callbackBytes: bytes, callbackPackets: count
+            )
+        }
+        self.transport.onProbeHeartbeat = { [weak self] at, scheduledAt in
+            self?.debugSessionDiagnostics.recordProbeHeartbeat(at: at, scheduledAt: scheduledAt)
+        }
         self.transport.onAudioDatagram = { [weak self] data in
             guard let self else { return }
-            if self.isNetworkProbe {
-                self.debugSessionDiagnostics.recordProbePacket(data)
-            } else {
-                _ = self.receiver.receiveDatagram(data)
-            }
+            _ = self.receiver.receiveDatagram(data)
         }
         self.transport.onReliableAudioGeneration = { [weak receiver] streamID, _ in
             receiver?.beginReliableGeneration(streamID) ?? false

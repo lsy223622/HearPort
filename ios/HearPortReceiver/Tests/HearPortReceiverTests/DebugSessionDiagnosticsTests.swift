@@ -3,14 +3,40 @@ import XCTest
 @testable import HearPortReceiver
 
 final class DebugSessionDiagnosticsTests: XCTestCase {
+    func testConcurrentProbeRecordingKeepsEveryPacket() throws {
+        let directory = try temporaryDirectory("ConcurrentProbeTrace")
+        let diagnostics = HearPortDiagnostics(directory: directory.appendingPathComponent("logs"))
+        let transfer = DebugReportTransfer(directory: directory.appendingPathComponent("reports"))
+        let capture = DebugSessionDiagnostics(capacity: 6_000, reportTransfer: transfer,
+                                              diagnostics: diagnostics)
+        capture.begin(sessionID: Data(repeating: 0x29, count: 16), streamID: 7,
+                      durationSeconds: 610, networkProbe: true, networkProbeRepeat: true)
+        DispatchQueue.concurrentPerform(iterations: 6_000) { sequence in
+            let identity: [UInt8] = [0, 0, 0, 7, UInt8(truncatingIfNeeded: sequence >> 24),
+                                     UInt8(truncatingIfNeeded: sequence >> 16),
+                                     UInt8(truncatingIfNeeded: sequence >> 8),
+                                     UInt8(truncatingIfNeeded: sequence)]
+            capture.recordProbePacket(Data(identity + Array(repeating: 0, count: 480)))
+        }
+        _ = try capture.finish(reason: "test", diagnostics: diagnostics)
+        let report = try XCTUnwrap(String(data: XCTUnwrap(transfer.pendingReport()).data,
+                                          encoding: .utf8))
+        XCTAssertTrue(report.contains("probe_trace_records=6000"))
+        XCTAssertTrue(report.contains("trace_dropped=0"))
+    }
+
     func testRepeatedNetworkProbePlanAndReport() throws {
         let rounds = NetworkProbePlan.rounds(streamID: 7)
         XCTAssertEqual(rounds.map(\.variant), [
-            2, 1, 3, 0, 4, 4, 0, 3, 1, 2,
-            0, 4, 2, 3, 1, 1, 3, 2, 4, 0
+            2, 2, 1, 1, 3, 3, 0, 0, 4, 4,
+            4, 4, 0, 0, 3, 3, 1, 1, 2, 2
         ])
         XCTAssertEqual(rounds.map(\.packetsPerSecond).reduce(0, +) * 30, 216_000)
         XCTAssertEqual(rounds.filter(\.reliable).count, 10)
+        for index in 0..<20 {
+            XCTAssertEqual(rounds[index].reliable, index % 2 != index / 10)
+            XCTAssertEqual(rounds[index].repeatIndex, index / 10 + 1)
+        }
 
         let directory = try temporaryDirectory("RepeatedNetworkProbe")
         let diagnostics = HearPortDiagnostics(directory: directory.appendingPathComponent("logs"))
@@ -26,9 +52,9 @@ final class DebugSessionDiagnosticsTests: XCTestCase {
         _ = try capture.finish(reason: "duration_expired", diagnostics: diagnostics)
         let pending = try XCTUnwrap(transfer.pendingReport())
         let report = try XCTUnwrap(String(data: pending.data, encoding: .utf8))
-        XCTAssertTrue(report.contains("network_probe_rounds_v2"))
+        XCTAssertTrue(report.contains("network_probe_rounds_v3"))
         XCTAssertTrue(report.contains("1\tdatagram\t1\t2\t30\t488\t400\t4\t0\t12000\t1\t1"))
-        XCTAssertTrue(report.contains("20\treliable_stream\t2\t0"))
+        XCTAssertTrue(report.contains("20\tdatagram\t2\t2"))
     }
 
     func testNetworkProbeRecordsPacketSizeWithoutAudioPayload() throws {
@@ -41,16 +67,20 @@ final class DebugSessionDiagnosticsTests: XCTestCase {
         capture.begin(sessionID: Data(repeating: 0x27, count: 16),
                       streamID: 7, durationSeconds: 250, networkProbe: true)
         let packet = Data([0, 0, 0, 7, 0, 0, 0, 10] + Array(repeating: 0xa5, count: 480))
-        capture.recordProbePacket(packet)
+        capture.recordProbePacket(packet, receivedAt: 100, callbackBytes: 976, callbackPackets: 2)
+        capture.recordProbeHeartbeat(at: 210, scheduledAt: 200)
 
         _ = try capture.finish(reason: "duration_expired", diagnostics: diagnostics)
         let pending = try XCTUnwrap(transfer.pendingReport())
         let report = try XCTUnwrap(String(data: pending.data, encoding: .utf8))
         XCTAssertTrue(report.contains("probe_mode=network"))
-        XCTAssertTrue(report.contains("network_probe_trace_v1"))
+        XCTAssertTrue(report.contains("network_probe_trace_v2"))
         XCTAssertTrue(report.contains("network_probe_rounds_v1"))
         XCTAssertTrue(report.contains("5\treliable_stream\t30\t968\t400\t4\t42000\t12000"))
         XCTAssertTrue(report.contains("\t7\t10\t488"))
+        XCTAssertTrue(report.contains("100\t7\t10\t488\t"))
+        XCTAssertTrue(report.contains("\t976\t2"))
+        XCTAssertTrue(report.contains("network_probe_heartbeat_v1\nat_ns\tscheduled_at_ns\n210\t200"))
         XCTAssertFalse(report.contains("a5a5a5"))
         XCTAssertFalse(report.contains("\taccepted\tinserted\t"))
     }

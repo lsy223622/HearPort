@@ -1,4 +1,6 @@
 #include <cassert>
+#include <atomic>
+#include <array>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -46,6 +48,27 @@ int main() {
   assert(contents.find("quic_connection_connected accepted=1") != std::string::npos);
   assert(contents.find("quic_audio_summary packet=99") != std::string::npos);
   input.close();
+  hearport::windows::SenderDiagnosticLogger concurrent(2048);
+  assert(concurrent.Start(path));
+  std::atomic<std::size_t> accepted = 0;
+  std::array<std::thread, 4> writers;
+  for (auto& writer : writers) {
+    writer = std::thread([&] {
+      for (int index = 0; index < 200; ++index) {
+        if (concurrent.TryLog("network_probe_round_end test=concurrent")) ++accepted;
+      }
+    });
+  }
+  for (auto& writer : writers) writer.join();
+  concurrent.Stop();
+  assert(accepted == 800);
+  assert(concurrent.dropped_count() == 0);
+  std::ifstream concurrent_input(path);
+  std::string line;
+  std::size_t written = 0;
+  while (std::getline(concurrent_input, line)) ++written;
+  assert(written == 800);
+  concurrent_input.close();
   std::filesystem::remove_all(directory);
   return 0;
 }

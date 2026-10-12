@@ -599,6 +599,8 @@ public final class HearPortQuicTransport {
     public private(set) var state: QuicReceiverState = .idle
     public var onControlData: DataHandler?
     public var onAudioDatagram: DataHandler?
+    public var onProbePacket: (@Sendable (Data, UInt64, Int, Int) -> Void)?
+    public var onProbeHeartbeat: (@Sendable (UInt64, UInt64) -> Void)?
     public var onReliableAudioGeneration: ((UInt32, UInt32) -> Bool)?
     public var onStateChange: StateHandler?
     public var onControlStreamCreated: (() -> Void)?
@@ -613,6 +615,8 @@ public final class HearPortQuicTransport {
     private let audioMode: AudioTransportMode
     private var reliableAccepted = false
     private var networkProbe = false
+    private var probeTimer: DispatchSourceTimer?
+    private var probeHeartbeatScheduledAt: UInt64 = 0
     private var expectedAudioStreamID: UInt32?
     private var audioStream: NWConnection?
     private var audioGeneration: UInt32 = 0
@@ -800,6 +804,7 @@ public final class HearPortQuicTransport {
             maximumMessageSize: AudioDatagram.byteCount,
             rejectOversizedMessages: true
         ) { [weak self, weak connectionGroup] _, data, isComplete in
+            let receivedAt = DispatchTime.now().uptimeNanoseconds
             guard let self, let connectionGroup,
                   let activeGroup = self.group,
                   activeGroup === connectionGroup else { return }
@@ -818,7 +823,9 @@ public final class HearPortQuicTransport {
                         ]
                     )
                 }
-                if self.audioMode == .datagram || self.networkProbe {
+                if self.networkProbe {
+                    self.onProbePacket?(data, receivedAt, data.count, 1)
+                } else if self.audioMode == .datagram {
                     self.onAudioDatagram?(data)
                 }
             }
@@ -851,6 +858,8 @@ public final class HearPortQuicTransport {
     }
 
     public func cancel() {
+        probeTimer?.cancel()
+        probeTimer = nil
         progressTimer?.cancel()
         progressTimer = nil
         audioStream?.cancel()
@@ -884,6 +893,21 @@ public final class HearPortQuicTransport {
     public func enableNetworkProbe() {
         networkProbe = true
         reliableAccepted = true
+        probeTimer?.cancel()
+        probeHeartbeatScheduledAt = DispatchTime.now().uptimeNanoseconds + 100_000_000
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: DispatchTime(uptimeNanoseconds: probeHeartbeatScheduledAt),
+                       repeating: .milliseconds(100), leeway: .milliseconds(1))
+        timer.setEventHandler { [weak self] in
+            guard let self else { return }
+            let now = DispatchTime.now().uptimeNanoseconds
+            let scheduled = self.probeHeartbeatScheduledAt
+            self.onProbeHeartbeat?(now, scheduled)
+            let elapsed = now > scheduled ? now - scheduled : 0
+            self.probeHeartbeatScheduledAt = scheduled + (elapsed / 100_000_000 + 1) * 100_000_000
+        }
+        probeTimer = timer
+        timer.resume()
     }
 
     public func expectReliableAudio(streamID: UInt32,
@@ -901,6 +925,7 @@ public final class HearPortQuicTransport {
                               connectionGroup: NWConnectionGroup) {
         stream.receive(minimumIncompleteLength: 1, maximumLength: 65_540) {
             [weak self] data, _, isComplete, error in
+            let receivedAt = DispatchTime.now().uptimeNanoseconds
             guard let self, let activeGroup = self.group,
                   activeGroup === connectionGroup else { return }
             guard self.expectedAudioStreamID == records.expectedStreamID else {
@@ -919,7 +944,9 @@ public final class HearPortQuicTransport {
                     stream.cancel()
                     return
                 }
-                for packet in packets { self.onAudioDatagram?(packet) }
+                for packet in packets {
+                    self.onProbePacket?(packet, receivedAt, data?.count ?? 0, packets.count)
+                }
                 if isComplete || error != nil {
                     try records.finish()
                     if self.audioStream === stream { self.audioStream = nil }
