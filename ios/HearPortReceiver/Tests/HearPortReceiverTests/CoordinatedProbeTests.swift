@@ -18,7 +18,7 @@ final class CoordinatedProbeTests: XCTestCase {
 
     func testVirtualConsumerCountsContiguousSourceOnceAndRejectsFutureAudio() throws {
         let plan = try CoordinatedProbePlan(encoded: Data([1, 1, 30, 0, 3, 224, 1, 144, 1, 1, 0, 1, 2, 0, 5, 0]))
-        let budget = try PlayoutBudget(targetMilliseconds: 10, maximumMilliseconds: 100,
+        let budget = try PlayoutBudget(targetMilliseconds: 20, maximumMilliseconds: 100,
                                        outputReserveMilliseconds: 1)
         var consumer = ProbeConsumer(round: plan.rounds[0], budget: budget,
                                      firstSequence: 0, sourceFrame: 0)
