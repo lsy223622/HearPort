@@ -10,16 +10,17 @@ public struct ClockMapping: Sendable {
 
     public init() {}
 
+    @discardableResult
     public mutating func observe(localSent: UInt64, remoteReceived: UInt64,
-                                 remoteSent: UInt64, localReceived: UInt64) {
-        guard localReceived >= localSent, remoteSent >= remoteReceived else { return }
+                                 remoteSent: UInt64, localReceived: UInt64) -> Bool {
+        guard localReceived >= localSent, remoteSent >= remoteReceived else { return false }
         let elapsed = localReceived - localSent
         let remoteProcessing = remoteSent - remoteReceived
-        guard elapsed >= remoteProcessing else { return }
+        guard elapsed >= remoteProcessing else { return false }
         let roundTrip = elapsed - remoteProcessing
         guard roundTrip <= 500_000_000,
               bestRoundTrip == .max || roundTrip <= max(1_000_000, bestRoundTrip * 2)
-        else { return }
+        else { return false }
         let local = localSent + elapsed / 2
         let remote = remoteReceived + remoteProcessing / 2
         if let previous = remoteOrigin, remote > previous, local > localOrigin,
@@ -34,6 +35,7 @@ public struct ClockMapping: Sendable {
         updatedAt = localReceived
         bestRoundTrip = min(bestRoundTrip, roundTrip)
         uncertaintyNanoseconds = (roundTrip + 1) / 2
+        return true
     }
 
     public func map(remoteNanoseconds: UInt64, at now: UInt64) -> UInt64? {

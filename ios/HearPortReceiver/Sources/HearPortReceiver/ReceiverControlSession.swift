@@ -114,6 +114,7 @@ public final class ReceiverControlSession {
             if state == .ready {
                 self.sendConnectIfPossible()
             } else if state == .failed || state == .closed {
+                self.stopClockUpdates()
                 if self.debugSessionDiagnostics.isRecording {
                     let reason = state == .closed ? "connection_closed" : "connection_failed"
                     self.debugQueue.async { [weak self] in
@@ -555,6 +556,7 @@ public final class ReceiverControlSession {
                 clockAccepted = false
                 clockLock.unlock()
                 send(.audioSetup(streamID: streamID, budget: requestedBudget))
+                startClockUpdates()
                 requestClock()
             } else {
                 acknowledgeStream(streamID)
@@ -571,11 +573,14 @@ public final class ReceiverControlSession {
             let received = DispatchTime.now().uptimeNanoseconds
             clockLock.lock()
             let matches = requestID == clockRequestID && localSent == clockSentAt && localSent != 0
-            if matches { clockAccepted = true; clockSentAt = 0 }
+            if matches { clockSentAt = 0 }
             clockLock.unlock()
             guard matches else { return }
-            receiver.observeClock(localSent: localSent, remoteReceived: remoteReceived,
+            let accepted = receiver.observeClock(localSent: localSent, remoteReceived: remoteReceived,
                                   remoteSent: remoteSent, localReceived: received)
+            clockLock.lock()
+            if accepted { clockAccepted = true }
+            clockLock.unlock()
             finishCoordinatedStart()
         case let .error(code, message):
             diagnostics.log(
@@ -715,6 +720,12 @@ public final class ReceiverControlSession {
             return
         }
         pendingStreamAck = nil
+        clockLock.unlock()
+        acknowledgeStream(streamID)
+    }
+
+    private func startClockUpdates() {
+        clockLock.lock()
         let timer = DispatchSource.makeTimerSource(queue: debugQueue)
         timer.schedule(deadline: .now() + .seconds(2), repeating: .seconds(2))
         timer.setEventHandler { [weak self] in self?.requestClock() }
@@ -722,7 +733,6 @@ public final class ReceiverControlSession {
         clockTimer = timer
         timer.resume()
         clockLock.unlock()
-        acknowledgeStream(streamID)
     }
 
     private func stopClockUpdates() {
