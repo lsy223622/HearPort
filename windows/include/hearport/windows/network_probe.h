@@ -28,6 +28,9 @@ struct NetworkProbeRound {
   std::uint8_t variant;
   bool reliable;
   std::uint8_t repeat = 1;
+  std::uint8_t controller = 0;
+  std::uint8_t repair = 0;
+  std::uint8_t correction_percent = 5;
 };
 
 inline constexpr std::uint32_t kNetworkProbeSecondsPerRound = 30;
@@ -44,6 +47,10 @@ inline constexpr std::uint32_t kNetworkProbeDurationSeconds =
 
 std::array<NetworkProbeRound, kNetworkProbeRoundCount> MakeNetworkProbeRounds(
     std::uint32_t stream_id);
+
+std::vector<NetworkProbeRound> MakeCoordinatedProbeRounds(std::uint32_t stream_id);
+std::vector<std::byte> EncodeProbeManifest(const std::vector<NetworkProbeRound>& rounds);
+inline constexpr std::uint32_t kCoordinatedProbeDurationSeconds = 60 * kNetworkProbeSecondsPerRound + 10;
 
 std::vector<std::byte> MakeNetworkProbeDatagram(std::uint32_t stream_id,
                                                 std::uint32_t sequence,

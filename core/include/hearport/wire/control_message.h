@@ -32,6 +32,7 @@ enum class ControlMessageType : std::uint8_t {
   diagnostics_report_end,
   diagnostics_report_received,
   audio_progress,
+  probe_manifest,
   audio_setup,
   clock_request,
   clock_response,

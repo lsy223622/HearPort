@@ -47,4 +47,16 @@ int main() {
   assert(packet[8] != packet[9]);
   const auto next = MakeNetworkProbeDatagram(0x01020304, 0x11223345, 488);
   assert(packet[8] != next[8]);
+  const auto coordinated = MakeCoordinatedProbeRounds(7);
+  assert(coordinated.size() == 60);
+  const auto manifest = EncodeProbeManifest(coordinated);
+  assert(manifest.size() == 724);
+  assert(manifest[0] == std::byte{1} && manifest[1] == std::byte{60});
+  std::uint32_t source_seconds = 0;
+  for (const auto& round : coordinated) {
+    assert(round.payload_bytes == 512 || round.payload_bytes == 992);
+    assert(!round.reliable || round.repair == 0);
+    source_seconds += kNetworkProbeSecondsPerRound;
+  }
+  assert(source_seconds == 1800);
 }

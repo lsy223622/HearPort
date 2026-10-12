@@ -75,4 +75,51 @@ std::vector<std::byte> MakeNetworkProbeDatagram(std::uint32_t stream_id,
   return packet;
 }
 
+std::vector<NetworkProbeRound> MakeCoordinatedProbeRounds(std::uint32_t stream_id) {
+  std::vector<NetworkProbeRound> candidates;
+  auto add = [&](std::size_t variant, bool reliable, std::uint8_t controller, std::uint8_t repair = 0) {
+    auto round = kNetworkProbeVariants[variant];
+    round.payload_bytes += 24;
+    round.reliable = reliable;
+    round.controller = controller;
+    round.repair = repair;
+    round.correction_percent = controller == 3 ? 10 : 5;
+    candidates.push_back(round);
+  };
+  for (std::size_t variant = 0; variant < 5; ++variant)
+    for (bool reliable : {false, true}) add(variant, reliable, 0);
+  for (std::size_t variant : {1u, 3u, 4u})
+    for (bool reliable : {false, true})
+      for (std::uint8_t controller : {1, 2}) add(variant, reliable, controller);
+  for (bool reliable : {false, true}) add(1, reliable, 3);
+  for (std::size_t variant : {1u, 4u})
+    for (std::uint8_t repair : {1, 2, 3}) add(variant, false, 2, repair);
+  std::uint32_t state = stream_id ^ 0xa5a55a5au;
+  if (state == 0) state = 1;
+  for (std::size_t remaining = candidates.size(); remaining > 1; --remaining) {
+    state ^= state << 13; state ^= state >> 17; state ^= state << 5;
+    std::swap(candidates[remaining - 1], candidates[state % remaining]);
+  }
+  auto rounds = candidates;
+  for (auto item = candidates.rbegin(); item != candidates.rend(); ++item) {
+    auto round = *item; round.repeat = 2; rounds.push_back(round);
+  }
+  return rounds;
+}
+
+std::vector<std::byte> EncodeProbeManifest(const std::vector<NetworkProbeRound>& rounds) {
+  if (rounds.empty() || rounds.size() > 100) throw std::invalid_argument("invalid probe plan");
+  std::vector<std::byte> bytes{std::byte{1}, std::byte(rounds.size()), std::byte{30}, std::byte{0}};
+  for (const auto& round : rounds) {
+    bytes.push_back(std::byte(round.payload_bytes >> 8));
+    bytes.push_back(std::byte(round.payload_bytes & 255));
+    bytes.push_back(std::byte(round.packets_per_second >> 8));
+    bytes.push_back(std::byte(round.packets_per_second & 255));
+    for (unsigned value : {round.burst_packets, unsigned(round.variant), unsigned(round.reliable),
+                          unsigned(round.repeat), unsigned(round.controller), unsigned(round.repair),
+                          unsigned(round.correction_percent), 0u}) bytes.push_back(std::byte(value));
+  }
+  return bytes;
+}
+
 }  // namespace hearport::windows
