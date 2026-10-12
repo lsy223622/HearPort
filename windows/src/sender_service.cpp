@@ -18,6 +18,7 @@
 #include "hearport/wire/audio_datagram.h"
 #include "hearport/wire/control_framing.h"
 #include "hearport/windows/network_probe.h"
+#include "hearport/windows/audio_deadline.h"
 
 namespace hearport::windows {
 
@@ -272,7 +273,9 @@ bool SenderService::MarkStartStreamAckWritten(std::uint32_t stream_id) {
     if (!quic_->StartReliableAudio(stream_id, 1)) return false;
     std::lock_guard reliable_lock(reliable_mutex_);
     reliable_generation_ = 1;
-    reliable_lag_.Begin(stream_id, 1, ReliableAudioLag::Clock::now());
+    reliable_lag_.Begin(stream_id, 1, ReliableAudioLag::Clock::now(),
+        std::chrono::milliseconds(coordinated_audio_.load()
+            ? maximum_ms_.load() - output_reserve_ms_.load() : 400));
   }
   std::lock_guard debug_lock(debug_mutex_);
   if (pending_debug_session_) {
@@ -437,14 +440,21 @@ bool SenderService::ConfigurePlayoutBudget(std::uint32_t target_ms,
 
 bool SenderService::ObserveAudioProgress(
     std::uint32_t stream_id, std::uint32_t generation,
-    std::optional<std::uint32_t> latest_received) {
+    std::optional<std::uint32_t> latest_received, std::uint64_t feedback_at_ns) {
   std::unique_lock send_lock(audio_send_mutex_);
   if (!reliable_mode_.load()) return false;
   std::optional<std::uint32_t> latest_produced;
   {
     std::lock_guard reliable_lock(reliable_mutex_);
+    std::chrono::milliseconds feedback_age{0};
+    if (coordinated_audio_.load()) {
+      const auto now_ns = static_cast<std::uint64_t>(MonotonicNanoseconds());
+      if (feedback_at_ns == 0 || feedback_at_ns > now_ns + 10'000'000ull) return true;
+      feedback_age = std::chrono::milliseconds(
+          now_ns > feedback_at_ns ? (now_ns - feedback_at_ns) / 1'000'000 : 0);
+    }
     if (!reliable_lag_.Observe(stream_id, generation, latest_received,
-                               ReliableAudioLag::Clock::now())) {
+                               ReliableAudioLag::Clock::now(), feedback_age)) {
       return true;
     }
     latest_produced = reliable_lag_.latest_produced();
@@ -469,7 +479,8 @@ bool SenderService::ObserveAudioProgress(
     std::lock_guard reliable_lock(reliable_mutex_);
     reliable_generation_ = next_generation;
     reliable_lag_.Begin(stream_id, next_generation,
-                        ReliableAudioLag::Clock::now());
+                        ReliableAudioLag::Clock::now(), std::chrono::milliseconds(
+                          coordinated_audio_.load() ? maximum_ms_.load() - output_reserve_ms_.load() : 400));
   }
   send_lock.unlock();
   LogDiagnostic("reliable_audio_live_edge_restart stream_id=" +
@@ -567,6 +578,16 @@ std::uint64_t SenderService::dropped_audio_packets() const noexcept {
 void SenderService::EnqueueAudio(const wire::AudioDatagram& packet,
                                   std::int64_t captured_at_ns, std::uint64_t source_frame) {
   std::lock_guard lock(queue_mutex_);
+  if (coordinated_audio_.load()) {
+    const AudioDeadline deadline(maximum_ms_.load(), output_reserve_ms_.load());
+    const auto now = static_cast<std::uint64_t>(MonotonicNanoseconds());
+    while (!audio_queue_.empty() && deadline.Expired(
+             static_cast<std::uint64_t>(audio_queue_.front().captured_at_ns), now)) {
+      audio_queue_.pop_front();
+      ++dropped_audio_packets_;
+      audio_metrics_.record_dropped(false);
+    }
+  }
   if (audio_queue_.size() >= kAudioQueueCapacity) {
     ++dropped_audio_packets_;
     audio_metrics_.record_dropped(false);
@@ -611,6 +632,14 @@ void SenderService::AudioWorker() {
       }
     }
     std::unique_lock send_lock(audio_send_mutex_);
+    if (coordinated_audio_.load() && AudioDeadline(maximum_ms_.load(), output_reserve_ms_.load())
+          .Expired(static_cast<std::uint64_t>(queued.captured_at_ns),
+                   static_cast<std::uint64_t>(MonotonicNanoseconds()))) {
+      std::lock_guard queue_lock(queue_mutex_);
+      ++dropped_audio_packets_;
+      audio_metrics_.record_dropped(false);
+      continue;
+    }
     {
       std::lock_guard session_lock(session_mutex_);
       if (session_.AcceptAudio(queued.packet) != AudioDisposition::accepted) {
