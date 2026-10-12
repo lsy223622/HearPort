@@ -56,9 +56,9 @@ public struct PlayoutController: Sendable {
     }
 
     public mutating func observeArrival(sourceFrame: UInt64, capturedAt: UInt64,
-                                        receivedAt: UInt64) {
+                                        receivedAt: UInt64, original: Bool = true) {
         if anchor == nil { anchor = (sourceFrame, capturedAt) }
-        guard receivedAt >= capturedAt else { return }
+        guard original, receivedAt >= capturedAt else { return }
         delays.append(Double(receivedAt - capturedAt) / 1_000_000)
         if delays.count > 256 { delays.removeFirst(delays.count - 256) }
     }

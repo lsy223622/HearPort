@@ -21,6 +21,8 @@ public final class HearPortReceiver {
     private var playoutController: PlayoutController?
     private var timedPackets: [UInt32: (record: TimedAudioRecord, capturedAt: UInt64, uncertainty: UInt64)] = [:]
     private var sourceAnchor: (sequence: UInt32, frame: UInt64)?
+    private var timeStretch = StreamingTimeStretch()
+    private var concealment = MusicConcealment()
     private let targetFramesAtomic = AtomicUInt64()
     private let dynamicCorrectionAtomic = AtomicUInt64(Double(0).bitPattern)
     private let renderRequestFramesAtomic = AtomicUInt64(120)
@@ -79,6 +81,8 @@ public final class HearPortReceiver {
     public var isRenderActive: Bool {
         renderActiveAtomic.load() != 0 && renderRing.fillFrames > 0
     }
+
+    public var dynamicCorrection: Double { Double(bitPattern: dynamicCorrectionAtomic.load()) }
 
     public var jitterStats: JitterStats? {
         lock.lock()
@@ -141,6 +145,9 @@ public final class HearPortReceiver {
         playoutBudget = nil
         timedPackets.removeAll(keepingCapacity: true)
         sourceAnchor = nil
+        timeStretch.reset()
+        concealment.reset()
+        dynamicCorrectionAtomic.store(Double(0).bitPattern)
         renderRing.setMaximumAge(nanoseconds: 0)
         jitter = nil
         renderActiveAtomic.store(0)
@@ -167,6 +174,9 @@ public final class HearPortReceiver {
         if accepted {
             timedPackets.removeAll(keepingCapacity: true)
             sourceAnchor = nil
+        timeStretch.reset()
+        concealment.reset()
+        dynamicCorrectionAtomic.store(Double(0).bitPattern)
             jitter = JitterBuffer(streamID: streamID,
                                   targetPackets: jitterTargetPackets)
             renderActiveAtomic.store(0)
@@ -202,6 +212,9 @@ public final class HearPortReceiver {
         jitter = JitterBuffer(streamID: streamID, targetPackets: jitterTargetPackets)
         timedPackets.removeAll(keepingCapacity: true)
         sourceAnchor = nil
+        timeStretch.reset()
+        concealment.reset()
+        dynamicCorrectionAtomic.store(Double(0).bitPattern)
         if let budget = playoutBudget { playoutController = PlayoutController(budget: budget) }
         renderActiveAtomic.store(0)
         jitterFillFramesAtomic.store(0)
@@ -238,12 +251,14 @@ public final class HearPortReceiver {
         lock.unlock()
     }
 
+    @discardableResult
     public func observeClock(localSent: UInt64, remoteReceived: UInt64,
-                              remoteSent: UInt64, localReceived: UInt64) {
+                              remoteSent: UInt64, localReceived: UInt64) -> Bool {
         lock.lock()
-        clockMapping.observe(localSent: localSent, remoteReceived: remoteReceived,
+        let accepted = clockMapping.observe(localSent: localSent, remoteReceived: remoteReceived,
                               remoteSent: remoteSent, localReceived: localReceived)
         lock.unlock()
+        return accepted
     }
 
     @discardableResult
@@ -352,10 +367,8 @@ public final class HearPortReceiver {
                 if insertResult == .inserted, let timedRecord, let captured {
                     timedPackets[packet.sequence] = (timedRecord, captured, clockMapping.uncertaintyNanoseconds)
                     if sourceAnchor == nil { sourceAnchor = (packet.sequence, timedRecord.sourceFrame) }
-                    if timedRecord.kind == .audio {
-                        playoutController?.observeArrival(sourceFrame: timedRecord.sourceFrame,
-                                                          capturedAt: captured, receivedAt: receivedAt)
-                    }
+                    playoutController?.observeArrival(sourceFrame: timedRecord.sourceFrame,
+                        capturedAt: captured, receivedAt: receivedAt, original: timedRecord.kind == .audio)
                 }
                 let started = playoutController == nil ? (jitter?.startIfReady() ?? false) : false
                 pumpLocked()
@@ -596,15 +609,36 @@ public final class HearPortReceiver {
             }
             if let packet = jitter?.consumeNext() {
                 timedPackets.removeValue(forKey: sequence)
-                renderRing.pushTimed(Self.decodePCM(packet.pcm), sourceBegin: position,
-                                      sourceEnd: position + 120, capturedAt: captured)
+                var samples = Self.decodePCM(packet.pcm)
+                var sourceEnd = position + 120
+                if abs(decision.correction) > 0.001,
+                   renderRing.fillFrames + 840 <= ringReserveFrames,
+                   (jitter?.contiguousPackets ?? 0) >= 5 {
+                    let following = (1...5).map { sequence &+ UInt32($0) }
+                    let valid = following.allSatisfy { key in
+                        guard let item = timedPackets[key] else { return false }
+                        return budget.prepareDeadline(capturedAt: item.capturedAt,
+                            uncertaintyNanoseconds: item.uncertainty) > now
+                    }
+                    if valid {
+                        for key in following {
+                            guard let next = jitter?.consumeNext() else { break }
+                            samples += Self.decodePCM(next.pcm)
+                            timedPackets.removeValue(forKey: key)
+                            sourceEnd += 120
+                        }
+                        samples = timeStretch.process(samples, correction: decision.correction)
+                    }
+                }
+                renderRing.pushTimed(concealment.accept(samples), sourceBegin: position,
+                                      sourceEnd: sourceEnd, capturedAt: captured)
             } else if jitter?.mode == .running,
                       (deadline <= now || renderRing.fillFrames <= Int(renderRequestFramesAtomic.load()) + 240),
-                      let concealed = jitter?.concealMissing() {
+                      jitter?.concealMissing() != nil {
                 realtimeMetrics.recordConcealment()
                 debugSessionDiagnostics.recordJitterDecision(streamID: jitter!.streamID,
                     sequence: sequence, decision: .concealed, at: now, fillPackets: jitter!.fillPackets)
-                renderRing.pushTimed(Self.decodePCM(concealed), sourceBegin: position,
+                renderRing.pushTimed(concealment.conceal(frames: 120), sourceBegin: position,
                                       sourceEnd: position + 120, capturedAt: captured)
             } else { break }
         }
@@ -616,6 +650,9 @@ public final class HearPortReceiver {
             jitter?.enterSilentRebuffer()
             timedPackets.removeAll(keepingCapacity: true)
             sourceAnchor = nil
+        timeStretch.reset()
+        concealment.reset()
+        dynamicCorrectionAtomic.store(Double(0).bitPattern)
             if let budget = playoutBudget { playoutController = PlayoutController(budget: budget) }
             session.enterSilentRebuffer()
             lifecycle.enterSilentRebuffer()
@@ -677,6 +714,10 @@ public final class HearPortReceiver {
         let lifecycleState = lifecycle.state
         let route = outputRoute
         let sampleRate = outputSampleRate
+        let stretchInput = timeStretch.inputFrames
+        let stretchOutput = timeStretch.outputFrames
+        let requestedCorrection = dynamicCorrection
+        let expiredFrames = renderRing.expiredFrames
         lock.unlock()
 
         let diagnosticsDropped = diagnostics.snapshot().asyncDroppedCount
@@ -699,7 +740,12 @@ public final class HearPortReceiver {
             level,
             category: .realtime,
             message: "realtime_summary",
-            fields: snapshot.fields
+            fields: snapshot.fields.merging([
+                "requested_correction": "\(requestedCorrection)",
+                "stretch_input_frames": "\(stretchInput)",
+                "stretch_output_frames": "\(stretchOutput)",
+                "output_expired_frames": "\(expiredFrames)"
+            ]) { _, value in value }
         )
     }
 
@@ -1103,7 +1149,7 @@ public final class HearPortQuicTransport {
             var records = records
             do {
                 let packets = try records.append(data ?? Data())
-                if let generation = records.generation, generation > self.audioGeneration {
+                if let generation = records.generation, (self.audioGeneration == 0 || SequenceNumber.isBefore(self.audioGeneration, generation)) {
                     self.audioStream?.cancel()
                     self.audioStream = stream
                     self.audioGeneration = generation
@@ -1146,7 +1192,7 @@ public final class HearPortQuicTransport {
             var records = records
             do {
                 let packets = try records.append(data ?? Data())
-                if let generation = records.generation, generation > self.audioGeneration {
+                if let generation = records.generation, (self.audioGeneration == 0 || SequenceNumber.isBefore(self.audioGeneration, generation)) {
                     self.audioStream?.cancel()
                     guard self.onReliableAudioGeneration?(records.expectedStreamID,
                                                           generation) == true else {

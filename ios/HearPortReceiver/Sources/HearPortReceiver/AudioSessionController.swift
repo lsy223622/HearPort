@@ -299,7 +299,7 @@ public final class PlatformAudioOutputController {
         let fillError = Double(fillFrames - receiver.jitterTargetFrames)
         let ratio = drift.update(
             fillError: fillError,
-            validAudio: receiver.isRenderActive
+            validAudio: receiver.isRenderActive && abs(receiver.dynamicCorrection) <= 0.001
         )
         let sourceFrames = max(
             1,

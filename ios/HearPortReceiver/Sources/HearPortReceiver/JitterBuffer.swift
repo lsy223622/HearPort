@@ -31,6 +31,7 @@ public struct JitterBuffer {
 
     public private(set) var targetPackets: Int
     private var recoveryPackets: Int
+    private var deadlineControlled = false
     public let maximumPackets: Int
     private var packets: [UInt32: AudioDatagram] = [:]
     private var nextSequence: UInt32?
@@ -71,6 +72,7 @@ public struct JitterBuffer {
     }
 
     public mutating func setTargetPackets(_ target: Int, recoveryPackets: Int) {
+        deadlineControlled = true
         targetPackets = min(maximumPackets, max(1, target))
         self.recoveryPackets = min(maximumPackets, max(targetPackets, recoveryPackets))
     }
@@ -114,7 +116,7 @@ public struct JitterBuffer {
             return .wrongStream
         }
         if let expected = nextSequence, SequenceNumber.isBefore(packet.sequence, expected) {
-            if mode == .running {
+            if mode == .running || !deadlineControlled {
                 stats.latePackets += 1
                 return .late
             }
