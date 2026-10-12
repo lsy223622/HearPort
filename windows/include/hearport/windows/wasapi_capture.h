@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <span>
@@ -12,7 +13,7 @@ namespace hearport::windows {
 class WasapiLoopbackCapture {
  public:
   using PacketHandler = std::function<void(std::span<const std::byte>,
-                                           const PcmFormat&)>;
+                                           const PcmFormat&, std::uint64_t)>;
   using ResetHandler = std::function<void()>;
 
   WasapiLoopbackCapture();

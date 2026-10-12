@@ -25,12 +25,24 @@ AudioPacketizer::AudioPacketizer(std::uint32_t stream_id) : stream_id_(stream_id
 
 void AudioPacketizer::Push(std::span<const float> interleaved_stereo,
                            const PacketHandler& handler) {
+  PushTimed(interleaved_stereo, 0,
+            [&](const wire::AudioDatagram& packet, std::uint64_t, std::uint64_t) {
+              handler(packet);
+            });
+}
+
+void AudioPacketizer::PushTimed(std::span<const float> interleaved_stereo,
+                                std::uint64_t captured_at_ns,
+                                const TimedPacketHandler& handler) {
   if (interleaved_stereo.size() % 2 != 0) {
     throw std::invalid_argument("packetizer input must contain stereo frames");
   }
 
   std::size_t offset = 0;
   while (offset < interleaved_stereo.size()) {
+    if (buffered_samples_ == 0) {
+      pending_capture_ns_ = captured_at_ns + (offset / 2) * 1'000'000'000ull / 48'000;
+    }
     const auto copy_count = std::min(kSamplesPerPacket - buffered_samples_,
                                      interleaved_stereo.size() - offset);
     std::copy_n(interleaved_stereo.begin() +
@@ -50,7 +62,8 @@ void AudioPacketizer::Push(std::span<const float> interleaved_stereo,
       WriteLittleEndian32(std::bit_cast<std::uint32_t>(pending_[sample]),
                           packet.pcm.data() + sample * sizeof(float));
     }
-    handler(packet);
+    handler(packet, pending_capture_ns_, source_frame_);
+    source_frame_ += 120;
     buffered_samples_ = 0;
   }
 }
@@ -62,6 +75,8 @@ void AudioPacketizer::Reset(std::uint32_t stream_id) {
   stream_id_ = stream_id;
   sequence_ = 0;
   buffered_samples_ = 0;
+  pending_capture_ns_ = 0;
+  source_frame_ = 0;
 }
 
 }  // namespace hearport::windows

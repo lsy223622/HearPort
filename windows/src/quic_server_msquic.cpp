@@ -190,7 +190,7 @@ class MsQuicServer final : public QuicServer {
     return true;
   }
 
-  bool SendAudio(const wire::EncodedAudioDatagram& datagram) override {
+  bool SendAudio(std::span<const std::byte> datagram) override {
     std::lock_guard lock(mutex_);
     if (!started_ || connection_ == nullptr || api_ == nullptr) {
       return false;
@@ -211,11 +211,14 @@ class MsQuicServer final : public QuicServer {
       }
       return true;
     }
-    if (!datagram_ready_) return false;
+    if (!datagram_ready_ || datagram.size() > datagram_max_payload_) return false;
     const auto packet = wire::DecodeAudioDatagram(datagram);
-    if (!packet) return false;
-    auto* context = new SendBufferContext(datagram, packet->stream_id,
-                                         packet->sequence);
+    const auto timed = packet ? std::optional<wire::TimedAudioRecord>{}
+                              : wire::DecodeTimedAudioRecord(datagram);
+    if (!packet && !timed) return false;
+    auto* context = new SendBufferContext(datagram);
+    context->stream_id = packet ? packet->stream_id : timed->stream_id;
+    context->sequence = packet ? packet->sequence : timed->sequence;
     context->on_send_state = callbacks_.on_datagram_send_state;
     const auto status = api_->DatagramSend(
         connection_, &context->buffer, 1, QUIC_SEND_FLAG_NONE, context);
@@ -443,7 +446,8 @@ class MsQuicServer final : public QuicServer {
           if (server->connection_ == connection) {
             ready = send_enabled &&
                     max_send_length >= kAudioDatagramBytes;
-            server->datagram_ready_ = ready;
+          server->datagram_ready_ = ready;
+          server->datagram_max_payload_ = max_send_length;
             on_ready = server->callbacks_.on_datagram_ready;
             on_unavailable = server->callbacks_.on_datagram_unavailable;
           }
@@ -719,6 +723,7 @@ class MsQuicServer final : public QuicServer {
   QuicServerOptions options_{};
   QuicServerCallbacks callbacks_{};
   bool datagram_ready_ = false;
+  std::size_t datagram_max_payload_ = 0;
   bool reliable_mode_ = false;
   std::atomic<std::uint64_t> audio_epoch_ = 0;
   std::atomic<std::size_t> pending_reliable_sends_ = 0;
@@ -747,7 +752,7 @@ class UnavailableQuicServer final : public QuicServer {
     return false;
   }
   bool SendControl(std::span<const std::byte>) override { return false; }
-  bool SendAudio(const wire::EncodedAudioDatagram&) override { return false; }
+  bool SendAudio(std::span<const std::byte>) override { return false; }
   ProbeSendOutcome SendProbe(std::span<const std::byte>, std::uint32_t,
                              std::uint32_t, bool) override {
     return {ProbeSendStatus::disconnected};

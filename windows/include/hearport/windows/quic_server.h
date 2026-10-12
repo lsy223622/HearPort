@@ -40,7 +40,7 @@ class QuicServer {
   virtual bool Start(const QuicServerOptions& options,
                      QuicServerCallbacks callbacks) = 0;
   virtual bool SendControl(std::span<const std::byte> framed_bytes) = 0;
-  virtual bool SendAudio(const wire::EncodedAudioDatagram& datagram) = 0;
+  virtual bool SendAudio(std::span<const std::byte> datagram) = 0;
   virtual ProbeSendOutcome SendProbe(std::span<const std::byte> datagram,
                                      std::uint32_t stream_id,
                                      std::uint32_t sequence, bool reliable) = 0;

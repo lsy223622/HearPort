@@ -67,5 +67,17 @@ int main() {
   });
   assert(packets == 1);
   assert(packetizer.buffered_frames() == 1);
+  hearport::windows::AudioPacketizer timed_packetizer(9);
+  std::vector<std::uint64_t> times;
+  std::vector<std::uint64_t> positions;
+  auto timed_handler = [&](const auto&, std::uint64_t timestamp, std::uint64_t position) {
+    times.push_back(timestamp);
+    positions.push_back(position);
+  };
+  std::vector<float> part(180 * 2, 0.25f);
+  timed_packetizer.PushTimed(part, 1'000'000'000, timed_handler);
+  timed_packetizer.PushTimed(std::span(part).first(120), 1'003'750'000, timed_handler);
+  assert(times == std::vector<std::uint64_t>({1'000'000'000, 1'002'500'000}));
+  assert(positions == std::vector<std::uint64_t>({0, 120}));
   return 0;
 }

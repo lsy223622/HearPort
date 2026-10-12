@@ -10,12 +10,23 @@ struct ReliableAudioRecords {
     let expectedStreamID: UInt32
     private(set) var generation: UInt32?
     private var pending = Data()
+    private var timedDecoder: ReliableTimedAudioRecords?
+    private(set) var timedPackets: [TimedAudioRecord] = []
 
-    init(expectedStreamID: UInt32) {
+    init(expectedStreamID: UInt32, timed: Bool = false) {
         self.expectedStreamID = expectedStreamID
+        if timed { timedDecoder = ReliableTimedAudioRecords(expectedStreamID: expectedStreamID) }
     }
 
     mutating func append(_ bytes: Data) throws -> [AudioDatagram] {
+        if var decoder = timedDecoder {
+            timedPackets = try decoder.append(bytes)
+            timedDecoder = decoder
+            generation = decoder.generation
+            return try timedPackets.map {
+                try AudioDatagram(streamID: $0.streamID, sequence: $0.sequence, pcm: $0.payload)
+            }
+        }
         pending.append(bytes)
         if generation == nil {
             guard pending.count >= 8 else { return [] }
@@ -46,6 +57,7 @@ struct ReliableAudioRecords {
     }
 
     func finish() throws {
+        if let timedDecoder { try timedDecoder.finish(); return }
         guard generation != nil, pending.isEmpty else {
             throw ReliableAudioRecordsError.incompleteRecord
         }
@@ -100,6 +112,45 @@ struct ReliableProbeRecords {
         }
         if consumed != 0 { pending.removeSubrange(0..<consumed) }
         return packets
+    }
+
+    func finish() throws {
+        guard generation != nil, pending.isEmpty else {
+            throw ReliableAudioRecordsError.incompleteRecord
+        }
+    }
+}
+
+struct ReliableTimedAudioRecords {
+    let expectedStreamID: UInt32
+    private(set) var generation: UInt32?
+    private var pending = Data()
+
+    init(expectedStreamID: UInt32) { self.expectedStreamID = expectedStreamID }
+
+    mutating func append(_ bytes: Data) throws -> [TimedAudioRecord] {
+        pending.append(bytes)
+        if generation == nil {
+            guard pending.count >= 8 else { return [] }
+            let stream = pending.prefix(4).reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
+            let next = pending.dropFirst(4).prefix(4).reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
+            guard stream == expectedStreamID, next != 0 else {
+                throw ReliableAudioRecordsError.invalidPreface
+            }
+            generation = next
+            pending.removeSubrange(0..<8)
+        }
+        var records: [TimedAudioRecord] = []
+        var consumed = 0
+        while pending.count - consumed >= 992 {
+            let record = try TimedAudioRecord(encoded: pending.subdata(in: consumed..<consumed + 992))
+            guard record.streamID == expectedStreamID, record.generation == generation,
+                  record.kind == .audio else { throw ReliableAudioRecordsError.invalidRecord }
+            records.append(record)
+            consumed += 992
+        }
+        if consumed != 0 { pending.removeSubrange(0..<consumed) }
+        return records
     }
 
     func finish() throws {

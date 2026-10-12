@@ -19,6 +19,7 @@ public final class HearPortReceiver {
     private var lastReceivedSequence: UInt32?
     private var clockMapping = ClockMapping()
     private var playoutController: PlayoutController?
+    private var timedPackets: [UInt32: TimedAudioRecord] = [:]
     public private(set) var playoutBudget: PlayoutBudget?
     private var outputRoute = "unknown"
     private var outputSampleRate = 48_000.0
@@ -133,6 +134,7 @@ public final class HearPortReceiver {
         clockMapping = ClockMapping()
         playoutController = nil
         playoutBudget = nil
+        timedPackets.removeAll(keepingCapacity: true)
         jitter = nil
         renderActiveAtomic.store(0)
         jitterFillFramesAtomic.store(0)
@@ -223,6 +225,25 @@ public final class HearPortReceiver {
         clockMapping.observe(localSent: localSent, remoteReceived: remoteReceived,
                               remoteSent: remoteSent, localReceived: localReceived)
         lock.unlock()
+    }
+
+    @discardableResult
+    public func receiveTimedRecord(_ record: TimedAudioRecord) -> AudioDisposition? {
+        let now = DispatchTime.now().uptimeNanoseconds
+        lock.lock()
+        guard let captured = clockMapping.map(remoteNanoseconds: record.capturedAt, at: now),
+              record.kind == .audio || record.kind == .retransmission || record.kind == .repeated,
+              session.activeStreamID == record.streamID || session.pendingStreamID == record.streamID
+        else { lock.unlock(); return nil }
+        timedPackets[record.sequence] = record
+        playoutController?.observeArrival(sourceFrame: record.sourceFrame,
+                                          capturedAt: captured, receivedAt: now)
+        lock.unlock()
+        guard let packet = try? AudioDatagram(streamID: record.streamID,
+                                              sequence: record.sequence, pcm: record.payload) else {
+            return nil
+        }
+        return receiveDatagram(packet.encoded)
     }
 
     @discardableResult
@@ -635,6 +656,7 @@ public final class HearPortQuicTransport {
     private var loggedFirstDatagram = false
     private let audioMode: AudioTransportMode
     private var reliableAccepted = false
+    private var coordinatedAudio = false
     private var networkProbe = false
     private var probeTimer: DispatchSourceTimer?
     private var probeHeartbeatScheduledAt: UInt64 = 0
@@ -816,13 +838,14 @@ public final class HearPortQuicTransport {
                                   connectionGroup: connectionGroup)
             } else {
                 self.receiveAudio(on: connection,
-                                  records: ReliableAudioRecords(expectedStreamID: streamID),
+                                  records: ReliableAudioRecords(expectedStreamID: streamID,
+                                                                timed: self.coordinatedAudio),
                                   connectionGroup: connectionGroup)
             }
             connection.start(queue: self.queue)
         }
         connectionGroup.setReceiveHandler(
-            maximumMessageSize: AudioDatagram.byteCount,
+            maximumMessageSize: 1024,
             rejectOversizedMessages: true
         ) { [weak self, weak connectionGroup] _, data, isComplete in
             let receivedAt = DispatchTime.now().uptimeNanoseconds
@@ -890,6 +913,7 @@ public final class HearPortQuicTransport {
         progressSequence = nil
         progressInFlight = false
         reliableAccepted = false
+        coordinatedAudio = false
         networkProbe = false
         controlStream?.cancel()
         group?.cancel()
@@ -941,6 +965,8 @@ public final class HearPortQuicTransport {
         expectedAudioStreamID = streamID
         progressSequence = latestReceivedSequence
     }
+
+    public func acceptCoordinatedAudio() { coordinatedAudio = true }
 
     private func receiveProbe(on stream: NWConnection, records: ReliableProbeRecords,
                               connectionGroup: NWConnectionGroup) {
@@ -1018,7 +1044,10 @@ public final class HearPortQuicTransport {
                     stream.cancel()
                     return
                 }
-                for packet in packets { self.onAudioDatagram?(packet.encoded) }
+                for (index, packet) in packets.enumerated() {
+                    self.onAudioDatagram?(records.timedPackets.isEmpty
+                        ? packet.encoded : records.timedPackets[index].encoded)
+                }
                 if isComplete {
                     do {
                         try records.finish()
