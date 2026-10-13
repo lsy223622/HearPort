@@ -195,7 +195,8 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
         let sequence = timed?.sequence ?? data.dropFirst(4).prefix(4).reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
         if let timed, let plan = session.coordinatedPlan, let mappedCapturedAt {
             if probeStartedAt == nil {
-                let sourceTime = UInt64(Double(timed.sourceFrame) / 48_000 * 1e9)
+                let sourceTime = UInt64(Double(timed.sourceFrame) / 48_000 * 1e9) +
+                    (timed.sourceFrame / (30 * 48_000)) * UInt64(plan.recoverySeconds) * 1_000_000_000
                 if mappedCapturedAt >= sourceTime { probeStartedAt = mappedCapturedAt - sourceTime }
             }
             advanceProbeRound(at: receivedAt, plan: plan)
@@ -248,7 +249,7 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
 
     private func advanceProbeRound(at now: UInt64, plan: CoordinatedProbePlan) {
         guard let start = probeStartedAt, now >= start else { return }
-        let index = min(plan.rounds.count - 1, Int((now - start) / 30_000_000_000))
+        let index = min(plan.rounds.count - 1, Int((now - start) / (UInt64(30 + plan.recoverySeconds) * 1_000_000_000)))
         guard index > consumerRound else { return }
         if consumerRound >= 0 {
             playback.append("\(consumerRound + 1)\t\(now)\t\(consumer?.playedSourceFrame ?? 0)\t\(consumer?.bufferedFrames ?? 0)\t0\t0\t\(accumulatedPlayed)\t\(accumulatedConcealed)\t\(accumulatedSkipped)\t\(maximumAge)\t\(consumer?.repairedPackets ?? 0)\t\(accumulatedWaiting)")
@@ -261,17 +262,21 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
         consumerRound = index; consumerGeneration = 0
     }
 
-    func tickProbe(at now: UInt64, roundTrip: UInt64) -> ControlMessage? {
+    func tickProbe(at now: UInt64, roundTrip: UInt64, uncertainty: UInt64 = 0) -> ControlMessage? {
         lock.lock(); defer { lock.unlock() }
         guard recording.load() != 0, let session else { return nil }
         if let plan = session.coordinatedPlan {
             advanceProbeRound(at: now, plan: plan)
             if let start = probeStartedAt, now >= start,
-               Double(now - start) / 1e9 > Double(plan.rounds.count * 30) + probeBudget.maximumMilliseconds / 1_000 {
+               Double(now - start) / 1e9 > Double(plan.activeDurationSeconds) + probeBudget.maximumMilliseconds / 1_000 {
                 return nil
             }
         }
+        if let plan = session.coordinatedPlan, let start = probeStartedAt, now >= start,
+           (now - start) % (UInt64(30 + plan.recoverySeconds) * 1_000_000_000) >=
+                30_000_000_000 + UInt64(probeBudget.maximumMilliseconds * 1_000_000) { return nil }
         guard var current = consumer else { return nil }
+        current.updateUncertainty(uncertainty)
         let request = current.requestRepair(now: now, roundTrip: roundTrip)
         let result = current.tick(now: now)
         consumer = current
@@ -492,6 +497,7 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
                     payloadBytes: $0.payloadBytes, packetsPerSecond: $0.packetsPerSecond,
                     burstPackets: $0.burstPackets, reliable: $0.reliable, repeatIndex: $0.repeatIndex) }
                 lines.append("probe_plan=coordinated_manifest_v4")
+                lines.append("recovery_seconds=\(plan.recoverySeconds)")
                 lines.append("\nnetwork_probe_rounds_v4")
                 lines.append("round\ttransport\trepeat\tvariant\tseconds\tpayload_bytes\tpackets_per_second\tburst_packets\tfirst_sequence\tplanned\treceived\tunique\tduplicates\tnot_received\twrong_size\tcontroller\trepair\tcorrection_percent")
             } else if metadata.networkProbeRepeat {

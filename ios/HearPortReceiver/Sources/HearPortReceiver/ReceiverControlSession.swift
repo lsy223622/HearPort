@@ -87,7 +87,7 @@ public final class ReceiverControlSession {
         }
         self.transport.onProbeTick = { [weak self] at in
             guard let self else { return }
-            if let request = self.debugSessionDiagnostics.tickProbe(at: at, roundTrip: self.receiver.estimatedRoundTrip) {
+            if let request = self.debugSessionDiagnostics.tickProbe(at: at, roundTrip: self.receiver.estimatedRoundTrip, uncertainty: self.receiver.clockUncertainty) {
                 self.send(request)
             }
         }

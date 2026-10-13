@@ -11,6 +11,7 @@
 #include <cstring>
 #include <iostream>
 #include <mutex>
+#include <map>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -34,6 +35,7 @@ struct SendBufferContext {
   std::uint64_t audio_epoch = 0;
   bool pending_datagram = false;
   bool auxiliary = false;
+  std::uint64_t source_frames = 0;
 
   explicit SendBufferContext(std::span<const std::byte> bytes)
       : storage(bytes.size()) {
@@ -197,37 +199,48 @@ class MsQuicServer final : public QuicServer {
     if (!started_ || connection_ == nullptr || api_ == nullptr) {
       return false;
     }
+    const auto timed = wire::DecodeTimedAudioRecord(datagram);
+    const auto frames = timed ? timed->frame_count : 0;
     if (reliable_mode_) {
-      if (audio_stream_ == nullptr ||
-          pending_reliable_sends_.load() >= kMaxReliablePendingSends) return false;
+      if ((reliable_window_frames_ != 0 && reliable_pending_frames_ + frames > reliable_window_frames_) || audio_stream_ == nullptr ||
+          (reliable_window_frames_ == 0 && pending_reliable_sends_.load() >= kMaxReliablePendingSends)) return false;
       auto* context = new SendBufferContext(
           std::span<const std::byte>(datagram.data(), datagram.size()));
       context->audio_epoch = audio_epoch_.load();
+      context->source_frames = frames;
+      reliable_pending_frames_ += frames;
+      if (timed) reliable_pending_captures_[context] = timed->captured_at_ns;
       pending_reliable_sends_.fetch_add(1);
       const auto status = api_->StreamSend(audio_stream_, &context->buffer, 1,
                                            QUIC_SEND_FLAG_NONE, context);
       if (QUIC_FAILED(status)) {
         pending_reliable_sends_.fetch_sub(1);
+        reliable_pending_frames_ -= context->source_frames;
+        reliable_pending_captures_.erase(context);
         delete context;
         return false;
       }
       return true;
     }
-    if (!datagram_ready_ || datagram.size() > datagram_max_payload_ || pending_datagrams_.load() >= 16) return false;
+    if (!datagram_ready_ || datagram.size() > datagram_max_payload_ || (datagram_window_frames_ == 0 ? pending_datagrams_.load() >= 16 :
+        pending_original_frames_.load() + frames > datagram_window_frames_)) return false;
     const auto packet = wire::DecodeAudioDatagram(datagram);
-    const auto timed = packet ? std::optional<wire::TimedAudioRecord>{}
-                              : wire::DecodeTimedAudioRecord(datagram);
     if (!packet && !timed) return false;
     auto* context = new SendBufferContext(datagram);
     context->stream_id = packet ? packet->stream_id : timed->stream_id;
     context->sequence = packet ? packet->sequence : timed->sequence;
     context->on_send_state = callbacks_.on_datagram_send_state;
     context->pending_datagram = true;
+    context->source_frames = frames;
+    pending_original_frames_.fetch_add(frames);
     pending_datagrams_.fetch_add(1);
     const auto status = api_->DatagramSend(
-        connection_, &context->buffer, 1, QUIC_SEND_FLAG_NONE, context);
+        connection_, &context->buffer, 1, QUIC_SEND_FLAG_DGRAM_PRIORITY, context);
     if (QUIC_FAILED(status)) {
-      if (context->pending_datagram) pending_datagrams_.fetch_sub(1);
+      if (context->pending_datagram) {
+        pending_datagrams_.fetch_sub(1);
+        pending_original_frames_.fetch_sub(context->source_frames);
+      }
       delete context;
       return false;
     }
@@ -240,6 +253,10 @@ class MsQuicServer final : public QuicServer {
     std::lock_guard lock(mutex_);
     if (!started_ || connection_ == nullptr || api_ == nullptr ||
         datagram.empty()) return {ProbeSendStatus::disconnected};
+    const auto timed = wire::DecodeTimedAudioRecord(datagram);
+    if (timed && !auxiliary) last_original_frames_ = timed->frame_count;
+    const auto frames = timed ? (auxiliary && timed->kind == wire::AudioRecordKind::fec ?
+        last_original_frames_ : timed->frame_count) : 0u;
     if (reliable) {
       const auto pending = pending_reliable_sends_.load();
       if (audio_stream_ == nullptr) {
@@ -248,7 +265,8 @@ class MsQuicServer final : public QuicServer {
       if (datagram.size() > 1024) {
         return {ProbeSendStatus::invalid_size, pending};
       }
-      if (pending >= kMaxReliablePendingSends) {
+      if ((reliable_window_frames_ == 0 && pending >= kMaxReliablePendingSends) || (reliable_window_frames_ != 0 &&
+          reliable_pending_frames_ + frames > reliable_window_frames_)) {
         return {ProbeSendStatus::pending_limit, pending};
       }
       std::vector<std::byte> framed(datagram.size() + 2);
@@ -260,11 +278,16 @@ class MsQuicServer final : public QuicServer {
       context->stream_id = stream_id;
       context->sequence = sequence;
       context->on_probe_send_complete = callbacks_.on_probe_send_complete;
+      context->source_frames = frames;
+      reliable_pending_frames_ += frames;
+      if (timed) reliable_pending_captures_[context] = timed->captured_at_ns;
       pending_reliable_sends_.fetch_add(1);
       const auto status = api_->StreamSend(audio_stream_, &context->buffer, 1,
                                            QUIC_SEND_FLAG_NONE, context);
       if (QUIC_FAILED(status)) {
         pending_reliable_sends_.fetch_sub(1);
+        reliable_pending_frames_ -= context->source_frames;
+        reliable_pending_captures_.erase(context);
         delete context;
         return {ProbeSendStatus::transport_rejected, pending,
                 static_cast<std::uint32_t>(status)};
@@ -273,18 +296,27 @@ class MsQuicServer final : public QuicServer {
     }
     if (!datagram_ready_) return {ProbeSendStatus::datagram_unavailable};
     if (datagram.size() > datagram_max_payload_) return {ProbeSendStatus::invalid_size};
-    if (pending_datagrams_.load() >= 16) return {ProbeSendStatus::pending_limit};
+    if (datagram_window_frames_ == 0 ? pending_datagrams_.load() >= 16 :
+        (auxiliary ? (pending_original_frames_.load() > datagram_window_frames_ / 2 ||
+                      pending_auxiliary_frames_.load() + frames > datagram_window_frames_ * 3 / 10) :
+                     pending_original_frames_.load() + frames > datagram_window_frames_))
+      return {ProbeSendStatus::pending_limit};
     auto* context = new SendBufferContext(datagram);
     context->stream_id = stream_id;
     context->sequence = sequence;
     context->auxiliary = auxiliary;
     if (!auxiliary) context->on_send_state = callbacks_.on_datagram_send_state;
     context->pending_datagram = true;
+    context->source_frames = frames;
+    (auxiliary ? pending_auxiliary_frames_ : pending_original_frames_).fetch_add(frames);
     pending_datagrams_.fetch_add(1);
     const auto status = api_->DatagramSend(
-        connection_, &context->buffer, 1, QUIC_SEND_FLAG_NONE, context);
+        connection_, &context->buffer, 1, auxiliary ? QUIC_SEND_FLAG_NONE : QUIC_SEND_FLAG_DGRAM_PRIORITY, context);
     if (QUIC_FAILED(status)) {
-      if (context->pending_datagram) pending_datagrams_.fetch_sub(1);
+      if (context->pending_datagram) {
+        pending_datagrams_.fetch_sub(1);
+        (auxiliary ? pending_auxiliary_frames_ : pending_original_frames_).fetch_sub(frames);
+      }
       delete context;
       return {ProbeSendStatus::transport_rejected, 0,
               static_cast<std::uint32_t>(status)};
@@ -292,11 +324,28 @@ class MsQuicServer final : public QuicServer {
     return {ProbeSendStatus::accepted};
   }
 
+  void ConfigureAudioWindow(std::uint32_t target_ms, std::uint32_t maximum_ms,
+                            std::uint32_t output_reserve_ms) override {
+    std::lock_guard lock(mutex_);
+    datagram_window_frames_ = std::uint64_t(target_ms - output_reserve_ms) * 48;
+    reliable_window_frames_ = std::uint64_t(maximum_ms - output_reserve_ms) * 48;
+    if (connection_) { last_probe_statistics_ns_.store(0); LogProbeStatistics(connection_); }
+  }
+
+  std::uint64_t ReliablePendingAge(std::uint64_t now) override {
+    std::lock_guard lock(mutex_);
+    std::uint64_t oldest = now;
+    for (const auto& [context, captured] : reliable_pending_captures_) oldest = (std::min)(oldest, captured);
+    return now - oldest;
+  }
+
   void StopReliableAudio() override {
     std::lock_guard lock(mutex_);
     reliable_mode_ = false;
     audio_epoch_.fetch_add(1);
     pending_reliable_sends_.store(0);
+    reliable_pending_frames_ = 0;
+    reliable_pending_captures_.clear();
     if (audio_stream_ != nullptr && api_ != nullptr) {
       api_->StreamShutdown(audio_stream_, QUIC_STREAM_SHUTDOWN_FLAG_ABORT_SEND, 0);
       audio_stream_ = nullptr;
@@ -311,6 +360,8 @@ class MsQuicServer final : public QuicServer {
     reliable_mode_ = true;
     audio_epoch_.fetch_add(1);
     pending_reliable_sends_.store(0);
+    reliable_pending_frames_ = 0;
+    reliable_pending_captures_.clear();
     if (audio_stream_ != nullptr) {
       api_->StreamShutdown(audio_stream_,
                            QUIC_STREAM_SHUTDOWN_FLAG_ABORT_SEND, 0);
@@ -497,6 +548,8 @@ class MsQuicServer final : public QuicServer {
               (state == QUIC_DATAGRAM_SEND_SENT || QUIC_DATAGRAM_SEND_STATE_IS_FINAL(state))) {
             send_context->pending_datagram = false;
             server->pending_datagrams_.fetch_sub(1);
+            (send_context->auxiliary ? server->pending_auxiliary_frames_ :
+                server->pending_original_frames_).fetch_sub(send_context->source_frames);
           }
           if (send_context->auxiliary && QUIC_DATAGRAM_SEND_STATE_IS_FINAL(state)) {
             server->Log("network_probe_repair_final sequence=" + std::to_string(send_context->sequence) +
@@ -529,6 +582,8 @@ class MsQuicServer final : public QuicServer {
               server->reliable_mode_ = false;
               server->audio_epoch_.fetch_add(1);
               server->pending_reliable_sends_.store(0);
+              server->reliable_pending_frames_ = 0;
+              server->reliable_pending_captures_.clear();
               server->datagram_ready_ = false;
               on_closed = server->callbacks_.on_closed;
             }
@@ -636,8 +691,13 @@ class MsQuicServer final : public QuicServer {
       case QUIC_STREAM_EVENT_SEND_COMPLETE:
         if (auto* send_context = static_cast<SendBufferContext*>(
                 event->SEND_COMPLETE.ClientContext)) {
-          if (send_context->audio_epoch == server->audio_epoch_.load()) {
-            server->pending_reliable_sends_.fetch_sub(1);
+          {
+            std::lock_guard lock(server->mutex_);
+            if (send_context->audio_epoch == server->audio_epoch_.load()) {
+              server->pending_reliable_sends_.fetch_sub(1);
+              server->reliable_pending_frames_ -= send_context->source_frames;
+              server->reliable_pending_captures_.erase(send_context);
+            }
           }
           if (send_context->on_probe_send_complete) {
             send_context->on_probe_send_complete(send_context->stream_id,
@@ -677,7 +737,9 @@ class MsQuicServer final : public QuicServer {
     std::ostringstream line;
     line << "network_probe_transport at_ns=" << now
          << " query_status=" << static_cast<std::uint32_t>(status)
-         << " pending_reliable_sends=" << pending_reliable_sends_.load();
+         << " pending_reliable_sends=" << pending_reliable_sends_.load()
+         << " pending_original_ms=" << pending_original_frames_.load() / 48
+         << " pending_auxiliary_ms=" << pending_auxiliary_frames_.load() / 48;
     if (QUIC_SUCCEEDED(status)) {
       line << " rtt_us=" << statistics.Rtt
            << " min_rtt_us=" << statistics.MinRtt
@@ -740,6 +802,8 @@ class MsQuicServer final : public QuicServer {
     reliable_mode_ = false;
     audio_epoch_.fetch_add(1);
     pending_reliable_sends_.store(0);
+    reliable_pending_frames_ = 0;
+    reliable_pending_captures_.clear();
   }
 
   std::mutex mutex_;
@@ -759,6 +823,13 @@ class MsQuicServer final : public QuicServer {
   std::atomic<std::uint64_t> audio_epoch_ = 0;
   std::atomic<std::size_t> pending_reliable_sends_ = 0;
   std::atomic<std::size_t> pending_datagrams_ = 0;
+  std::atomic<std::uint64_t> pending_original_frames_ = 0;
+  std::atomic<std::uint64_t> pending_auxiliary_frames_ = 0;
+  std::uint16_t last_original_frames_ = 120;
+  std::uint64_t datagram_window_frames_ = 0;
+  std::uint64_t reliable_window_frames_ = 0;
+  std::uint64_t reliable_pending_frames_ = 0;
+  std::map<SendBufferContext*, std::uint64_t> reliable_pending_captures_;
   std::atomic<std::int64_t> last_probe_statistics_ns_ = 0;
   bool started_ = false;
 };
@@ -789,6 +860,8 @@ class UnavailableQuicServer final : public QuicServer {
                              std::uint32_t, bool, bool) override {
     return {ProbeSendStatus::disconnected};
   }
+  void ConfigureAudioWindow(std::uint32_t, std::uint32_t, std::uint32_t) override {}
+  std::uint64_t ReliablePendingAge(std::uint64_t) override { return 0; }
   void StopReliableAudio() override {}
   bool StartReliableAudio(std::uint32_t, std::uint32_t) override { return false; }
   void CloseConnection() override {}

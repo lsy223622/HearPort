@@ -28,7 +28,7 @@ size_t hearport_audio_ring_push(HearPortAudioRing *ring, const float *stereo,
 size_t hearport_audio_ring_pop(HearPortAudioRing *ring, float *stereo,
                                size_t frames);
 size_t hearport_audio_ring_push_timed(HearPortAudioRing *ring, const float *stereo,
-    size_t frames, uint64_t source_begin, uint64_t source_end, uint64_t captured_at);
+    size_t frames, uint64_t source_begin, uint64_t source_end, uint64_t captured_at, uint64_t deadline);
 size_t hearport_audio_ring_pop_at(HearPortAudioRing *ring, float *stereo,
     size_t frames, uint64_t now, uint64_t maximum_age);
 uint64_t hearport_audio_ring_source_fill(const HearPortAudioRing *ring);

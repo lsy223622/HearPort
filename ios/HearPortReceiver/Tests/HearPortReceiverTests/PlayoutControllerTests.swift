@@ -12,7 +12,9 @@ final class PlayoutControllerTests: XCTestCase {
         XCTAssertEqual(clock.uncertaintyNanoseconds, 5_000_000)
         XCTAssertEqual(clock.remote(localNanoseconds: 1_100_000_000, at: 1_010_000_000),
                        1_600_000_000)
-        XCTAssertNil(clock.map(remoteNanoseconds: 1_600_000_000, at: 7_010_000_000))
+        XCTAssertEqual(clock.map(remoteNanoseconds: 1_600_000_000, at: 7_010_000_000), 1_100_000_000)
+        XCTAssertEqual(clock.uncertainty(at: 7_010_000_000), 17_000_000)
+        XCTAssertNil(clock.map(remoteNanoseconds: 1_600_000_000, at: 32_010_000_000))
     }
 
     func testBadClockExchangeDoesNotReplaceGoodMapping() {
@@ -29,9 +31,9 @@ final class PlayoutControllerTests: XCTestCase {
         var clock = ClockMapping()
         clock.observe(localSent: 1_000_000_000, remoteReceived: 1_000_500_000,
                       remoteSent: 1_000_500_000, localReceived: 1_001_000_000)
-        XCTAssertTrue(clock.observe(localSent: 7_000_000_000, remoteReceived: 7_010_000_000,
-                      remoteSent: 7_010_000_000, localReceived: 7_020_000_000))
-        XCTAssertEqual(clock.map(remoteNanoseconds: 7_010_000_000, at: 7_020_000_000), 7_010_000_000)
+        XCTAssertTrue(clock.observe(localSent: 32_000_000_000, remoteReceived: 32_010_000_000,
+                      remoteSent: 32_010_000_000, localReceived: 32_020_000_000))
+        XCTAssertEqual(clock.map(remoteNanoseconds: 32_010_000_000, at: 32_020_000_000), 32_010_000_000)
     }
 
     func testPreparationDeadlineIncludesOutputAndProcessing() throws {
@@ -86,4 +88,27 @@ final class PlayoutControllerTests: XCTestCase {
                                playableFrames: 0, stagedSourceFrames: 0)
         XCTAssertEqual(empty.correction, 0)
     }
+    func testClockHoldoverRejectsCongestedAnchorAndTargetReservesUncertainty() throws {
+        var clock = ClockMapping()
+        XCTAssertTrue(clock.observe(localSent: 1_000_000_000, remoteReceived: 1_000_500_000,
+            remoteSent: 1_000_500_000, localReceived: 1_001_000_000))
+        XCTAssertFalse(clock.observe(localSent: 7_000_000_000, remoteReceived: 7_010_000_000,
+            remoteSent: 7_010_000_000, localReceived: 7_020_000_000))
+        XCTAssertEqual(clock.map(remoteNanoseconds: 7_010_000_000, at: 7_020_000_000), 7_010_000_000)
+        let budget = try PlayoutBudget(targetMilliseconds: 50, maximumMilliseconds: 100,
+                                      outputReserveMilliseconds: 1)
+        var control = PlayoutController(budget: budget)
+        for index in 0..<16 {
+            control.observeArrival(sourceFrame: UInt64(index) * 120,
+                capturedAt: 1_000_000_000 + UInt64(index) * 2_500_000,
+                receivedAt: 1_080_000_000 + UInt64(index) * 2_500_000)
+        }
+        _ = control.decision(now: 1_100_000_000, nextSourceFrame: 0,
+            playableFrames: 4_800, stagedSourceFrames: 0)
+        let result = control.decision(now: 2_000_000_000, nextSourceFrame: 0,
+            playableFrames: 4_800, stagedSourceFrames: 0, uncertaintyNanoseconds: 30_000_000)
+        XCTAssertLessThanOrEqual(result.targetMilliseconds, 65)
+        XCTAssertGreaterThanOrEqual(result.correction, 0)
+    }
+
 }

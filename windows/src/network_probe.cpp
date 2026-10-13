@@ -110,7 +110,7 @@ std::vector<NetworkProbeRound> MakeCoordinatedProbeRounds(std::uint32_t stream_i
 
 std::vector<std::byte> EncodeProbeManifest(const std::vector<NetworkProbeRound>& rounds) {
   if (rounds.empty() || rounds.size() > 100) throw std::invalid_argument("invalid probe plan");
-  std::vector<std::byte> bytes{std::byte{1}, std::byte(rounds.size()), std::byte{30}, std::byte{0}};
+  std::vector<std::byte> bytes{std::byte{2}, std::byte(rounds.size()), std::byte{30}, std::byte{kCoordinatedProbeRecoverySeconds}};
   for (const auto& round : rounds) {
     bytes.push_back(std::byte(round.payload_bytes >> 8));
     bytes.push_back(std::byte(round.payload_bytes & 255));

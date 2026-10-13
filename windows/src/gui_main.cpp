@@ -841,6 +841,9 @@ class Application {
                  Tr(L"/30 s · Total ", L"/30 秒 · 总计 ") +
                  std::to_wstring(total_seconds) +
                  L"/" + std::to_wstring(rounds.size() * 30) + Tr(L" s", L" 秒");
+        if (service_->network_probe_recovering()) {
+          detail = Tr(L"Recovery interval: 5 s", L"组间恢复：5 秒");
+        }
         audio_label = Tr(L"Packet: ", L"数据包：") +
                       std::to_wstring(round.payload_bytes) +
                       Tr(L" B · ", L" 字节 · ") +
