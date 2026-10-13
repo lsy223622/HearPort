@@ -268,6 +268,7 @@ public final class HearPortReceiver {
         lock.lock()
         let accepted = clockMapping.observe(localSent: localSent, remoteReceived: remoteReceived,
                               remoteSent: remoteSent, localReceived: localReceived)
+        renderRing.setClockUncertainty(nanoseconds: clockMapping.uncertainty(at: DispatchTime.now().uptimeNanoseconds))
         lock.unlock()
         return accepted
     }
@@ -590,6 +591,7 @@ public final class HearPortReceiver {
 
     private func pumpCoordinatedLocked() {
         let now = DispatchTime.now().uptimeNanoseconds
+        renderRing.setClockUncertainty(nanoseconds: clockMapping.uncertainty(at: now))
         guard let expected = jitter?.expectedSequence, let source = sourcePosition(for: expected) else { return }
         guard let decision = playoutController?.decision(now: now, nextSourceFrame: source,
             playableFrames: (jitter?.contiguousPackets ?? 0) * 120,

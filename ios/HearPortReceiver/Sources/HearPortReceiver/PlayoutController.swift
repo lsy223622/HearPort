@@ -24,7 +24,8 @@ public struct PlayoutBudget: Equatable, Sendable {
                                 uncertaintyNanoseconds: UInt64 = 0) -> UInt64 {
         let allowance = max(0, maximumMilliseconds - outputReserveMilliseconds -
                              max(0, processingMilliseconds)) * 1_000_000
-        let remaining = max(0, allowance - Double(uncertaintyNanoseconds))
+        guard allowance > Double(uncertaintyNanoseconds) else { return 0 }
+        let remaining = allowance - Double(uncertaintyNanoseconds)
         let (deadline, overflow) = capturedAt.addingReportingOverflow(UInt64(remaining))
         return overflow ? .max : deadline
     }
