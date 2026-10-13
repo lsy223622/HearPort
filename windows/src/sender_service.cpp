@@ -498,18 +498,24 @@ bool SenderService::HandleRepairRequest(const wire::ControlEnvelope& request) {
   const auto now = static_cast<std::uint64_t>(MonotonicNanoseconds());
   for (const auto sequence : request.repair_sequences) {
     const auto extra = probe_repair_window_.Retry(sequence, now);
-    if (!extra) continue;
+    if (!extra) {
+      LogDiagnostic("network_probe_repair_request sequence=" + std::to_string(sequence) +
+                    " accepted=0 reason=cache_miss_or_expired");
+      continue;
+    }
     const auto bytes = wire::EncodeTimedAudioRecord(*extra);
     bool accepted = false;
+    std::string reason = repair_pressure_ ? "pressure" : "overhead_budget";
     if (!repair_pressure_ && now - repair_window_at_ < 100'000'000 &&
         (repair_extra_bytes_ + bytes.size()) * 10 <= repair_original_bytes_ * 3) {
-      accepted = quic_->SendProbe(bytes, request.stream_id, sequence, false, true).status ==
-                 ProbeSendStatus::accepted;
+      const auto outcome = quic_->SendProbe(bytes, request.stream_id, sequence, false, true);
+      accepted = outcome.status == ProbeSendStatus::accepted;
+      reason = std::string(ProbeSendStatusName(outcome.status));
       if (accepted) { repair_extra_bytes_ += bytes.size(); probe_repair_sent_bytes_.fetch_add(bytes.size()); }
     }
     LogDiagnostic("network_probe_repair_request sequence=" + std::to_string(sequence) +
                   " remaining_ms=" + std::to_string(request.maximum_ms) +
-                  " accepted=" + std::to_string(accepted));
+                  " accepted=" + std::to_string(accepted) + " reason=" + reason);
   }
   return true;
 }

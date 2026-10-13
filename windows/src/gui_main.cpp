@@ -831,8 +831,10 @@ class Application {
         const auto& round = rounds[round_index];
         const auto round_seconds =
             (processed - before_round) / round.packets_per_second;
+        const auto recovery_seconds = rounds.size() == 60 ?
+            hearport::windows::kCoordinatedProbeRecoverySeconds : 0;
         const auto total_seconds =
-            round_index * hearport::windows::kNetworkProbeSecondsPerRound +
+            round_index * (hearport::windows::kNetworkProbeSecondsPerRound + recovery_seconds) +
             round_seconds;
         heading = Tr(L"Network test ", L"网络测试 ") +
                   std::to_wstring(round_index + 1) + L"/" + std::to_wstring(rounds.size()) + L" · " +
@@ -840,7 +842,7 @@ class Application {
         detail = Tr(L"Round ", L"本组 ") + std::to_wstring(round_seconds) +
                  Tr(L"/30 s · Total ", L"/30 秒 · 总计 ") +
                  std::to_wstring(total_seconds) +
-                 L"/" + std::to_wstring(rounds.size() * 30) + Tr(L" s", L" 秒");
+                 L"/" + std::to_wstring(rounds.size() * 30 + (rounds.size() - 1) * recovery_seconds) + Tr(L" s", L" 秒");
         if (service_->network_probe_recovering()) {
           detail = Tr(L"Recovery interval: 5 s", L"组间恢复：5 秒");
         }

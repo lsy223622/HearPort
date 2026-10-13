@@ -5,6 +5,7 @@ final class RenderRingBuffer: @unchecked Sendable {
     let capacityFrames: Int
     private let storage: OpaquePointer
     private let maximumAge = AtomicUInt64()
+    private let clockUncertainty = AtomicUInt64()
 
     init(capacityFrames: Int) {
         precondition(capacityFrames > 0)
@@ -29,6 +30,7 @@ final class RenderRingBuffer: @unchecked Sendable {
     var expiredFrames: UInt64 { hearport_audio_ring_expired_frames(storage) }
 
     func setMaximumAge(nanoseconds: UInt64) { maximumAge.store(nanoseconds) }
+    func setClockUncertainty(nanoseconds: UInt64) { clockUncertainty.store(nanoseconds) }
 
     func requestReset() {
         hearport_audio_ring_request_reset(storage)
@@ -46,9 +48,11 @@ final class RenderRingBuffer: @unchecked Sendable {
     func pop(frames requestedFrames: Int) -> (samples: [Float], renderedFrames: Int) {
         guard requestedFrames > 0 else { return ([], 0) }
         var output = Array(repeating: Float.zero, count: requestedFrames * 2)
+        let age = maximumAge.load(), uncertainty = clockUncertainty.load()
+        let permittedAge = age == 0 ? 0 : (age > uncertainty ? age - uncertainty : 1)
         let rendered = output.withUnsafeMutableBufferPointer { samples in
             Int(hearport_audio_ring_pop_at(storage, samples.baseAddress, requestedFrames,
-                DispatchTime.now().uptimeNanoseconds, maximumAge.load()))
+                DispatchTime.now().uptimeNanoseconds, permittedAge))
         }
         return (output, rendered)
     }

@@ -43,6 +43,8 @@ final class PlayoutControllerTests: XCTestCase {
                                               processingMilliseconds: 5,
                                               uncertaintyNanoseconds: 2_000_000),
                        1_083_000_000)
+        XCTAssertEqual(budget.prepareDeadline(capturedAt: 2_000_000_000,
+            uncertaintyNanoseconds: 100_000_000), 0)
         XCTAssertThrowsError(try PlayoutBudget(targetMilliseconds: 100,
                                               maximumMilliseconds: 50,
                                               outputReserveMilliseconds: 10))
