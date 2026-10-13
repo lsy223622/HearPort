@@ -831,7 +831,7 @@ class Application {
         const auto& round = rounds[round_index];
         const auto round_seconds =
             (processed - before_round) / round.packets_per_second;
-        const auto recovery_seconds = rounds.size() == 60 ?
+        const auto recovery_seconds = rounds.size() == hearport::windows::kCoordinatedProbeRoundCount ?
             hearport::windows::kCoordinatedProbeRecoverySeconds : 0;
         const auto total_seconds =
             round_index * (hearport::windows::kNetworkProbeSecondsPerRound + recovery_seconds) +

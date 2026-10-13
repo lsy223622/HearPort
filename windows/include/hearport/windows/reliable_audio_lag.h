@@ -3,6 +3,10 @@
 #include <chrono>
 #include <cstdint>
 #include <optional>
+#include <deque>
+#include <vector>
+#include <utility>
+#include "hearport/wire/audio_datagram.h"
 
 namespace hearport::windows {
 
@@ -24,6 +28,7 @@ class ReliableAudioLag {
     bounded_ = maximum_lag.has_value();
     latest_source_.reset();
     frame_count_ = 120;
+    fresh_records_.clear();
   }
 
   void Produced(std::uint32_t sequence, std::optional<std::uint64_t> source_end = std::nullopt,
@@ -52,7 +57,7 @@ class ReliableAudioLag {
       behind = distance < 0x80000000u &&
                std::uint64_t(distance) * frame_count_ * 1'000'000'000ull / 48000 > static_cast<std::uint64_t>(lag_ns);
     }
-    if (played_source && latest_source_) {
+    if (!latest_received && played_source && latest_source_) {
       behind = *latest_source_ > *played_source &&
                (*latest_source_ - *played_source) / 48 > static_cast<std::uint64_t>(maximum_lag_.count());
     }
@@ -63,6 +68,46 @@ class ReliableAudioLag {
     }
     restart_pending_ = true;
     return true;
+  }
+
+  void Retain(const wire::TimedAudioRecord& record, std::uint64_t now) {
+    const auto allowance = static_cast<std::uint64_t>(maximum_lag_.count()) * 1'000'000;
+    while (!fresh_records_.empty() && now >= fresh_records_.front().captured_at_ns &&
+           now - fresh_records_.front().captured_at_ns >= allowance) fresh_records_.pop_front();
+    if (record.stream_id == stream_id_ && record.generation == generation_ &&
+        now >= record.captured_at_ns && now - record.captured_at_ns < allowance) {
+      fresh_records_.push_back(record);
+    }
+  }
+
+  bool ConfirmReceived(std::uint32_t stream_id, std::uint32_t generation,
+                       std::optional<std::uint32_t> latest_received,
+                       std::optional<std::uint64_t> played_source) {
+    if (stream_id != stream_id_ || generation != generation_) return false;
+    while (!fresh_records_.empty()) {
+      const auto& record = fresh_records_.front();
+      const bool delivered = latest_received && (*latest_received - record.sequence) < 0x80000000u;
+      const bool consumed = played_source && record.source_frame + record.frame_count <= *played_source;
+      if (!delivered && !consumed) break;
+      fresh_records_.pop_front();
+    }
+    return true;
+  }
+
+  std::vector<wire::TimedAudioRecord> ReplayFresh(std::uint32_t generation, std::uint64_t now,
+      std::optional<std::uint32_t> latest_received,
+      std::optional<std::uint64_t> played_source) const {
+    std::vector<wire::TimedAudioRecord> result;
+    const auto allowance = static_cast<std::uint64_t>(maximum_lag_.count()) * 1'000'000;
+    for (auto record : fresh_records_) {
+      if (now < record.captured_at_ns || now - record.captured_at_ns >= allowance ||
+          (latest_received && (*latest_received - record.sequence) < 0x80000000u) ||
+          (played_source && record.source_frame + record.frame_count <= *played_source)) continue;
+      record.generation = generation;
+      if (record.kind != wire::AudioRecordKind::audio) record.kind = wire::AudioRecordKind::retransmission;
+      result.push_back(std::move(record));
+    }
+    return result;
   }
 
   std::optional<std::uint32_t> latest_produced() const noexcept {
@@ -81,6 +126,7 @@ class ReliableAudioLag {
   bool bounded_ = false;
   std::optional<std::uint64_t> latest_source_;
   std::uint16_t frame_count_ = 120;
+  std::deque<wire::TimedAudioRecord> fresh_records_;
 };
 
 }  // namespace hearport::windows

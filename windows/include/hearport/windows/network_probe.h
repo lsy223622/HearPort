@@ -50,9 +50,11 @@ std::array<NetworkProbeRound, kNetworkProbeRoundCount> MakeNetworkProbeRounds(
 
 std::vector<NetworkProbeRound> MakeCoordinatedProbeRounds(std::uint32_t stream_id);
 std::vector<std::byte> EncodeProbeManifest(const std::vector<NetworkProbeRound>& rounds);
+inline constexpr std::uint32_t kCoordinatedProbeRoundCount = 12;
 inline constexpr std::uint32_t kCoordinatedProbeRecoverySeconds = 5;
 inline constexpr std::uint32_t kCoordinatedProbeDurationSeconds =
-    60 * kNetworkProbeSecondsPerRound + 59 * kCoordinatedProbeRecoverySeconds + 10;
+    kCoordinatedProbeRoundCount * kNetworkProbeSecondsPerRound +
+    (kCoordinatedProbeRoundCount - 1) * kCoordinatedProbeRecoverySeconds + 10;
 
 std::vector<std::byte> MakeNetworkProbeDatagram(std::uint32_t stream_id,
                                                 std::uint32_t sequence,
