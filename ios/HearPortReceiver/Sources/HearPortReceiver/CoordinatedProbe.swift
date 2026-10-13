@@ -61,7 +61,9 @@ struct ProbeConsumer: Sendable {
     private var offset = 0
     private var fractionalFrames = 0.0
     private var running = false
+    private var renderReserveFrames = 0
     private var lastTick: UInt64?
+    private var latestPlayableSequence: UInt32?
     private(set) var generation: UInt32 = 0
     private(set) var repairedPackets = 0
     private(set) var latestReceivedSequence: UInt32?
@@ -97,17 +99,23 @@ struct ProbeConsumer: Sendable {
         if generation != record.generation {
             if generation != 0, SequenceNumber.isBefore(record.generation, generation) { return }
             if generation != 0 {
-                packets.removeAll(keepingCapacity: true); repair.reset()
-                if record.sourceFrame >= sourceFrame {
-                    nextSequence = record.sequence; sourceFrame = record.sourceFrame; offset = 0
-                }
-                running = false; fractionalFrames = 0; playedSourceFrame = nil
+                let retainedFrames = running ? min(bufferedFrames, renderReserveFrames) : 0
+                let retainedPackets = UInt32((retainedFrames + offset) / round.framesPerPacket)
+                packets = packets.filter { ($0.key &- nextSequence) < retainedPackets }
+                repair.reset()
+                running = running && !packets.isEmpty
+                if !running { fractionalFrames = 0 }
                 latestReceivedSequence = nil
+                latestPlayableSequence = nil
                 control = PlayoutController(budget: budget,
                     maximumCorrection: round.controller == 0 ? 0 : Double(round.correctionPercent) / 100,
                     adaptive: round.controller >= 2)
             }
             generation = record.generation
+        }
+        if record.kind != .fec, latestReceivedSequence == nil ||
+            SequenceNumber.isBefore(latestReceivedSequence!, record.sequence) {
+            latestReceivedSequence = record.sequence
         }
         guard !SequenceNumber.isBefore(record.sequence, nextSequence) ||
               (record.kind == .fec && !SequenceNumber.isBefore(record.sequence &+ 3, nextSequence)) else { return }
@@ -134,15 +142,15 @@ struct ProbeConsumer: Sendable {
         if record.kind == .retransmission || record.kind == .repeated { repairedPackets += 1 }
         packets[record.sequence] = Packet(record: record, captured: capturedAt, uncertainty: uncertainty)
         repair.received(sequence: record.sequence)
-        if latestReceivedSequence == nil || SequenceNumber.isBefore(latestReceivedSequence!, record.sequence) {
-            latestReceivedSequence = record.sequence
+        if latestPlayableSequence == nil || SequenceNumber.isBefore(latestPlayableSequence!, record.sequence) {
+            latestPlayableSequence = record.sequence
         }
         control.observeArrival(sourceFrame: record.sourceFrame, capturedAt: capturedAt,
             receivedAt: now, original: record.kind == .probe)
     }
 
     mutating func requestRepair(now: UInt64, roundTrip: UInt64) -> (UInt32, UInt32)? {
-        guard round.repair == 2, let latest = latestReceivedSequence else { return nil }
+        guard round.repair == 2, let latest = latestPlayableSequence else { return nil }
         repair.discard(before: nextSequence)
         let distance = latest &- nextSequence
         guard distance < 1_024 else { return nil }
@@ -168,6 +176,9 @@ struct ProbeConsumer: Sendable {
         let decision = control.decision(now: now, nextSourceFrame: sourceFrame,
             playableFrames: bufferedFrames, stagedSourceFrames: 0,
             uncertaintyNanoseconds: clockUncertainty, hasFuturePacket: !packets.isEmpty)
+        // Match the audio receiver's bounded render reserve when retaining output across generations.
+        renderReserveFrames = min(2_048, max(round.framesPerPacket,
+            Int(ceil(decision.bufferTargetMilliseconds * 48 / Double(round.framesPerPacket))) * round.framesPerPacket))
         var skipped: UInt64 = 0
         if decision.action == .resync {
             let valid = packets.values.filter {
