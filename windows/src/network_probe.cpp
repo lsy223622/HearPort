@@ -87,14 +87,11 @@ std::vector<NetworkProbeRound> MakeCoordinatedProbeRounds(std::uint32_t stream_i
     round.correction_percent = controller == 3 ? 10 : 5;
     candidates.push_back(round);
   };
-  for (std::size_t variant = 0; variant < 5; ++variant)
-    for (bool reliable : {false, true}) add(variant, reliable, 0);
-  for (std::size_t variant : {1u, 3u, 4u})
-    for (bool reliable : {false, true})
-      for (std::uint8_t controller : {1, 2}) add(variant, reliable, controller);
-  for (bool reliable : {false, true}) add(1, reliable, 3);
-  for (std::size_t variant : {1u, 4u})
-    for (std::uint8_t repair : {1, 2, 3}) add(variant, false, 2, repair);
+  for (bool reliable : {false, true}) {
+    add(4, reliable, 0);
+    add(4, reliable, 2);
+    add(1, reliable, 2);
+  }
   std::uint32_t state = stream_id ^ 0xa5a55a5au;
   if (state == 0) state = 1;
   for (std::size_t remaining = candidates.size(); remaining > 1; --remaining) {

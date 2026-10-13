@@ -48,7 +48,8 @@ class QuicServer {
                                   std::uint32_t generation) = 0;
   virtual void ConfigureAudioWindow(std::uint32_t target_ms, std::uint32_t maximum_ms,
                                     std::uint32_t output_reserve_ms) = 0;
-  virtual std::uint64_t ReliablePendingAge(std::uint64_t now) = 0;
+  virtual void ConfirmReliableReceived(std::uint32_t stream_id, std::uint32_t generation,
+                                       std::uint32_t sequence) = 0;
   virtual void StopReliableAudio() = 0;
   virtual void CloseConnection() = 0;
   virtual void Stop() = 0;

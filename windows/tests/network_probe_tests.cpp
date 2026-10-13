@@ -48,17 +48,17 @@ int main() {
   const auto next = MakeNetworkProbeDatagram(0x01020304, 0x11223345, 488);
   assert(packet[8] != next[8]);
   const auto coordinated = MakeCoordinatedProbeRounds(7);
-  assert(coordinated.size() == 60);
+  assert(coordinated.size() == 12);
   const auto manifest = EncodeProbeManifest(coordinated);
-  assert(manifest.size() == 724);
-  assert(manifest[0] == std::byte{2} && manifest[1] == std::byte{60});
+  assert(manifest.size() == 148);
+  assert(manifest[0] == std::byte{2} && manifest[1] == std::byte{12});
   assert(manifest[3] == std::byte{5});
-  assert(kCoordinatedProbeDurationSeconds == 2105);
+  assert(kCoordinatedProbeDurationSeconds == 425);
   std::uint32_t source_seconds = 0;
   for (const auto& round : coordinated) {
     assert(round.payload_bytes == 512 || round.payload_bytes == 992);
     assert(!round.reliable || round.repair == 0);
     source_seconds += kNetworkProbeSecondsPerRound;
   }
-  assert(source_seconds == 1800);
+  assert(source_seconds == 360);
 }

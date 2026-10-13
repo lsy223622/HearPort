@@ -17,6 +17,32 @@ final class LockFreeReceiverTests: XCTestCase {
         XCTAssertEqual(ring.lastSourceFrame, 120)
     }
 
+    func testReliableRecoveryPreservesStagedAudioAndRejectsReplayedSource() throws {
+        let receiver = readyReceiver(target: 4)
+        _ = receiver.renderFrames(120)
+        let now = DispatchTime.now().uptimeNanoseconds
+        receiver.configurePlayout(try PlayoutBudget(targetMilliseconds: 10,
+            maximumMilliseconds: 100, outputReserveMilliseconds: 1))
+        receiver.observeClock(localSent: now - 2_000_000, remoteReceived: now - 1_000_000,
+            remoteSent: now - 1_000_000, localReceived: now)
+        for sequence in UInt32(0)..<8 {
+            let packet = try AudioDatagram(encoded: datagram(stream: 7, sequence: sequence, value: 2))
+            _ = receiver.receiveTimedRecord(try TimedAudioRecord(streamID: 7, generation: 1,
+                sequence: sequence, frameCount: 120, kind: .audio,
+                capturedAt: now - 30_000_000 + UInt64(sequence) * 2_500_000,
+                sourceFrame: UInt64(sequence) * 120, payload: packet.pcm))
+        }
+        let fill = receiver.renderFillFrames
+        XCTAssertGreaterThan(fill, 0)
+        XCTAssertTrue(receiver.beginReliableGeneration(7, generation: 2))
+        XCTAssertEqual(receiver.renderFillFrames, fill)
+        let old = try AudioDatagram(encoded: datagram(stream: 7, sequence: 0, value: 9))
+        XCTAssertNil(receiver.receiveTimedRecord(try TimedAudioRecord(streamID: 7, generation: 2,
+            sequence: 0, frameCount: 120, kind: .retransmission, capturedAt: now - 30_000_000,
+            sourceFrame: 0, payload: old.pcm)))
+        XCTAssertEqual(receiver.renderFrames(120)[0], 2)
+    }
+
     func testFutureTimedPacketsDoNotConcealGapBeforeDeadline() throws {
         let receiver = readyReceiver(target: 4)
         _ = receiver.renderFrames(120)

@@ -404,7 +404,6 @@ void SenderService::ProbeWorker(std::uint32_t stream_id) {
         if (trace) ++outstanding_debug_sends_;
       }
       if (!trace) return;
-      if (!RecoverExpiredReliableAudio(stream_id)) { CompleteDebugSend(stream_id); return; }
       const auto sent_at = MonotonicNanoseconds();
       const auto captured_at = std::chrono::duration_cast<std::chrono::nanoseconds>(
           (round_start + std::chrono::nanoseconds(std::uint64_t(packet) * 1'000'000'000ull /
@@ -419,6 +418,7 @@ void SenderService::ProbeWorker(std::uint32_t stream_id) {
         if (reliable) {
           std::lock_guard reliable_lock(reliable_mutex_);
           reliable_lag_.Produced(sequence, source_frame + frames, frames);
+          reliable_lag_.Retain(record, static_cast<std::uint64_t>(sent_at));
         }
       }
       const bool expired = coordinated_audio_.load() && AudioDeadline(maximum_ms_.load(),
@@ -531,21 +531,6 @@ void SenderService::ConfigureCoordinatedAudio(bool enabled) {
   coordinated_audio_.store(enabled);
 }
 
-bool SenderService::RecoverExpiredReliableAudio(std::uint32_t stream_id) {
-  if (!coordinated_audio_.load() || !reliable_mode_.load()) return true;
-  const auto age = quic_->ReliablePendingAge(static_cast<std::uint64_t>(MonotonicNanoseconds()));
-  if (age < std::uint64_t(maximum_ms_.load() - output_reserve_ms_.load()) * 1'000'000) return true;
-  std::lock_guard reliable_lock(reliable_mutex_);
-  const auto generation = reliable_generation_ == UINT32_MAX ? 1 : reliable_generation_ + 1;
-  if (!quic_->StartReliableAudio(stream_id, generation)) return false;
-  reliable_generation_ = generation;
-  reliable_lag_.Begin(stream_id, generation, ReliableAudioLag::Clock::now(),
-      std::chrono::milliseconds(maximum_ms_.load() - output_reserve_ms_.load()));
-  LogDiagnostic("reliable_audio_local_expiry_restart stream_id=" + std::to_string(stream_id) +
-                " generation=" + std::to_string(generation) + " pending_age_ns=" + std::to_string(age));
-  return true;
-}
-
 bool SenderService::ConfigurePlayoutBudget(std::uint32_t target_ms,
                                            std::uint32_t maximum_ms,
                                            std::uint32_t output_reserve_ms) {
@@ -579,27 +564,38 @@ bool SenderService::ObserveAudioProgress(
   }
   if (!reliable_mode_.load()) return false;
   std::optional<std::uint32_t> latest_produced;
+  std::vector<wire::TimedAudioRecord> replay;
+  std::chrono::milliseconds feedback_age{0};
+  const auto next_generation = generation == UINT32_MAX ? 1 : generation + 1;
   {
     std::lock_guard reliable_lock(reliable_mutex_);
-    std::chrono::milliseconds feedback_age{0};
     if (coordinated_audio_.load()) {
       const auto now_ns = static_cast<std::uint64_t>(MonotonicNanoseconds());
       if (feedback_at_ns == 0 || feedback_at_ns > now_ns + 10'000'000ull) return true;
       feedback_age = std::chrono::milliseconds(
           now_ns > feedback_at_ns ? (now_ns - feedback_at_ns) / 1'000'000 : 0);
     }
+    if (coordinated_audio_.load() && feedback_age >
+        std::chrono::milliseconds((maximum_ms_.load() - output_reserve_ms_.load()) / 2)) return true;
+    if (!reliable_lag_.ConfirmReceived(stream_id, generation, latest_received, played_source)) return true;
+    if (latest_received) quic_->ConfirmReliableReceived(stream_id, generation, *latest_received);
     if (!reliable_lag_.Observe(stream_id, generation, latest_received,
                                ReliableAudioLag::Clock::now(), feedback_age, played_source)) {
       return true;
     }
     latest_produced = reliable_lag_.latest_produced();
+    if (coordinated_audio_.load()) replay = reliable_lag_.ReplayFresh(next_generation,
+        static_cast<std::uint64_t>(MonotonicNanoseconds()), latest_received, played_source);
   }
-  const auto next_generation = generation == UINT32_MAX ? 1 : generation + 1;
   std::size_t discarded = 0;
   {
     std::lock_guard queue_lock(queue_mutex_);
-    discarded = audio_queue_.size();
-    audio_queue_.clear();
+    const AudioDeadline deadline(maximum_ms_.load(), output_reserve_ms_.load());
+    const auto now = static_cast<std::uint64_t>(MonotonicNanoseconds());
+    while (!audio_queue_.empty() && (!coordinated_audio_.load() ||
+        deadline.Expired(static_cast<std::uint64_t>(audio_queue_.front().captured_at_ns), now))) {
+      audio_queue_.pop_front(); ++discarded;
+    }
     dropped_audio_packets_ += discarded;
     for (std::size_t index = 0; index < discarded; ++index) {
       audio_metrics_.record_dropped(false);
@@ -617,6 +613,20 @@ bool SenderService::ObserveAudioProgress(
                         ReliableAudioLag::Clock::now(), coordinated_audio_.load() ? std::optional(std::chrono::milliseconds(
                           maximum_ms_.load() - output_reserve_ms_.load())) : std::nullopt);
   }
+  std::size_t replayed = 0;
+  for (const auto& record : replay) {
+    const auto now = static_cast<std::uint64_t>(MonotonicNanoseconds());
+    if (AudioDeadline(maximum_ms_.load(), output_reserve_ms_.load()).Expired(record.captured_at_ns, now)) continue;
+    const auto bytes = wire::EncodeTimedAudioRecord(record);
+    const bool sent = network_probe_ ? quic_->SendProbe(bytes, stream_id, record.sequence, true, true).status ==
+        ProbeSendStatus::accepted : quic_->SendAudio(bytes);
+    if (sent) {
+      ++replayed;
+      std::lock_guard reliable_lock(reliable_mutex_);
+      reliable_lag_.Produced(record.sequence, record.source_frame + record.frame_count, record.frame_count);
+      reliable_lag_.Retain(record, now);
+    }
+  }
   send_lock.unlock();
   LogDiagnostic("reliable_audio_live_edge_restart stream_id=" +
                 std::to_string(stream_id) + " old_generation=" +
@@ -625,6 +635,10 @@ bool SenderService::ObserveAudioProgress(
                 (latest_produced ? std::to_string(*latest_produced) : "none") +
                 " received=" +
                 (latest_received ? std::to_string(*latest_received) : "none") +
+                " played_source=" + (played_source ? std::to_string(*played_source) : "none") +
+                " feedback_age_ms=" + std::to_string(feedback_age.count()) +
+                " replay_candidates=" + std::to_string(replay.size()) +
+                " replayed_packets=" + std::to_string(replayed) +
                 " discarded_queue_packets=" + std::to_string(discarded));
   return true;
 }
@@ -786,7 +800,6 @@ void SenderService::AudioWorker() {
         continue;
       }
     }
-    if (!RecoverExpiredReliableAudio(queued.packet.stream_id)) continue;
     std::vector<std::byte> encoded;
     if (coordinated_audio_.load()) {
       std::uint32_t generation = 1;
@@ -801,6 +814,10 @@ void SenderService::AudioWorker() {
       record.captured_at_ns = static_cast<std::uint64_t>(queued.captured_at_ns);
       record.source_frame = queued.source_frame;
       record.payload.assign(queued.packet.pcm.begin(), queued.packet.pcm.end());
+      if (reliable_mode_.load()) {
+        std::lock_guard reliable_lock(reliable_mutex_);
+        reliable_lag_.Retain(record, static_cast<std::uint64_t>(MonotonicNanoseconds()));
+      }
       encoded = wire::EncodeTimedAudioRecord(record);
     } else {
       const auto bytes = wire::EncodeAudioDatagram(queued.packet);

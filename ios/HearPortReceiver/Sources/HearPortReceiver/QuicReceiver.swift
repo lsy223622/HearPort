@@ -19,6 +19,7 @@ public final class HearPortReceiver {
     private var lastReceivedSequence: UInt32?
     private var clockMapping = ClockMapping()
     private var playoutController: PlayoutController?
+    private var reliableSourceFloor: UInt64 = 0
     private var timedPackets: [UInt32: (record: TimedAudioRecord, capturedAt: UInt64, uncertainty: UInt64)] = [:]
     private var sourceAnchor: (sequence: UInt32, frame: UInt64)?
     private var timeStretch = StreamingTimeStretch()
@@ -176,6 +177,7 @@ public final class HearPortReceiver {
         lock.lock()
         let accepted = session.beginStream(streamID)
         if accepted {
+            reliableSourceFloor = 0
             timedPackets.removeAll(keepingCapacity: true)
             sourceAnchor = nil
         timeStretch.reset()
@@ -214,6 +216,11 @@ public final class HearPortReceiver {
             lock.unlock()
             return false
         }
+        if playoutBudget != nil, let sequence = jitter?.expectedSequence,
+           let source = sourcePosition(for: sequence) {
+            reliableSourceFloor = max(reliableSourceFloor, source)
+        }
+        let preserveOutput = playoutBudget != nil && renderRing.fillFrames > 0
         jitter = JitterBuffer(streamID: streamID, targetPackets: jitterTargetPackets,
             maximumPackets: max(256, Int(ceil((playoutBudget?.maximumMilliseconds ?? 100) / 2.5))))
         timedPackets.removeAll(keepingCapacity: true)
@@ -223,11 +230,13 @@ public final class HearPortReceiver {
         concealingAtomic.store(0)
         dynamicCorrectionAtomic.store(Double(0).bitPattern)
         if let budget = playoutBudget { playoutController = PlayoutController(budget: budget) }
-        renderActiveAtomic.store(0)
+        if !preserveOutput { renderActiveAtomic.store(0) }
         jitterFillFramesAtomic.store(0)
-        renderRing.requestReset()
-        lifecycle.enterSilentRebuffer()
-        session.enterSilentRebuffer()
+        if !preserveOutput {
+            renderRing.requestReset()
+            lifecycle.enterSilentRebuffer()
+            session.enterSilentRebuffer()
+        }
         lastReceivedSequence = nil
         loggedFirstAudioDatagram = false
         lock.unlock()
@@ -379,6 +388,9 @@ public final class HearPortReceiver {
         var fillPackets = 0
         var disposition: AudioDisposition
         lock.lock()
+        if let record = timedRecord, record.sourceFrame < reliableSourceFloor {
+            lock.unlock(); return nil
+        }
         let captured = timedRecord.flatMap { clockMapping.map(remoteNanoseconds: $0.capturedAt, at: receivedAt) }
         if timedRecord != nil && captured == nil { lock.unlock(); return nil }
         disposition = session.acceptAudio(packet)
