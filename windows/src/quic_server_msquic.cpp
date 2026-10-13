@@ -329,7 +329,7 @@ class MsQuicServer final : public QuicServer {
     std::lock_guard lock(mutex_);
     datagram_window_frames_ = std::uint64_t(target_ms - output_reserve_ms) * 48;
     reliable_window_frames_ = std::uint64_t(maximum_ms - output_reserve_ms) * 48;
-    if (connection_) { last_probe_statistics_ns_.store(0); LogProbeStatistics(connection_); }
+    last_probe_statistics_ns_.store(0);
   }
 
   std::uint64_t ReliablePendingAge(std::uint64_t now) override {

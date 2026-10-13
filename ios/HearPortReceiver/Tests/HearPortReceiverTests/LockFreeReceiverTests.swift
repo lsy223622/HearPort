@@ -3,6 +3,20 @@ import XCTest
 @testable import HearPortReceiver
 
 final class LockFreeReceiverTests: XCTestCase {
+    func testStagedAudioExpiresWhenClockUncertaintyGrows() {
+        let ring = RenderRingBuffer(capacityFrames: 240)
+        let now = DispatchTime.now().uptimeNanoseconds
+        ring.setMaximumAge(nanoseconds: 90_000_000)
+        let captured = now - 70_000_000
+        XCTAssertEqual(ring.pushTimed(Array(repeating: 1, count: 240), sourceBegin: 0,
+            sourceEnd: 120, capturedAt: captured, deadline: captured + 88_000_000), 120)
+        ring.setClockUncertainty(nanoseconds: 40_000_000)
+        let output = ring.pop(frames: 120)
+        XCTAssertEqual(output.renderedFrames, 0)
+        XCTAssertEqual(ring.expiredFrames, 120)
+        XCTAssertEqual(ring.lastSourceFrame, 120)
+    }
+
     func testFutureTimedPacketsDoNotConcealGapBeforeDeadline() throws {
         let receiver = readyReceiver(target: 4)
         _ = receiver.renderFrames(120)
