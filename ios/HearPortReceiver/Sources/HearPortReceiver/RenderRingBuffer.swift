@@ -55,11 +55,11 @@ final class RenderRingBuffer: @unchecked Sendable {
 
     @discardableResult
     func pushTimed(_ samples: [Float], sourceBegin: UInt64, sourceEnd: UInt64,
-                    capturedAt: UInt64) -> Int {
+                    capturedAt: UInt64, deadline: UInt64 = .max) -> Int {
         guard samples.count.isMultiple(of: 2) else { return 0 }
         return samples.withUnsafeBufferPointer {
             Int(hearport_audio_ring_push_timed(storage, $0.baseAddress, samples.count / 2,
-                                             sourceBegin, sourceEnd, capturedAt))
+                                             sourceBegin, sourceEnd, capturedAt, deadline))
         }
     }
 }

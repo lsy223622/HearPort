@@ -84,14 +84,16 @@ public struct PlayoutController: Sendable {
                                   hasFuturePacket: Bool = false) -> PlayoutDecision {
         let elapsed = lastDecisionAt.map { now >= $0 ? Double(now - $0) / 1_000_000 : 0 } ?? 5
         lastDecisionAt = now
+        let ceiling = max(0, budget.maximumMilliseconds - Double(uncertaintyNanoseconds) / 1_000_000 - 5)
         if adaptive, delays.count >= 8 {
             let sorted = delays.sorted()
             let tail = sorted[min(sorted.count - 1, Int(Double(sorted.count - 1) * 0.98))]
-            let desired = min(budget.maximumMilliseconds, max(budget.targetMilliseconds,
+            let desired = min(ceiling, max(budget.targetMilliseconds,
                 tail + budget.outputReserveMilliseconds + processingMilliseconds + 5))
             let step = desired > targetMilliseconds ? elapsed * 0.2 : elapsed * 0.005
             targetMilliseconds += min(step, max(-step, desired - targetMilliseconds))
         }
+        targetMilliseconds = min(targetMilliseconds, ceiling)
         let deadline = captureTime(sourceFrame: nextSourceFrame).map {
             budget.prepareDeadline(capturedAt: $0, processingMilliseconds: processingMilliseconds,
                                    uncertaintyNanoseconds: uncertaintyNanoseconds)

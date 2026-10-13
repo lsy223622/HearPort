@@ -287,7 +287,12 @@ public final class HearPortReceiver {
     func mappedCapture(_ record: TimedAudioRecord, at now: UInt64) -> (UInt64, UInt64)? {
         lock.lock(); defer { lock.unlock() }
         guard let timestamp = clockMapping.map(remoteNanoseconds: record.capturedAt, at: now) else { return nil }
-        return (timestamp, clockMapping.uncertaintyNanoseconds)
+        return (timestamp, clockMapping.uncertainty(at: now))
+    }
+
+    var clockUncertainty: UInt64 {
+        lock.lock(); defer { lock.unlock() }
+        return clockMapping.uncertainty(at: DispatchTime.now().uptimeNanoseconds)
     }
 
     var estimatedRoundTrip: UInt64 {
@@ -388,7 +393,7 @@ public final class HearPortReceiver {
             if let insertResult = jitter?.insert(packet, stagedFrames: stagedBeforeInsert) {
                 jitterResult = insertResult
                 if insertResult == .inserted, let timedRecord, let captured {
-                    timedPackets[packet.sequence] = (timedRecord, captured, clockMapping.uncertaintyNanoseconds)
+                    timedPackets[packet.sequence] = (timedRecord, captured, clockMapping.uncertainty(at: receivedAt))
                     if sourceAnchor == nil { sourceAnchor = (packet.sequence, timedRecord.sourceFrame) }
                     playoutController?.observeArrival(sourceFrame: timedRecord.sourceFrame,
                         capturedAt: captured, receivedAt: receivedAt, original: timedRecord.kind == .audio)
@@ -589,7 +594,7 @@ public final class HearPortReceiver {
         guard let decision = playoutController?.decision(now: now, nextSourceFrame: source,
             playableFrames: (jitter?.contiguousPackets ?? 0) * 120,
             stagedSourceFrames: renderRing.sourceFillFrames,
-            uncertaintyNanoseconds: clockMapping.uncertaintyNanoseconds,
+            uncertaintyNanoseconds: clockMapping.uncertainty(at: now),
             hasFuturePacket: jitter?.hasFuturePacket == true) else { return }
         let target = max(1, Int(ceil(decision.bufferTargetMilliseconds / 2.5)))
         let recovery = max(target, Int(((playoutBudget?.maximumMilliseconds ?? 100) -
@@ -603,7 +608,7 @@ public final class HearPortReceiver {
             if let next = ordered.first(where: {
                 guard let stored = timedPackets[$0] else { return false }
                 return budget.prepareDeadline(capturedAt: stored.capturedAt,
-                    uncertaintyNanoseconds: stored.uncertainty) > now
+                    uncertaintyNanoseconds: max(stored.uncertainty, clockMapping.uncertainty(at: now))) > now
             }) {
                 jitter?.skip(to: next)
             } else if let last = ordered.last {
@@ -624,7 +629,7 @@ public final class HearPortReceiver {
             let captured = stored?.capturedAt ?? playoutController?.captureTime(sourceFrame: position)
             guard let captured, let budget = playoutBudget else { break }
             let deadline = budget.prepareDeadline(capturedAt: captured,
-                uncertaintyNanoseconds: stored?.uncertainty ?? clockMapping.uncertaintyNanoseconds)
+                uncertaintyNanoseconds: max(stored?.uncertainty ?? 0, clockMapping.uncertainty(at: now)))
             if stored != nil, deadline <= now {
                 jitter?.skip(to: SequenceNumber.next(sequence))
                 timedPackets.removeValue(forKey: sequence)
@@ -634,6 +639,7 @@ public final class HearPortReceiver {
                 timedPackets.removeValue(forKey: sequence)
                 var samples = Self.decodePCM(packet.pcm)
                 var sourceEnd = position + 120
+                var renderDeadline = deadline
                 if abs(decision.correction) > 0.001,
                    renderRing.fillFrames + 840 <= ringReserveFrames,
                    (jitter?.contiguousPackets ?? 0) >= 5 {
@@ -641,12 +647,18 @@ public final class HearPortReceiver {
                     let valid = following.allSatisfy { key in
                         guard let item = timedPackets[key] else { return false }
                         return budget.prepareDeadline(capturedAt: item.capturedAt,
-                            uncertaintyNanoseconds: item.uncertainty) > now
+                            uncertaintyNanoseconds: max(item.uncertainty, clockMapping.uncertainty(at: now))) > now
                     }
                     if valid {
                         for key in following {
                             guard let next = jitter?.consumeNext() else { break }
                             samples += Self.decodePCM(next.pcm)
+                            if let item = timedPackets[key] {
+                                let itemDeadline = budget.prepareDeadline(capturedAt: item.capturedAt,
+                                    uncertaintyNanoseconds: max(item.uncertainty, clockMapping.uncertainty(at: now)))
+                                let advance = (sourceEnd - position) * 1_000_000_000 / 48_000
+                                renderDeadline = min(renderDeadline, itemDeadline > advance ? itemDeadline - advance : 0)
+                            }
                             timedPackets.removeValue(forKey: key)
                             sourceEnd += 120
                         }
@@ -655,7 +667,7 @@ public final class HearPortReceiver {
                 samples = timeStretch.process(samples, correction: decision.correction)
                 concealingAtomic.store(0)
                 renderRing.pushTimed(concealment.accept(samples), sourceBegin: position,
-                                      sourceEnd: sourceEnd, capturedAt: captured)
+                                      sourceEnd: sourceEnd, capturedAt: captured, deadline: renderDeadline)
             } else if jitter?.mode == .running,
                       (deadline <= now || renderRing.fillFrames <= Int(renderRequestFramesAtomic.load()) + 240),
                       jitter?.concealMissing() != nil {
@@ -664,7 +676,7 @@ public final class HearPortReceiver {
                     sequence: sequence, decision: .concealed, at: now, fillPackets: jitter!.fillPackets)
                 concealingAtomic.store(1)
                 renderRing.pushTimed(concealment.conceal(frames: 120), sourceBegin: position,
-                                      sourceEnd: position + 120, capturedAt: captured)
+                                      sourceEnd: position + 120, capturedAt: captured, deadline: .max)
             } else { break }
         }
         jitterFillFramesAtomic.store(UInt64((jitter?.contiguousPackets ?? 0) * 120))

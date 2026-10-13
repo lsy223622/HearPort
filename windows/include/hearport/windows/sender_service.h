@@ -61,6 +61,7 @@ class SenderService {
                               std::uint32_t output_reserve_ms);
   void ConfigureNetworkProbe(bool enabled);
   bool network_probe() const noexcept { return network_probe_; }
+  bool network_probe_recovering() const { return probe_recovering_.load(); }
   std::uint32_t network_probe_packets_processed() const noexcept {
     return probe_packets_processed_.load();
   }
@@ -100,6 +101,7 @@ class SenderService {
   void EnqueueAudio(const wire::AudioDatagram& packet,
                     std::int64_t captured_at_ns, std::uint64_t source_frame);
   void AudioWorker();
+  bool RecoverExpiredReliableAudio(std::uint32_t stream_id);
   void ProbeWorker(std::uint32_t stream_id);
   void HandleCapturePacket(std::span<const std::byte> bytes,
                            const PcmFormat& format, std::uint64_t captured_at_ns);
@@ -163,6 +165,7 @@ class SenderService {
   bool stop_worker_ = false;
   std::atomic<bool> stop_probe_ = false;
   std::atomic<std::uint32_t> probe_packets_processed_ = 0;
+  std::atomic<bool> probe_recovering_ = false;
   std::atomic<std::uint32_t> probe_stream_id_ = 0;
   bool network_probe_ = false;
   RepairWindow probe_repair_window_;

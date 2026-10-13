@@ -8,10 +8,13 @@ public struct CoordinatedProbePlan: Sendable {
         public var framesPerPacket: Int { 48_000 / packetsPerSecond }
     }
     public let rounds: [Round]
-    public var durationSeconds: Int { rounds.count * 30 + 10 }
+    public let recoverySeconds: Int
+    public var activeDurationSeconds: Int { rounds.count * 30 + max(0, rounds.count - 1) * recoverySeconds }
+    public var durationSeconds: Int { activeDurationSeconds + 10 }
 
     public init(encoded: Data) throws {
-        guard encoded.count >= 4, encoded[0] == 1, encoded[2] == 30,
+        guard encoded.count >= 4, [1, 2].contains(encoded[0]), encoded[2] == 30,
+              encoded[0] == 1 || encoded[3] <= 10,
               (1...100).contains(Int(encoded[1])), encoded.count == 4 + Int(encoded[1]) * 12
         else { throw ControlMessageError.invalidMessage }
         var result: [Round] = []
@@ -32,6 +35,7 @@ public struct CoordinatedProbePlan: Sendable {
                 controller: controller, repair: repair, correctionPercent: correction))
         }
         rounds = result
+        recoverySeconds = encoded[0] == 2 ? Int(encoded[3]) : 0
     }
 }
 
@@ -63,6 +67,7 @@ struct ProbeConsumer: Sendable {
     private(set) var latestReceivedSequence: UInt32?
     private(set) var playedSourceFrame: UInt64?
     private var repair = RepairWindow()
+    private var clockUncertainty: UInt64 = 0
 
     init(round: CoordinatedProbePlan.Round, budget: PlayoutBudget,
          firstSequence: UInt32, sourceFrame: UInt64) {
@@ -74,6 +79,8 @@ struct ProbeConsumer: Sendable {
             adaptive: round.controller >= 2)
     }
 
+    mutating func updateUncertainty(_ uncertainty: UInt64) { clockUncertainty = uncertainty }
+
     var bufferedFrames: Int {
         var sequence = nextSequence, result = -offset
         while let packet = packets[sequence], result < 96_000 {
@@ -84,23 +91,27 @@ struct ProbeConsumer: Sendable {
 
     mutating func receive(_ record: TimedAudioRecord, capturedAt: UInt64,
                           uncertainty: UInt64, now: UInt64) {
-        guard capturedAt <= now + uncertainty,
-              (!SequenceNumber.isBefore(record.sequence, nextSequence) ||
-               (record.kind == .fec && !SequenceNumber.isBefore(record.sequence &+ 3, nextSequence))),
+        guard capturedAt <= now || capturedAt - now <= uncertainty,
               record.kind == .fec || Int(record.frameCount) == round.framesPerPacket,
               record.kind == .fec || record.payload.count + 32 == round.payloadBytes else { return }
         if generation != record.generation {
             if generation != 0, SequenceNumber.isBefore(record.generation, generation) { return }
             if generation != 0 {
                 packets.removeAll(keepingCapacity: true); repair.reset()
-                nextSequence = record.sequence; sourceFrame = record.sourceFrame; offset = 0
+                if record.sourceFrame >= sourceFrame {
+                    nextSequence = record.sequence; sourceFrame = record.sourceFrame; offset = 0
+                }
                 running = false; fractionalFrames = 0; playedSourceFrame = nil
+                latestReceivedSequence = nil
                 control = PlayoutController(budget: budget,
                     maximumCorrection: round.controller == 0 ? 0 : Double(round.correctionPercent) / 100,
                     adaptive: round.controller >= 2)
             }
             generation = record.generation
         }
+        guard !SequenceNumber.isBefore(record.sequence, nextSequence) ||
+              (record.kind == .fec && !SequenceNumber.isBefore(record.sequence &+ 3, nextSequence)) else { return }
+        clockUncertainty = uncertainty
         let deadline = budget.prepareDeadline(capturedAt: capturedAt, uncertaintyNanoseconds: uncertainty)
         guard deadline > now else { return }
         if round.repair == 1 {
@@ -122,6 +133,7 @@ struct ProbeConsumer: Sendable {
         else { return }
         if record.kind == .retransmission || record.kind == .repeated { repairedPackets += 1 }
         packets[record.sequence] = Packet(record: record, captured: capturedAt, uncertainty: uncertainty)
+        repair.received(sequence: record.sequence)
         if latestReceivedSequence == nil || SequenceNumber.isBefore(latestReceivedSequence!, record.sequence) {
             latestReceivedSequence = record.sequence
         }
@@ -130,23 +142,36 @@ struct ProbeConsumer: Sendable {
     }
 
     mutating func requestRepair(now: UInt64, roundTrip: UInt64) -> (UInt32, UInt32)? {
-        guard round.repair == 2, packets[nextSequence] == nil, !packets.isEmpty,
-              let capture = control.captureTime(sourceFrame: sourceFrame) else { return nil }
-        let deadline = budget.prepareDeadline(capturedAt: capture)
-        guard repair.shouldRequest(sequence: nextSequence, now: now, deadline: deadline,
-                                   roundTripNanoseconds: roundTrip) else { return nil }
-        return (nextSequence, UInt32(min(2_000, (deadline - now) / 1_000_000)))
+        guard round.repair == 2, let latest = latestReceivedSequence else { return nil }
+        repair.discard(before: nextSequence)
+        let distance = latest &- nextSequence
+        guard distance < 1_024 else { return nil }
+        var request: (UInt32, UInt32)?
+        for delta in 0..<distance {
+            let sequence = nextSequence &+ delta
+            guard packets[sequence] == nil,
+                  let capture = control.captureTime(sourceFrame: sourceFrame - UInt64(offset) +
+                    UInt64(delta) * UInt64(round.framesPerPacket)) else { continue }
+            let deadline = budget.prepareDeadline(capturedAt: capture, uncertaintyNanoseconds: clockUncertainty)
+            // Scan all future holes so their reorder grace can elapse before consumption.
+            if request == nil, repair.shouldRequest(sequence: sequence, now: now, deadline: deadline,
+                                                   roundTripNanoseconds: roundTrip) {
+                request = (sequence, UInt32(min(2_000, (deadline - now) / 1_000_000)))
+            }
+        }
+        return request
     }
 
     mutating func tick(now: UInt64) -> ProbeConsumption {
         let elapsed = lastTick.map { now >= $0 ? Double(now - $0) / 1e9 : 0 } ?? 0.005
         lastTick = now
         let decision = control.decision(now: now, nextSourceFrame: sourceFrame,
-            playableFrames: bufferedFrames, stagedSourceFrames: 0, hasFuturePacket: !packets.isEmpty)
+            playableFrames: bufferedFrames, stagedSourceFrames: 0,
+            uncertaintyNanoseconds: clockUncertainty, hasFuturePacket: !packets.isEmpty)
         var skipped: UInt64 = 0
         if decision.action == .resync {
             let valid = packets.values.filter {
-                budget.prepareDeadline(capturedAt: $0.captured, uncertaintyNanoseconds: $0.uncertainty) > now
+                budget.prepareDeadline(capturedAt: $0.captured, uncertaintyNanoseconds: max($0.uncertainty, clockUncertainty)) > now
             }.min { ($0.record.sequence &- nextSequence) < ($1.record.sequence &- nextSequence) }
             if let valid, valid.record.sourceFrame >= sourceFrame {
                 skipped = valid.record.sourceFrame - sourceFrame
@@ -154,7 +179,7 @@ struct ProbeConsumer: Sendable {
             }
             packets = packets.filter { !SequenceNumber.isBefore($0.key, nextSequence) &&
                 budget.prepareDeadline(capturedAt: $0.value.captured,
-                    uncertaintyNanoseconds: $0.value.uncertainty) > now }
+                    uncertaintyNanoseconds: max($0.value.uncertainty, clockUncertainty)) > now }
         }
         if !running, bufferedFrames >= max(round.framesPerPacket, Int(decision.bufferTargetMilliseconds * 48)) {
             running = true
@@ -174,7 +199,7 @@ struct ProbeConsumer: Sendable {
             let count = min(wanted, round.framesPerPacket - offset)
             let capture = packet.map { $0.captured + UInt64(offset) * 1_000_000_000 / 48_000 }
             if let packet, let capture,
-               budget.prepareDeadline(capturedAt: capture, uncertaintyNanoseconds: packet.uncertainty) > now {
+               budget.prepareDeadline(capturedAt: capture, uncertaintyNanoseconds: max(packet.uncertainty, clockUncertainty)) > now {
                 played += count
                 if age == nil { age = now >= capture ? Double(now - capture) / 1e6 : 0 }
             } else { concealed += count }
@@ -185,6 +210,7 @@ struct ProbeConsumer: Sendable {
             }
         }
         playedSourceFrame = sourceFrame
+        repair.discard(before: nextSequence)
         return ProbeConsumption(playedFrames: played, concealedFrames: concealed, waitingFrames: 0, skippedFrames: skipped,
             correction: decision.correction, targetMilliseconds: decision.targetMilliseconds,
             sourceAgeMilliseconds: age)

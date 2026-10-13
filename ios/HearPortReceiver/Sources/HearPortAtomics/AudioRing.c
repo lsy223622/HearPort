@@ -9,6 +9,7 @@ struct HearPortAudioRing {
     _Atomic uint64_t *source_begin;
     _Atomic uint64_t *source_end;
     _Atomic uint64_t *captured_at;
+    _Atomic uint64_t *deadline;
     _Atomic uint64_t last_source;
     _Atomic uint64_t expired_frames;
     _Atomic uint64_t read_cursor;
@@ -27,13 +28,15 @@ HearPortAudioRing *hearport_audio_ring_create(size_t capacity_frames) {
     ring->source_begin = calloc(capacity_frames, sizeof(*ring->source_begin));
     ring->source_end = calloc(capacity_frames, sizeof(*ring->source_end));
     ring->captured_at = calloc(capacity_frames, sizeof(*ring->captured_at));
+    ring->deadline = calloc(capacity_frames, sizeof(*ring->deadline));
     atomic_store(&ring->last_source, UINT64_MAX);
     if (ring->samples == NULL || ring->source_begin == NULL ||
-        ring->source_end == NULL || ring->captured_at == NULL) {
+        ring->source_end == NULL || ring->captured_at == NULL || ring->deadline == NULL) {
         free(ring->samples);
         free(ring->source_begin);
         free(ring->source_end);
         free(ring->captured_at);
+    free(ring->deadline);
         free(ring);
         return NULL;
     }
@@ -47,6 +50,7 @@ void hearport_audio_ring_destroy(HearPortAudioRing *ring) {
     free(ring->source_begin);
     free(ring->source_end);
     free(ring->captured_at);
+    free(ring->deadline);
     free(ring);
 }
 
@@ -70,11 +74,11 @@ size_t hearport_audio_ring_fill(const HearPortAudioRing *ring) {
 
 size_t hearport_audio_ring_push(HearPortAudioRing *ring, const float *stereo,
                                 size_t frames) {
-    return hearport_audio_ring_push_timed(ring, stereo, frames, UINT64_MAX, UINT64_MAX, UINT64_MAX);
+    return hearport_audio_ring_push_timed(ring, stereo, frames, UINT64_MAX, UINT64_MAX, UINT64_MAX, UINT64_MAX);
 }
 
 size_t hearport_audio_ring_push_timed(HearPortAudioRing *ring, const float *stereo,
-    size_t frames, uint64_t source_begin, uint64_t source_end, uint64_t captured_at) {
+    size_t frames, uint64_t source_begin, uint64_t source_end, uint64_t captured_at, uint64_t deadline) {
     if (frames == 0 || !hearport_audio_ring_reset_acknowledged(ring)) return 0;
     const uint64_t write = atomic_load_explicit(&ring->write_cursor, memory_order_relaxed);
     const uint64_t read = atomic_load_explicit(&ring->read_cursor, memory_order_acquire);
@@ -89,6 +93,8 @@ size_t hearport_audio_ring_push_timed(HearPortAudioRing *ring, const float *ster
         const uint64_t span = timed ? source_end - source_begin : 0;
         const uint64_t begin = timed ? source_begin + span * frame / frames : UINT64_MAX;
         const uint64_t end = timed ? source_begin + span * (frame + 1) / frames : UINT64_MAX;
+        atomic_store_explicit(&ring->deadline[slot], deadline == UINT64_MAX ? UINT64_MAX :
+            deadline + (begin - source_begin) * 1000000000ull / 48000, memory_order_relaxed);
         atomic_store_explicit(&ring->source_begin[slot], begin, memory_order_relaxed);
         atomic_store_explicit(&ring->source_end[slot], end, memory_order_relaxed);
         atomic_store_explicit(&ring->captured_at[slot], timed ?
@@ -133,8 +139,9 @@ size_t hearport_audio_ring_pop_at(HearPortAudioRing *ring, float *stereo,
             atomic_load_explicit(&ring->source_end[slot], memory_order_relaxed), memory_order_release);
         ++cursor;
         const uint64_t presentation = now + count * 1000000000ull / 48000;
-        if (maximum_age != 0 && captured != UINT64_MAX && presentation >= captured &&
-            presentation - captured >= maximum_age) {
+        const uint64_t deadline = atomic_load_explicit(&ring->deadline[slot], memory_order_relaxed);
+        if (presentation >= deadline || (maximum_age != 0 && captured != UINT64_MAX &&
+            presentation >= captured && presentation - captured >= maximum_age)) {
             atomic_fetch_add_explicit(&ring->expired_frames, 1, memory_order_relaxed);
             continue;
         }

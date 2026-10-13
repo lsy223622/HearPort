@@ -308,6 +308,7 @@ void SenderService::ConfigureNetworkProbe(bool enabled) {
 void SenderService::ProbeWorker(std::uint32_t stream_id) {
   using Clock = std::chrono::steady_clock;
   probe_packets_processed_.store(0);
+  probe_recovering_.store(false);
   probe_stream_id_.store(stream_id);
   const auto rounds = network_probe_rounds();
   const auto close_timer = [](HANDLE handle) { CloseHandle(handle); };
@@ -327,10 +328,14 @@ void SenderService::ProbeWorker(std::uint32_t stream_id) {
     const auto& round = rounds[index];
     const bool reliable = round.reliable;
     const auto round_start = began +
-        std::chrono::seconds(index * kNetworkProbeSecondsPerRound);
+        std::chrono::seconds(index * (kNetworkProbeSecondsPerRound +
+            (coordinated_audio_.load() ? kCoordinatedProbeRecoverySeconds : 0)));
     {
       std::lock_guard send_lock(audio_send_mutex_);
       std::lock_guard reliable_lock(reliable_mutex_);
+      probe_recovering_.store(index > 0 && coordinated_audio_.load());
+      if (coordinated_audio_.load()) quic_->ConfigureAudioWindow(
+          target_ms_.load(), maximum_ms_.load(), output_reserve_ms_.load());
       reliable_mode_.store(reliable);
       reliable_generation_ = reliable_generation_ == UINT32_MAX ? 1 : reliable_generation_ + 1;
       probe_repair_window_.Reset();
@@ -364,6 +369,7 @@ void SenderService::ProbeWorker(std::uint32_t stream_id) {
                   " controller=" + std::to_string(round.controller) +
                   " repair=" + std::to_string(round.repair) +
                   " correction_percent=" + std::to_string(round.correction_percent) +
+                  " recovery_seconds=" + std::to_string(coordinated_audio_.load() && index > 0 ? kCoordinatedProbeRecoverySeconds : 0) +
                   " sequence=" + std::to_string(sequence));
     for (std::uint32_t packet = 0; packet < count; ++packet, ++sequence) {
       const auto tick = packet / round.burst_packets;
@@ -385,6 +391,7 @@ void SenderService::ProbeWorker(std::uint32_t stream_id) {
         }
       }
       if (stop_probe_.load()) return;
+      probe_recovering_.store(false);
       const auto woke_at = MonotonicNanoseconds();
       auto datagram = MakeNetworkProbeDatagram(stream_id, sequence,
           coordinated_audio_.load() ? round.payload_bytes - 24 : round.payload_bytes);
@@ -397,6 +404,7 @@ void SenderService::ProbeWorker(std::uint32_t stream_id) {
         if (trace) ++outstanding_debug_sends_;
       }
       if (!trace) return;
+      if (!RecoverExpiredReliableAudio(stream_id)) { CompleteDebugSend(stream_id); return; }
       const auto sent_at = MonotonicNanoseconds();
       const auto captured_at = std::chrono::duration_cast<std::chrono::nanoseconds>(
           (round_start + std::chrono::nanoseconds(std::uint64_t(packet) * 1'000'000'000ull /
@@ -517,6 +525,21 @@ void SenderService::ConfigureCoordinatedAudio(bool enabled) {
   coordinated_audio_.store(enabled);
 }
 
+bool SenderService::RecoverExpiredReliableAudio(std::uint32_t stream_id) {
+  if (!coordinated_audio_.load() || !reliable_mode_.load()) return true;
+  const auto age = quic_->ReliablePendingAge(static_cast<std::uint64_t>(MonotonicNanoseconds()));
+  if (age < std::uint64_t(maximum_ms_.load() - output_reserve_ms_.load()) * 1'000'000) return true;
+  std::lock_guard reliable_lock(reliable_mutex_);
+  const auto generation = reliable_generation_ == UINT32_MAX ? 1 : reliable_generation_ + 1;
+  if (!quic_->StartReliableAudio(stream_id, generation)) return false;
+  reliable_generation_ = generation;
+  reliable_lag_.Begin(stream_id, generation, ReliableAudioLag::Clock::now(),
+      std::chrono::milliseconds(maximum_ms_.load() - output_reserve_ms_.load()));
+  LogDiagnostic("reliable_audio_local_expiry_restart stream_id=" + std::to_string(stream_id) +
+                " generation=" + std::to_string(generation) + " pending_age_ns=" + std::to_string(age));
+  return true;
+}
+
 bool SenderService::ConfigurePlayoutBudget(std::uint32_t target_ms,
                                            std::uint32_t maximum_ms,
                                            std::uint32_t output_reserve_ms) {
@@ -526,6 +549,7 @@ bool SenderService::ConfigurePlayoutBudget(std::uint32_t target_ms,
   target_ms_.store(target_ms);
   maximum_ms_.store(maximum_ms);
   output_reserve_ms_.store(output_reserve_ms);
+  quic_->ConfigureAudioWindow(target_ms, maximum_ms, output_reserve_ms);
   LogDiagnostic("audio_budget target_ms=" + std::to_string(target_ms) +
                 " maximum_ms=" + std::to_string(maximum_ms) +
                 " output_reserve_ms=" + std::to_string(output_reserve_ms));
@@ -756,6 +780,7 @@ void SenderService::AudioWorker() {
         continue;
       }
     }
+    if (!RecoverExpiredReliableAudio(queued.packet.stream_id)) continue;
     std::vector<std::byte> encoded;
     if (coordinated_audio_.load()) {
       std::uint32_t generation = 1;

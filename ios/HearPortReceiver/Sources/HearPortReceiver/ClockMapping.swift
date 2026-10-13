@@ -18,7 +18,7 @@ public struct ClockMapping: Sendable {
         let remoteProcessing = remoteSent - remoteReceived
         guard elapsed >= remoteProcessing else { return false }
         let roundTrip = elapsed - remoteProcessing
-        if remoteOrigin != nil, localReceived >= updatedAt, localReceived - updatedAt > 5_000_000_000 {
+        if remoteOrigin != nil, localReceived >= updatedAt, localReceived - updatedAt > 30_000_000_000 {
             bestRoundTrip = .max
         }
         guard roundTrip <= 500_000_000,
@@ -41,9 +41,15 @@ public struct ClockMapping: Sendable {
         return true
     }
 
+    public func uncertainty(at now: UInt64) -> UInt64 {
+        guard remoteOrigin != nil, now >= updatedAt, now - updatedAt <= 30_000_000_000 else { return .max }
+        // Holdover uses the same 2000 ppm bound as the accepted clock slope.
+        return uncertaintyNanoseconds + min(now - updatedAt, 30_000_000_000) / 500
+    }
+
     public func map(remoteNanoseconds: UInt64, at now: UInt64) -> UInt64? {
         guard let remote = remoteOrigin, now >= updatedAt,
-              now - updatedAt <= 5_000_000_000 else { return nil }
+              now - updatedAt <= 30_000_000_000 else { return nil }
         let delta = remoteNanoseconds >= remote
             ? Double(remoteNanoseconds - remote) : -Double(remote - remoteNanoseconds)
         let mapped = Double(localOrigin) + delta * localPerRemote
@@ -53,7 +59,7 @@ public struct ClockMapping: Sendable {
 
     public func remote(localNanoseconds: UInt64, at now: UInt64) -> UInt64? {
         guard let origin = remoteOrigin, now >= updatedAt,
-              now - updatedAt <= 5_000_000_000 else { return nil }
+              now - updatedAt <= 30_000_000_000 else { return nil }
         let delta = localNanoseconds >= localOrigin
             ? Double(localNanoseconds - localOrigin) : -Double(localOrigin - localNanoseconds)
         let timestamp = Double(origin) + delta / localPerRemote

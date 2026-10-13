@@ -11,6 +11,12 @@ public struct RepairWindow: Sendable {
     public init() {}
     public mutating func reset() { self = RepairWindow() }
 
+    public mutating func discard(before sequence: UInt32) {
+        gaps = gaps.filter { !SequenceNumber.isBefore($0.key, sequence) }
+    }
+
+    public mutating func received(sequence: UInt32) { gaps.removeValue(forKey: sequence) }
+
     public mutating func ingest(_ record: TimedAudioRecord, deadline: UInt64,
                                 now: UInt64) -> [TimedAudioRecord] {
         records = records.filter { $0.value.deadline > now }

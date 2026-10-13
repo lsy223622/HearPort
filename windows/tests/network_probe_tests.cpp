@@ -51,7 +51,9 @@ int main() {
   assert(coordinated.size() == 60);
   const auto manifest = EncodeProbeManifest(coordinated);
   assert(manifest.size() == 724);
-  assert(manifest[0] == std::byte{1} && manifest[1] == std::byte{60});
+  assert(manifest[0] == std::byte{2} && manifest[1] == std::byte{60});
+  assert(manifest[3] == std::byte{5});
+  assert(kCoordinatedProbeDurationSeconds == 2105);
   std::uint32_t source_seconds = 0;
   for (const auto& round : coordinated) {
     assert(round.payload_bytes == 512 || round.payload_bytes == 992);
