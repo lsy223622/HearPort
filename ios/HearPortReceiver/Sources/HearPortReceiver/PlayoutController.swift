@@ -94,7 +94,7 @@ public struct PlayoutController: Sendable {
             let step = desired > targetMilliseconds ? elapsed * 0.2 : elapsed * 0.005
             targetMilliseconds += min(step, max(-step, desired - targetMilliseconds))
         }
-        targetMilliseconds = min(targetMilliseconds, ceiling)
+        targetMilliseconds = min(adaptive ? targetMilliseconds : budget.targetMilliseconds, ceiling)
         let deadline = captureTime(sourceFrame: nextSourceFrame).map {
             budget.prepareDeadline(capturedAt: $0, processingMilliseconds: processingMilliseconds,
                                    uncertaintyNanoseconds: uncertaintyNanoseconds)

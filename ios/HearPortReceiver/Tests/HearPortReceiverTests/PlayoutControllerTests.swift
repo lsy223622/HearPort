@@ -111,6 +111,13 @@ final class PlayoutControllerTests: XCTestCase {
             playableFrames: 4_800, stagedSourceFrames: 0, uncertaintyNanoseconds: 30_000_000)
         XCTAssertLessThanOrEqual(result.targetMilliseconds, 65)
         XCTAssertGreaterThanOrEqual(result.correction, 0)
+        var fixed = PlayoutController(budget: budget, maximumCorrection: 0, adaptive: false)
+        XCTAssertEqual(fixed.decision(now: 1_000_000_000, nextSourceFrame: 0,
+            playableFrames: 2_400, stagedSourceFrames: 0,
+            uncertaintyNanoseconds: 70_000_000).targetMilliseconds, 25)
+        XCTAssertEqual(fixed.decision(now: 1_005_000_000, nextSourceFrame: 0,
+            playableFrames: 2_400, stagedSourceFrames: 0).targetMilliseconds, 50)
+
     }
 
 }
