@@ -64,7 +64,7 @@ final class CoordinatedProbeTests: XCTestCase {
         XCTAssertNil(consumer.playedSourceFrame)
     }
 
-    func testNewEpochClearsFeedbackEvenWhenItsFirstPacketIsBehindCursor() throws {
+    func testNewEpochConfirmsConsumedReplayWithoutRewindingPlayback() throws {
         let plan = try CoordinatedProbePlan(encoded: Data([1, 1, 30, 0, 3, 224, 1, 144, 1, 1, 0, 1, 0, 0, 5, 0]))
         let budget = try PlayoutBudget(targetMilliseconds: 5, maximumMilliseconds: 100,
                                        outputReserveMilliseconds: 1)
@@ -78,14 +78,93 @@ final class CoordinatedProbeTests: XCTestCase {
             consumer.receive(record, capturedAt: capture, uncertainty: 0, now: 1_010_000_000)
         }
         _ = consumer.tick(now: 1_010_000_000)
+        let played = consumer.playedSourceFrame
         let record = try TimedAudioRecord(streamID: 7, generation: 2, sequence: 0,
             frameCount: 120, kind: .probe, capturedAt: 1_000_000_000,
             sourceFrame: 0, payload: Data(repeating: 1, count: 960))
         consumer.receive(record, capturedAt: record.capturedAt, uncertainty: 0, now: 1_020_000_000)
         XCTAssertEqual(consumer.generation, 2)
-        XCTAssertNil(consumer.latestReceivedSequence)
-        XCTAssertNil(consumer.playedSourceFrame)
+        XCTAssertEqual(consumer.latestReceivedSequence, 0)
+        XCTAssertEqual(consumer.playedSourceFrame, played)
+        XCTAssertGreaterThan(consumer.bufferedFrames, 0)
+        let result = consumer.tick(now: 1_025_000_000)
+        XCTAssertEqual(result.waitingFrames, 0)
+        XCTAssertGreaterThanOrEqual(consumer.playedSourceFrame ?? 0, played ?? 0)
+    }
+
+    func testExpiredDeliveryIsConfirmedWithoutBecomingPlayable() throws {
+        let plan = try CoordinatedProbePlan(encoded: Data([1, 1, 30, 0, 3, 224, 1, 144, 1, 1, 1, 1, 0, 0, 5, 0]))
+        let budget = try PlayoutBudget(targetMilliseconds: 50, maximumMilliseconds: 100,
+                                       outputReserveMilliseconds: 1)
+        var consumer = ProbeConsumer(round: plan.rounds[0], budget: budget,
+                                     firstSequence: 0, sourceFrame: 0)
+        let record = try TimedAudioRecord(streamID: 7, generation: 1, sequence: 0,
+            frameCount: 120, kind: .probe, capturedAt: 1_000_000_000,
+            sourceFrame: 0, payload: Data(repeating: 1, count: 960))
+        consumer.receive(record, capturedAt: record.capturedAt, uncertainty: 0, now: 1_100_000_000)
+        XCTAssertEqual(consumer.latestReceivedSequence, 0)
         XCTAssertEqual(consumer.bufferedFrames, 0)
+        XCTAssertEqual(consumer.tick(now: 1_100_000_000).playedFrames, 0)
+
+        let staleGeneration = try TimedAudioRecord(streamID: 7, generation: 2, sequence: 1,
+            frameCount: 120, kind: .retransmission, capturedAt: 1_002_500_000,
+            sourceFrame: 120, payload: Data(repeating: 1, count: 960))
+        consumer.receive(staleGeneration, capturedAt: staleGeneration.capturedAt, uncertainty: 0,
+                         now: 1_110_000_000)
+        consumer.receive(record, capturedAt: record.capturedAt, uncertainty: 0, now: 1_110_000_000)
+        XCTAssertEqual(consumer.generation, 2)
+        XCTAssertEqual(consumer.latestReceivedSequence, 1)
+        XCTAssertEqual(consumer.bufferedFrames, 0)
+    }
+
+    func testExpiredNewEpochPacketPreservesUnexpiredStagedPlayback() throws {
+        let plan = try CoordinatedProbePlan(encoded: Data([1, 1, 30, 0, 3, 224, 1, 144, 1, 1, 1, 1, 0, 0, 5, 0]))
+        let budget = try PlayoutBudget(targetMilliseconds: 10, maximumMilliseconds: 100,
+                                       outputReserveMilliseconds: 1)
+        var consumer = ProbeConsumer(round: plan.rounds[0], budget: budget,
+                                     firstSequence: 32, sourceFrame: 32 * 120)
+        for sequence in 32...40 {
+            let capture = UInt64(1_000_000_000) + UInt64(sequence) * 2_500_000
+            let record = try TimedAudioRecord(streamID: 7, generation: 1, sequence: UInt32(sequence),
+                frameCount: 120, kind: .probe, capturedAt: capture,
+                sourceFrame: UInt64(sequence) * 120, payload: Data(repeating: 1, count: 960))
+            consumer.receive(record, capturedAt: capture, uncertainty: 0, now: 1_110_000_000)
+        }
+        XCTAssertGreaterThan(consumer.tick(now: 1_110_000_000).playedFrames, 0)
+        let played = consumer.playedSourceFrame
+        let expired = try TimedAudioRecord(streamID: 7, generation: 2, sequence: 0,
+            frameCount: 120, kind: .retransmission, capturedAt: 1_000_000_000,
+            sourceFrame: 0, payload: Data(repeating: 1, count: 960))
+        consumer.receive(expired, capturedAt: expired.capturedAt, uncertainty: 0, now: 1_110_000_000)
+        XCTAssertEqual(consumer.latestReceivedSequence, 0)
+        XCTAssertEqual(consumer.playedSourceFrame, played)
+        let result = consumer.tick(now: 1_115_000_000)
+        XCTAssertGreaterThan(result.playedFrames, 0)
+        XCTAssertEqual(result.waitingFrames, 0)
+        XCTAssertEqual(consumer.repairedPackets, 0)
+    }
+
+    func testNewEpochRetainsOnlyBoundedStagedOutput() throws {
+        let plan = try CoordinatedProbePlan(encoded: Data([1, 1, 30, 0, 3, 224, 1, 144, 1, 1, 1, 1, 0, 0, 5, 0]))
+        let budget = try PlayoutBudget(targetMilliseconds: 50, maximumMilliseconds: 100,
+                                       outputReserveMilliseconds: 1)
+        var consumer = ProbeConsumer(round: plan.rounds[0], budget: budget,
+                                     firstSequence: 0, sourceFrame: 0)
+        for sequence in 0...24 {
+            let capture = UInt64(1_000_000_000) + UInt64(sequence) * 2_500_000
+            let record = try TimedAudioRecord(streamID: 7, generation: 1, sequence: UInt32(sequence),
+                frameCount: 120, kind: .probe, capturedAt: capture,
+                sourceFrame: UInt64(sequence) * 120, payload: Data(repeating: 1, count: 960))
+            consumer.receive(record, capturedAt: capture, uncertainty: 0, now: 1_060_000_000)
+        }
+        _ = consumer.tick(now: 1_060_000_000)
+        XCTAssertGreaterThan(consumer.bufferedFrames, 2_048)
+        let replay = try TimedAudioRecord(streamID: 7, generation: 2, sequence: 0,
+            frameCount: 120, kind: .retransmission, capturedAt: 1_000_000_000,
+            sourceFrame: 0, payload: Data(repeating: 1, count: 960))
+        consumer.receive(replay, capturedAt: replay.capturedAt, uncertainty: 0, now: 1_060_000_000)
+        XCTAssertEqual(consumer.bufferedFrames, 2_040)
+        XCTAssertEqual(consumer.repairedPackets, 0)
     }
 
     func testManifestCarriesRecoveryOutsideMeasuredSourceDuration() throws {
