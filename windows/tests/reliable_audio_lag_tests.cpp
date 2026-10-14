@@ -1,12 +1,16 @@
 #include <cassert>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <optional>
 #include "hearport/wire/audio_datagram.h"
 
 #include "hearport/windows/reliable_audio_lag.h"
 
 int main() {
+#ifdef _MSC_VER
+  _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
+#endif
   using hearport::windows::ReliableAudioLag;
   using Clock = std::chrono::steady_clock;
   const auto start = Clock::time_point{};
@@ -108,6 +112,25 @@ int main() {
   const auto audio_replay = lag.ReplayFresh(11, 1'120'000'000, std::nullopt, std::nullopt);
   assert(audio_replay.size() == 1 && audio_replay[0].kind == hearport::wire::AudioRecordKind::audio);
   assert(hearport::wire::EncodeTimedAudioRecord(audio_replay[0]).size() == 992);
+
+  lag.Begin(7, 11, start, std::chrono::milliseconds(89));
+  lag.Produced(100431);
+  assert(!lag.Observe(7, 11, 100391, start + std::chrono::milliseconds(120),
+                      std::chrono::milliseconds(23)));
+  assert(!lag.Observe(7, 11, 100387, start + std::chrono::milliseconds(120),
+                      std::chrono::milliseconds(21)));
+  assert(lag.Observe(7, 11, 100386, start + std::chrono::milliseconds(120),
+                     std::chrono::milliseconds(23)));
+
+  lag.Begin(7, 12, start, std::chrono::milliseconds(89));
+  for (std::uint32_t sequence = 0; sequence < 40; ++sequence) lag.Produced(sequence);
+  assert(!lag.Observe(7, 12, std::nullopt, start + std::chrono::milliseconds(120),
+                      std::chrono::milliseconds(23)));
+  lag.Produced(40, 5'040);
+  assert(!lag.Observe(7, 12, std::nullopt, start + std::chrono::milliseconds(120),
+                      std::chrono::milliseconds(23), 240));
+  assert(lag.Observe(7, 12, std::nullopt, start + std::chrono::milliseconds(120),
+                     std::chrono::milliseconds(10), 240));
 
 
 }
