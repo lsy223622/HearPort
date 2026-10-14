@@ -279,7 +279,7 @@ public final class ReceiverControlSession {
         guard mode == .remembered || (mode == .pair || mode == .oneTime) else { return }
         let peerID = credential?.peerID ?? Data()
         let features = ControlFeature.diagnosticsUpload | ControlFeature.networkProbe |
-            ControlFeature.networkProbeRepeat | ControlFeature.coordinatedAudio |
+            ControlFeature.networkProbeRepeat | ControlFeature.coordinatedAudio | ControlFeature.musicTest |
             (audioMode == .reliable ? ControlFeature.reliableAudio : 0)
         let envelope = ControlEnvelope(.connectRequest(authMode: mode,
                                                        peerID: peerID,
@@ -497,7 +497,7 @@ public final class ReceiverControlSession {
                     fields: ["event": "remembered_credential_saved"]
                 )
             }
-            if audioMode == .reliable &&
+            if audioMode == .reliable && (features & ControlFeature.musicTest) == 0 &&
                 (features & ControlFeature.reliableAudio) == 0 {
                 diagnostics.log(.error, category: .control,
                                 message: "reliable_audio_unsupported",
@@ -513,6 +513,7 @@ public final class ReceiverControlSession {
             }
             setNetworkProbe((features & ControlFeature.networkProbe) != 0)
             if isNetworkProbe { transport.enableNetworkProbe() }
+            if (features & ControlFeature.musicTest) != 0 { transport.enableMusicTest() }
             if audioMode == .reliable && !isNetworkProbe { transport.acceptReliableAudio() }
             diagnostics.log(
                 .info,
@@ -558,7 +559,7 @@ public final class ReceiverControlSession {
                     throw PairingSecurityError.providerFailure(-3)
                 }
             }
-            if audioMode == .reliable && !isNetworkProbe {
+            if (audioMode == .reliable || (peerFeatures & ControlFeature.musicTest) != 0) && !isNetworkProbe {
                 transport.expectReliableAudio(streamID: streamID,
                                               latestReceivedSequence: { [weak receiver = self.receiver] in
                     receiver?.reliableProgressSequence()
@@ -638,6 +639,24 @@ public final class ReceiverControlSession {
             }
             onError?(displayMessage)
         case let .probeManifest(streamID, manifest):
+            if (peerFeatures & ControlFeature.musicTest) != 0 {
+                guard !isNetworkProbe, activeDebugStreamID == streamID else {
+                    throw ControlMessageError.invalidMessage
+                }
+                let round = try MusicTestRound(encoded: manifest)
+                guard receiver.beginMusicRound(streamID: streamID, round: round) else {
+                    throw ControlMessageError.invalidMessage
+                }
+                transport.prepareMusicRound(round)
+                diagnostics.log(.info, category: .audio, message: "music_test_round",
+                    fields: ["event": "music_test_round", "round": "\(round.index)",
+                        "transport": round.reliable ? "reliable_stream" : "datagram",
+                        "controller": round.adaptive ? "adaptive_5" : "fixed",
+                        "first_sequence": "\(round.firstSequence)",
+                        "generation": "\(round.generation)", "seconds": "\(round.seconds)"])
+                send(.receiverReady)
+                return
+            }
             guard isNetworkProbe, (peerFeatures & ControlFeature.coordinatedAudio) != 0,
                   activeDebugSessionID == nil, streamID != 0 else { throw ControlMessageError.invalidMessage }
             debugSessionDiagnostics.configureProbePlan(try CoordinatedProbePlan(encoded: manifest))

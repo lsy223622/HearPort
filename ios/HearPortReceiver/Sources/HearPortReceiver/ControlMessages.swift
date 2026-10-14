@@ -26,6 +26,7 @@ public enum ControlFeature {
     public static let networkProbe: UInt32 = 4
     public static let networkProbeRepeat: UInt32 = 8
     public static let coordinatedAudio: UInt32 = 16
+    public static let musicTest: UInt32 = 32
 }
 
 public struct AudioProgressTiming: Equatable, Sendable {

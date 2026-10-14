@@ -38,6 +38,26 @@ class EchoProtocol(QuicConnectionProtocol):
                 return
             self._quic.send_stream_data(event.stream_id, event.data, end_stream=False)
             self.reliable_requests.extend(event.data)
+            for command, sequence, generation, reliable in [
+                (b"MUSIC_TEST_1", 0, 2, False),
+                (b"MUSIC_TEST_2", 96000, 4, True),
+                (b"MUSIC_TEST_3", 288000, 6, False),
+            ]:
+                if command not in self.reliable_requests:
+                    continue
+                packet = (b"\x00\x00\x00\x01" + generation.to_bytes(4, "big") +
+                          sequence.to_bytes(4, "big") + b"\x00\x78\x00\x00" +
+                          (1).to_bytes(8, "big") + (sequence * 120).to_bytes(8, "big") + bytes(960))
+                if reliable:
+                    stream = self._quic.get_next_available_stream_id(is_unidirectional=True)
+                    preface = (1).to_bytes(4, "big") + generation.to_bytes(4, "big")
+                    self._quic.send_stream_data(stream, preface + len(packet).to_bytes(2, "big") + packet,
+                                                end_stream=True)
+                else:
+                    self._quic.send_datagram_frame(packet)
+                self.sent_audio = True
+                self.reliable_requests.clear()
+                break
             if b"NETWORK_PROBE" in self.reliable_requests:
                 probe_stream = self._quic.get_next_available_stream_id(is_unidirectional=True)
                 preface = (1).to_bytes(4, "big") + (1).to_bytes(4, "big")

@@ -5,6 +5,50 @@ import XCTest
 @testable import HearPortReceiver
 
 final class QuicTransportTests: XCTestCase {
+    func testMusicTestSwitchesDatagramReliableDatagramOnOneConnection() throws {
+        guard ProcessInfo.processInfo.environment["HEARPORT_QUIC_INTEGRATION"] == "1" else {
+            throw XCTSkip("Requires the loopback QUIC echo server")
+        }
+        let transport = HearPortQuicTransport(diagnostics: HearPortDiagnostics(
+            directory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)),
+            audioMode: .reliable)
+        let audio = expectation(description: "Three music transport rounds")
+        audio.expectedFulfillmentCount = 3
+        let first = try MusicTestRound(encoded: Data([3,1,8,0,0,120,0,0,0,0,0,0,0,0,0,2]))
+        let second = try MusicTestRound(encoded: Data([3,3,8,3,0,120,0,0,0,1,119,0,0,0,0,4]))
+        let third = try MusicTestRound(encoded: Data([3,7,8,2,0,120,0,0,0,4,101,0,0,0,0,6]))
+        transport.onStateChange = { state in
+            if state == .ready {
+                transport.acceptCoordinatedAudio()
+                transport.enableMusicTest()
+                transport.expectReliableAudio(streamID: 1, latestReceivedSequence: { nil })
+                transport.prepareMusicRound(first)
+                try? transport.sendControl(Data("MUSIC_TEST_1".utf8))
+            } else if state == .failed { XCTFail("Music mode switch closed the connection") }
+        }
+        transport.onReliableAudioGeneration = { _, generation in
+            XCTAssertEqual(generation, 4)
+            return true
+        }
+        transport.onAudioDatagram = { data in
+            guard let record = try? TimedAudioRecord(encoded: data) else {
+                XCTFail("Invalid timed music record"); return
+            }
+            audio.fulfill()
+            if record.sequence == 0 {
+                transport.prepareMusicRound(second)
+                try? transport.sendControl(Data("MUSIC_TEST_2".utf8))
+            } else if record.sequence == 96_000 {
+                transport.prepareMusicRound(third)
+                try? transport.sendControl(Data("MUSIC_TEST_3".utf8))
+            } else { XCTAssertEqual(record.sequence, 288_000) }
+        }
+        defer { transport.cancel() }
+        transport.connect(host: "127.0.0.1", port: 44330,
+                          tlsPolicy: .pairing(onPeerSPKIHash: { _ in }))
+        wait(for: [audio], timeout: 15)
+    }
+
     func testNetworkProbeReceivesBothModesAndQueueHeartbeats() throws {
         guard ProcessInfo.processInfo.environment["HEARPORT_QUIC_INTEGRATION"] == "1" else {
             throw XCTSkip("Requires the loopback QUIC echo server")

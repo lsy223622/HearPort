@@ -20,6 +20,8 @@ public final class HearPortReceiver {
     private var clockMapping = ClockMapping()
     private var playoutController: PlayoutController?
     private var reliableSourceFloor: UInt64 = 0
+    private var playoutAdaptive = true
+    private var playoutMaximumCorrection = 0.05
     private var timedPackets: [UInt32: (record: TimedAudioRecord, capturedAt: UInt64, uncertainty: UInt64)] = [:]
     private var sourceAnchor: (sequence: UInt32, frame: UInt64)?
     private var timeStretch = StreamingTimeStretch()
@@ -178,6 +180,7 @@ public final class HearPortReceiver {
         let accepted = session.beginStream(streamID)
         if accepted {
             reliableSourceFloor = 0
+            playoutAdaptive = true; playoutMaximumCorrection = 0.05
             timedPackets.removeAll(keepingCapacity: true)
             sourceAnchor = nil
         timeStretch.reset()
@@ -229,7 +232,7 @@ public final class HearPortReceiver {
         concealment.reset()
         concealingAtomic.store(0)
         dynamicCorrectionAtomic.store(Double(0).bitPattern)
-        if let budget = playoutBudget { playoutController = PlayoutController(budget: budget) }
+        if let budget = playoutBudget { playoutController = PlayoutController(budget: budget, maximumCorrection: playoutMaximumCorrection, adaptive: playoutAdaptive) }
         if !preserveOutput { renderActiveAtomic.store(0) }
         jitterFillFramesAtomic.store(0)
         if !preserveOutput {
@@ -260,7 +263,7 @@ public final class HearPortReceiver {
             jitter = JitterBuffer(streamID: buffer.streamID, targetPackets: jitterTargetPackets,
                 maximumPackets: max(256, Int(ceil(budget.maximumMilliseconds / 2.5))))
         }
-        playoutController = PlayoutController(budget: budget)
+        playoutController = PlayoutController(budget: budget, maximumCorrection: playoutMaximumCorrection, adaptive: playoutAdaptive)
         renderRing.setMaximumAge(nanoseconds: UInt64(
             (budget.maximumMilliseconds - budget.outputReserveMilliseconds) * 1_000_000))
         let target = max(1, Int(ceil((budget.targetMilliseconds - budget.outputReserveMilliseconds) / 2.5)))
@@ -269,6 +272,31 @@ public final class HearPortReceiver {
         ringReserveFrames = min(renderRing.capacityFrames, 2_048, target * 120)
         targetFramesAtomic.store(UInt64(target * 120))
         lock.unlock()
+    }
+
+    @discardableResult
+    func beginMusicRound(streamID: UInt32, round: MusicTestRound) -> Bool {
+        lock.lock()
+        guard session.activeStreamID == streamID, let budget = playoutBudget else {
+            lock.unlock(); return false
+        }
+        reliableSourceFloor = UInt64(round.firstSequence) * 120
+        timedPackets.removeAll(keepingCapacity: true)
+        sourceAnchor = nil
+        jitter = JitterBuffer(streamID: streamID, targetPackets: jitterTargetPackets,
+            maximumPackets: max(256, Int(ceil(budget.maximumMilliseconds / 2.5))))
+        playoutAdaptive = round.adaptive
+        playoutMaximumCorrection = round.adaptive ? 0.05 : 0
+        playoutController = PlayoutController(budget: budget,
+            maximumCorrection: playoutMaximumCorrection, adaptive: playoutAdaptive)
+        timeStretch.reset(); concealment.reset()
+        concealingAtomic.store(0); dynamicCorrectionAtomic.store(Double(0).bitPattern)
+        renderActiveAtomic.store(0); jitterFillFramesAtomic.store(0)
+        renderRing.requestReset()
+        lifecycle.enterSilentRebuffer(); session.enterSilentRebuffer()
+        lastReceivedSequence = nil; loggedFirstAudioDatagram = false
+        lock.unlock()
+        return true
     }
 
     @discardableResult
@@ -705,7 +733,7 @@ public final class HearPortReceiver {
         concealment.reset()
         concealingAtomic.store(0)
         dynamicCorrectionAtomic.store(Double(0).bitPattern)
-            if let budget = playoutBudget { playoutController = PlayoutController(budget: budget) }
+            if let budget = playoutBudget { playoutController = PlayoutController(budget: budget, maximumCorrection: playoutMaximumCorrection, adaptive: playoutAdaptive) }
             session.enterSilentRebuffer()
             lifecycle.enterSilentRebuffer()
             renderActiveAtomic.store(0)
@@ -878,6 +906,9 @@ public final class HearPortQuicTransport {
     private var reliableAccepted = false
     private var coordinatedAudio = false
     private var networkProbe = false
+    private var musicTest = false
+    private var musicReliable = false
+    private var musicGeneration: UInt32 = 0
     private var probeTimer: DispatchSourceTimer?
     private var probeHeartbeatScheduledAt: UInt64 = 0
     private var expectedAudioStreamID: UInt32?
@@ -1047,7 +1078,7 @@ public final class HearPortQuicTransport {
             guard let self, let connectionGroup,
                   let activeGroup = self.group,
                   activeGroup === connectionGroup,
-                  (self.audioMode == .reliable || self.networkProbe),
+                  (self.networkProbe || (self.musicTest ? self.musicReliable : self.audioMode == .reliable)),
                   self.reliableAccepted, let streamID = self.expectedAudioStreamID else {
                 connection.cancel()
                 return
@@ -1089,7 +1120,7 @@ public final class HearPortQuicTransport {
                 }
                 if self.networkProbe {
                     self.onProbePacket?(data, receivedAt, data.count, 1)
-                } else if self.audioMode == .datagram {
+                } else if self.musicTest ? !self.musicReliable : self.audioMode == .datagram {
                     self.onAudioDatagram?(data)
                 }
             }
@@ -1135,6 +1166,7 @@ public final class HearPortQuicTransport {
         reliableAccepted = false
         coordinatedAudio = false
         networkProbe = false
+        musicTest = false; musicReliable = false; musicGeneration = 0
         controlStream?.cancel()
         group?.cancel()
         controlStream = nil
@@ -1153,6 +1185,16 @@ public final class HearPortQuicTransport {
 
     public func acceptReliableAudio() {
         reliableAccepted = true
+    }
+
+    public func enableMusicTest() { musicTest = true; reliableAccepted = true }
+
+    func prepareMusicRound(_ round: MusicTestRound) {
+        audioStream?.cancel(); audioStream = nil
+        progressTimer?.cancel(); progressTimer = nil; progressInFlight = false
+        musicReliable = round.reliable
+        musicGeneration = round.generation
+        audioGeneration = 0
     }
 
     public func enableNetworkProbe() {
@@ -1211,6 +1253,10 @@ public final class HearPortQuicTransport {
             var records = records
             do {
                 let packets = try records.append(data ?? Data())
+                if self.musicTest, let generation = records.generation,
+                   SequenceNumber.isBefore(generation, self.musicGeneration) {
+                    stream.cancel(); return
+                }
                 if let generation = records.generation, (self.audioGeneration == 0 || SequenceNumber.isBefore(self.audioGeneration, generation)) {
                     self.audioStream?.cancel()
                     self.audioStream = stream
@@ -1254,6 +1300,10 @@ public final class HearPortQuicTransport {
             var records = records
             do {
                 let packets = try records.append(data ?? Data())
+                if self.musicTest, let generation = records.generation,
+                   SequenceNumber.isBefore(generation, self.musicGeneration) {
+                    stream.cancel(); return
+                }
                 if let generation = records.generation, (self.audioGeneration == 0 || SequenceNumber.isBefore(self.audioGeneration, generation)) {
                     self.audioStream?.cancel()
                     guard self.onReliableAudioGeneration?(records.expectedStreamID,
