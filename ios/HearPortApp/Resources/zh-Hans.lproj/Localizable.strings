@@ -16,6 +16,10 @@
 "The Windows PC reported a connection error." = "Windows 电脑报告连接错误。";
 "Playing" = "正在播放";
 "Network test running" = "正在进行网络测试";
+"Music test running" = "正在进行音乐测试";
+"Music test %d/8 · %@ · %@" = "音乐测试 %d/8 · %@ · %@";
+"Adaptive" = "自适应";
+"Fixed" = "固定";
 "Audio output unavailable" = "音频输出不可用";
 "Disconnect" = "断开连接";
 "Last connection" = "上次连接";

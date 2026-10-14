@@ -542,7 +542,8 @@ public struct HearPortApp: View {
                     let output = PlatformAudioOutputController(receiver: activeReceiver)
                     try output.start()
                     audioOutput = output
-                    status = Self.localize("Playing")
+                    status = session?.musicTestRound.map { Self.label(for: $0) } ??
+                        Self.localize(session?.isMusicTest == true ? "Music test running" : "Playing")
                     diagnostics.log(
                         .info,
                         category: .app,
@@ -561,6 +562,13 @@ public struct HearPortApp: View {
                         ]
                     )
                 }
+                refreshDiagnostics()
+            }
+        }
+        session.onMusicTestRound = { round in
+            DispatchQueue.main.async {
+                guard connectionID == activeConnectionID, completedTestStatus == nil else { return }
+                status = Self.label(for: round)
                 refreshDiagnostics()
             }
         }
@@ -647,6 +655,12 @@ public struct HearPortApp: View {
         case .failed: return localize("Connection failed")
         case .closed: return localize("Disconnected")
         }
+    }
+
+    private static func label(for round: MusicTestRound) -> String {
+        String(format: localize("Music test %d/8 · %@ · %@"), round.index,
+               round.reliable ? "Reliable" : "Datagram",
+               localize(round.adaptive ? "Adaptive" : "Fixed"))
     }
 
     private static func label(for level: DiagnosticsLevel) -> String {

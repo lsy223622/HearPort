@@ -16,6 +16,10 @@
 "The Windows PC reported a connection error." = "The Windows PC reported a connection error.";
 "Playing" = "Playing";
 "Network test running" = "Network test running";
+"Music test running" = "Music test running";
+"Music test %d/8 · %@ · %@" = "Music test %d/8 · %@ · %@";
+"Adaptive" = "Adaptive";
+"Fixed" = "Fixed";
 "Audio output unavailable" = "Audio output unavailable";
 "Disconnect" = "Disconnect";
 "Last connection" = "Last connection";
