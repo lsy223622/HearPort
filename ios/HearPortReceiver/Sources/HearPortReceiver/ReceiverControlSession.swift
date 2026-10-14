@@ -12,6 +12,7 @@ public final class ReceiverControlSession {
     public var onError: ((String) -> Void)?
     public var onTransportState: ((QuicReceiverState) -> Void)?
     public var onDiagnosticReportReceived: ((UInt32) -> Void)?
+    public var onDiagnosticReportSending: (() -> Void)?
     var onMusicTestRound: ((MusicTestRound) -> Void)?
     private(set) var musicTestRound: MusicTestRound?
     var isMusicTest: Bool { (peerFeatures & ControlFeature.musicTest) != 0 }
@@ -702,6 +703,7 @@ public final class ReceiverControlSession {
             }
             activeDebugStreamID = nil
             debugEndReason = reason
+            onDiagnosticReportSending?()
             let endReason = reason == 1 ? "duration_expired" : "sender_reason_\(reason)"
             debugQueue.async { [weak self] in
                 guard let self else { return }
@@ -827,6 +829,7 @@ public final class ReceiverControlSession {
             return
         }
         pendingReportSessionID = report.sessionID
+        onDiagnosticReportSending?()
         send(
             .diagnosticsReportStart(
                 sessionID: report.sessionID,

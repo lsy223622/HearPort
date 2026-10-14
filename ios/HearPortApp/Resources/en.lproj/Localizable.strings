@@ -9,6 +9,7 @@
 "Connection ended. Reconnect to continue." = "Connection ended. Reconnect to continue.";
 "Test complete. Report saved on the PC." = "Test complete. Report saved on the PC.";
 "Test ended. Report saved on the PC." = "Test ended. Report saved on the PC.";
+"Test ended. Preparing and sending the report…" = "Test ended. Preparing and sending the report…";
 "Authentication failed. Check the pairing code or pair again." = "Authentication failed. Check the pairing code or pair again.";
 "Pairing is not available on the Windows PC." = "Pairing is not available on the Windows PC.";
 "Windows audio is unavailable." = "Windows audio is unavailable.";

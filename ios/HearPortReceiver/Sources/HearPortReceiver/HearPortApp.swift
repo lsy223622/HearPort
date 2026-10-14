@@ -572,6 +572,13 @@ public struct HearPortApp: View {
                 refreshDiagnostics()
             }
         }
+        session.onDiagnosticReportSending = {
+            DispatchQueue.main.async {
+                guard connectionID == activeConnectionID else { return }
+                status = Self.localize("Test ended. Preparing and sending the report…")
+                refreshDiagnostics()
+            }
+        }
         session.onDiagnosticReportReceived = { reason in
             DispatchQueue.main.async {
                 guard connectionID == activeConnectionID else { return }
