@@ -227,6 +227,9 @@ bool SenderAuthentication::CompleteAuthentication(bool remember) {
   if (!service_.MarkAuthenticated()) {
     return Fail(ErrorCode::protocol, "session authentication state rejected");
   }
+  if (const auto mode = service_.music_test_reliable(); mode && *mode != peer_wants_reliable_) {
+    return Fail(ErrorCode::protocol, "Select the same music test transport on the iPad and sender.");
+  }
   service_.ConfigureReliableAudio(peer_wants_reliable_ && !service_.network_probe());
   if (service_.debug_duration().has_value() && !peer_supports_diagnostics_) {
     service_.LogDiagnostic("debug_session_refused receiver_feature_missing=1");
