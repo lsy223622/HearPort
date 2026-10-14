@@ -719,7 +719,8 @@ public final class ReceiverControlSession {
             guard pendingReportSessionID == sessionID else {
                 throw PairingSecurityError.providerFailure(-11)
             }
-            let completedReason = activeDebugSessionID == sessionID ? debugEndReason : nil
+            let completedReason = debugEndReason
+            debugEndReason = nil
             debugQueue.async { [weak self] in
                 guard let self else { return }
                 do {
