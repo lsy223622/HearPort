@@ -875,10 +875,14 @@ class Application {
       heading = Tr(L"iPad connected", L"iPad 已连接");
       detail = reliable_ ? Tr(L"Audio: reliable stream", L"音频：稳定性模式")
                          : Tr(L"Audio: low latency", L"音频：低延迟模式");
-    } else if (running_ && network_probe_completed_) {
-      heading = Tr(L"Network test complete", L"网络测试已完成");
-      detail = Tr(L"Report saved in the diagnostics folder.",
-                  L"报告已保存到诊断文件夹。");
+    } else if (running_ && completed_test_) {
+      heading = completed_test_ == kMusicTest
+          ? Tr(L"Music test complete · 8/8", L"音乐测试已完成 · 8/8")
+          : completed_test_ == kNetworkProbe
+              ? Tr(L"Network test complete", L"网络测试已完成")
+              : Tr(L"Live diagnostics complete", L"实时诊断已完成");
+      detail = Tr(L"iPad report received and saved in the diagnostics folder.",
+                  L"iPad 报告已回收并保存到诊断文件夹。");
     } else if (running_) {
       heading = Tr(L"Ready for iPad", L"已就绪，等待 iPad 连接");
       detail = Tr(L"HearPort is listening on your local network.",
@@ -1005,7 +1009,7 @@ class Application {
       return;
     }
     running_ = true;
-    network_probe_completed_ = false;
+    completed_test_ = 0;
     connected_ = false;
     reliable_ = false;
     diagnostic_duration_ = service_->debug_duration();
@@ -1297,10 +1301,11 @@ class Application {
     if (pin_expires_ || network_probe_active_ || music_test_active_) UpdateStatus();
     if (!diagnostic_duration_ || !service_) return;
     if (service_->WaitForDebugCompletion(std::chrono::milliseconds(0))) {
-      const bool network_probe = network_probe_active_;
+      const int completed_test = music_test_active_ ? kMusicTest :
+          network_probe_active_ ? kNetworkProbe : kDiagnostics;
       StopService();
       StartService();
-      network_probe_completed_ = network_probe && running_;
+      completed_test_ = running_ ? completed_test : 0;
       UpdateStatus();
       SetWindowTextW(diagnostic_status_,
                      Tr(L"Diagnostic report saved in the report folder.",
@@ -1559,7 +1564,7 @@ class Application {
   std::optional<Clock::time_point> pin_expires_;
   std::optional<std::chrono::seconds> diagnostic_duration_;
   bool network_probe_active_ = false;
-  bool network_probe_completed_ = false;
+  int completed_test_ = 0;
   Clock::time_point diagnostic_started_{};
   SenderDiagnosticLogger logger_;
   HBRUSH dark_brush_ = CreateSolidBrush(RGB(32, 32, 32));
