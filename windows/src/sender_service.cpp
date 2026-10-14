@@ -109,6 +109,7 @@ bool SenderService::Start() {
         if (IsFinalDebugSendState(state)) CompleteDebugSend(stream_id);
       };
   callbacks.on_closed = [this] {
+    stop_music_.store(true);
     stop_probe_.store(true);
     reliable_mode_.store(false);
     {
@@ -157,13 +158,14 @@ bool SenderService::Start() {
   }
   control_decoder_.Reset();
   stop_probe_.store(false);
+  stop_music_.store(false);
   if (!network_probe_) audio_thread_ = std::thread([this] { AudioWorker(); });
   {
     std::lock_guard lock(diagnostics_mutex_);
     stop_diagnostics_ = false;
   }
   diagnostics_thread_ = std::thread([this] { DiagnosticsWorker(); });
-  if (!network_probe_ && !capture_.Start(
+  if (!network_probe_ && !music_clip_ && !capture_.Start(
           [this](std::span<const std::byte> bytes, const PcmFormat& format,
                  std::uint64_t captured_at_ns) {
             HandleCapturePacket(bytes, format, captured_at_ns);
@@ -178,10 +180,12 @@ bool SenderService::Start() {
 
 void SenderService::Stop() {
   if (!started_ && !audio_thread_.joinable() && !diagnostics_thread_.joinable() &&
-      !probe_thread_.joinable()) {
+      !probe_thread_.joinable() && !music_thread_.joinable()) {
     return;
   }
   stop_probe_.store(true);
+  stop_music_.store(true);
+  if (music_thread_.joinable()) music_thread_.join();
   if (probe_thread_.joinable()) probe_thread_.join();
   if (debug_trace_.IsActive()) EndDebugSession(2);
   capture_.Stop();
@@ -263,6 +267,10 @@ bool SenderService::BeginStream(
 }
 
 bool SenderService::MarkStartStreamAckWritten(std::uint32_t stream_id) {
+  if (music_thread_.joinable()) {
+    stop_music_.store(true);
+    music_thread_.join();
+  }
   std::lock_guard capture_lock(capture_mutex_);
   std::lock_guard send_lock(audio_send_mutex_);
   std::lock_guard session_lock(session_mutex_);
@@ -297,12 +305,59 @@ bool SenderService::MarkStartStreamAckWritten(std::uint32_t stream_id) {
   }
   if (network_probe_) {
     probe_thread_ = std::thread([this, stream_id] { ProbeWorker(stream_id); });
+  } else if (music_clip_) {
+    music_begin_ns_ = MonotonicNanoseconds();
+    debug_deadline_ = std::chrono::steady_clock::time_point(std::chrono::nanoseconds(music_begin_ns_)) +
+        std::chrono::seconds(music_clip_->duration_seconds);
+    stop_music_.store(false);
+    music_frames_processed_.store(0);
+    music_thread_ = std::thread([this] { MusicWorker(); });
   }
   return true;
 }
 
 void SenderService::ConfigureNetworkProbe(bool enabled) {
   network_probe_ = enabled;
+}
+
+void SenderService::ConfigureMusicTest(MusicExcerpt clip, bool reliable) {
+  if (started_ || network_probe_ || clip.duration_seconds < 60 || clip.duration_seconds > 3600 ||
+      clip.samples.size() != std::size_t(clip.duration_seconds) * 48'000 * 2) {
+    throw std::invalid_argument("Invalid music test configuration");
+  }
+  ConfigureDebugDuration(std::chrono::seconds(clip.duration_seconds));
+  music_clip_ = std::move(clip);
+  music_reliable_ = reliable;
+}
+
+void SenderService::MusicWorker() {
+  const auto close_timer = [](HANDLE handle) { CloseHandle(handle); };
+  std::unique_ptr<void, decltype(close_timer)> timer(CreateWaitableTimerExW(nullptr, nullptr,
+      CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS), close_timer);
+  if (!timer) { LogDiagnostic("music_test_timer_create_failed"); return; }
+  const auto path = music_clip_->source.u8string();
+  LogDiagnostic("music_test_start file=" + std::string(path.begin(), path.end()) +
+      " start_seconds=" + std::to_string(music_clip_->start_seconds) +
+      " duration_seconds=" + std::to_string(music_clip_->duration_seconds) +
+      " transport=" + (music_reliable_ ? "reliable_stream" : "datagram") +
+      " sample_rate=48000 channels=2 packet_frames=120");
+  const auto samples = std::span<const float>(music_clip_->samples);
+  for (std::size_t offset = 0; offset < samples.size() && !stop_music_.load(); offset += 240) {
+    const auto captured = music_begin_ns_ + static_cast<std::int64_t>(offset / 2) * 1'000'000'000 / 48'000;
+    const auto remaining = captured - MonotonicNanoseconds();
+    if (remaining > 0) {
+      LARGE_INTEGER due{}; due.QuadPart = -std::max<std::int64_t>(1, remaining / 100);
+      if (!SetWaitableTimerEx(timer.get(), &due, 0, nullptr, nullptr, nullptr, 0) ||
+          WaitForSingleObject(timer.get(), INFINITE) != WAIT_OBJECT_0) {
+        LogDiagnostic("music_test_timer_wait_failed"); return;
+      }
+    }
+    if (stop_music_.load()) break;
+    HandleCapturePacket(std::as_bytes(samples.subspan(offset, 240)),
+                        PcmFormat{}, static_cast<std::uint64_t>(captured));
+    music_frames_processed_.store(static_cast<std::uint32_t>((offset + 240) / 2));
+  }
+  LogDiagnostic("music_test_source_end processed_frames=" + std::to_string(music_frames_processed_.load()));
 }
 
 void SenderService::ProbeWorker(std::uint32_t stream_id) {
@@ -951,6 +1006,7 @@ void SenderService::EndDebugSession(std::uint32_t reason) {
     session_id = active_debug_session_id_;
     stream_id = active_debug_stream_id_;
   }
+  stop_music_.store(true);
 
   {
     std::lock_guard capture_lock(capture_mutex_);

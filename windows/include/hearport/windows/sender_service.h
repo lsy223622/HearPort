@@ -21,6 +21,7 @@
 #include "hearport/wire/control_message.h"
 #include "hearport/windows/audio_metrics.h"
 #include "hearport/windows/debug_session_trace.h"
+#include "hearport/windows/music_file.h"
 #include "hearport/windows/packetizer.h"
 #include "hearport/windows/quic_server.h"
 #include "hearport/windows/reliable_audio_lag.h"
@@ -60,6 +61,11 @@ class SenderService {
   bool ConfigurePlayoutBudget(std::uint32_t target_ms, std::uint32_t maximum_ms,
                               std::uint32_t output_reserve_ms);
   void ConfigureNetworkProbe(bool enabled);
+  void ConfigureMusicTest(MusicExcerpt clip, bool reliable);
+  std::optional<bool> music_test_reliable() const noexcept {
+    return music_clip_ ? std::optional(music_reliable_) : std::nullopt;
+  }
+  std::uint32_t music_test_frames_processed() const noexcept { return music_frames_processed_.load(); }
   bool network_probe() const noexcept { return network_probe_; }
   bool network_probe_recovering() const { return probe_recovering_.load(); }
   std::uint32_t network_probe_packets_processed() const noexcept {
@@ -102,6 +108,7 @@ class SenderService {
                     std::int64_t captured_at_ns, std::uint64_t source_frame);
   void AudioWorker();
   void ProbeWorker(std::uint32_t stream_id);
+  void MusicWorker();
   void HandleCapturePacket(std::span<const std::byte> bytes,
                            const PcmFormat& format, std::uint64_t captured_at_ns);
   void HandleCaptureReset();
@@ -160,6 +167,12 @@ class SenderService {
   std::deque<QueuedAudioPacket> audio_queue_;
   std::thread audio_thread_;
   std::thread probe_thread_;
+  std::thread music_thread_;
+  std::optional<MusicExcerpt> music_clip_;
+  bool music_reliable_ = false;
+  std::atomic<bool> stop_music_ = false;
+  std::atomic<std::uint32_t> music_frames_processed_ = 0;
+  std::int64_t music_begin_ns_ = 0;
   std::thread diagnostics_thread_;
   bool stop_worker_ = false;
   std::atomic<bool> stop_probe_ = false;

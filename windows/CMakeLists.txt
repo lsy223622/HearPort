@@ -26,6 +26,7 @@ add_library(hearport_windows_platform STATIC
   src/debug_report_store.cpp
   src/diagnostic_logger.cpp
   src/network_probe.cpp
+  src/music_file.cpp
   src/quic_server_msquic.cpp
   src/sender_options.cpp
   src/sender_authentication.cpp
@@ -46,7 +47,7 @@ else()
   target_compile_definitions(hearport_windows_platform PRIVATE HEARPORT_HAS_MSQUIC=0)
 endif()
 
-target_link_libraries(hearport_windows_platform PRIVATE ole32 avrt advapi32 crypt32)
+target_link_libraries(hearport_windows_platform PRIVATE ole32 avrt advapi32 crypt32 mfplat mfreadwrite mfuuid)
 
 add_executable(hearport_sender src/main.cpp)
 target_link_libraries(hearport_sender PRIVATE hearport_windows_platform)
@@ -61,7 +62,7 @@ target_include_directories(hearport_sender_gui PRIVATE src)
 target_compile_definitions(hearport_sender_gui PRIVATE UNICODE _UNICODE)
 target_link_libraries(hearport_sender_gui PRIVATE
   hearport_windows_platform ncrypt crypt32 advapi32
-  comctl32 shell32 ole32 user32 gdi32 iphlpapi dwmapi uxtheme
+  comctl32 comdlg32 shell32 ole32 user32 gdi32 iphlpapi dwmapi uxtheme
 )
 if(MSVC)
   target_compile_options(hearport_sender_gui PRIVATE /utf-8)
@@ -87,6 +88,9 @@ if(HEARPORT_MSQUIC_INCLUDE_DIR AND HEARPORT_MSQUIC_LIBRARY)
 endif()
 
 if(BUILD_TESTING)
+  add_executable(hearport_music_file_tests tests/music_file_tests.cpp)
+  target_link_libraries(hearport_music_file_tests PRIVATE hearport_windows_platform)
+  add_test(NAME hearport_music_file_tests COMMAND hearport_music_file_tests)
   add_executable(hearport_debug_session_trace_tests
     tests/debug_session_trace_tests.cpp)
   target_link_libraries(hearport_debug_session_trace_tests PRIVATE hearport_windows_platform)

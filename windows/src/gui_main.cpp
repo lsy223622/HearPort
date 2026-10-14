@@ -5,6 +5,7 @@
 #include <iphlpapi.h>
 #include <windows.h>
 #include <commctrl.h>
+#include <commdlg.h>
 #include <dwmapi.h>
 #include <shellapi.h>
 #include <shlobj.h>
@@ -56,6 +57,8 @@ constexpr int kAutoStart = 109;
 constexpr int kNetworkProbe = 110;
 constexpr int kCloseWindow = 112;
 constexpr int kExitApplication = 113;
+constexpr int kMusicFile = 114;
+constexpr int kMusicTest = 115;
 constexpr int kTrayOpen = 201;
 constexpr int kTrayExit = 202;
 
@@ -522,10 +525,10 @@ class Application {
     SendMessageW(tabs_, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
     SetWindowSubclass(tabs_, TabSubclassProc, 1,
                       reinterpret_cast<DWORD_PTR>(this));
-    const std::array<std::wstring, 3> names = {
+    const std::array<std::wstring, 4> names = {
         Tr(L"Overview", L"概览"), Tr(L"Diagnostics", L"诊断"),
-        Tr(L"Settings", L"设置")};
-    for (int index = 0; index < 3; ++index) {
+        Tr(L"Settings", L"设置"), Tr(L"Music test", L"音乐测试")};
+    for (int index = 0; index < 4; ++index) {
       TCITEMW item{};
       item.mask = TCIF_TEXT;
       item.pszText = const_cast<wchar_t*>(names[index].c_str());
@@ -539,6 +542,7 @@ class Application {
     Group(1, Tr(L"Logs and reports", L"日志与报告"));
     Group(2, Tr(L"Connection", L"连接"));
     Group(2, Tr(L"Windows startup", L"Windows 启动"));
+    Group(3, Tr(L"Repeatable music test", L"固定片段音乐测试"));
 
     status_ = Control(0, L"STATIC", L"", SS_LEFT, 0);
     status_detail_ = Control(0, L"STATIC", L"",
@@ -616,6 +620,21 @@ class Application {
                L"连接证书由程序在本机创建并复用；更换证书后需要重新配对。"),
             SS_LEFT, 0);
 
+    Control(3, L"STATIC", Tr(L"Each test plays the same selected excerpt and saves the iPad report. Choose the same transport on the iPad and sender.",
+                             L"每次播放同一固定片段并自动保存 iPad 报告。请在 iPad 和服务端选择相同的传输模式。"), SS_LEFT, 0);
+    music_file_ = Control(3, L"EDIT", L"", WS_TABSTOP | WS_BORDER | ES_READONLY | ES_AUTOHSCROLL, 0);
+    Control(3, L"BUTTON", Tr(L"Select file…", L"选择文件…"), WS_TABSTOP | BS_PUSHBUTTON, kMusicFile);
+    Control(3, L"STATIC", Tr(L"Start (seconds)", L"起点（秒）"), SS_LEFT | SS_CENTERIMAGE, 0);
+    music_start_ = Control(3, L"EDIT", L"0", WS_TABSTOP | WS_BORDER | ES_NUMBER | ES_AUTOHSCROLL, 0);
+    Control(3, L"STATIC", Tr(L"Duration (seconds)", L"时长（秒）"), SS_LEFT | SS_CENTERIMAGE, 0);
+    music_duration_ = Control(3, L"EDIT", L"120", WS_TABSTOP | WS_BORDER | ES_NUMBER | ES_AUTOHSCROLL, 0);
+    Control(3, L"STATIC", Tr(L"Transport", L"传输模式"), SS_LEFT | SS_CENTERIMAGE, 0);
+    music_transport_ = Control(3, L"COMBOBOX", L"", WS_TABSTOP | CBS_DROPDOWNLIST, 0);
+    SendMessageW(music_transport_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Datagram"));
+    SendMessageW(music_transport_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Reliable stream"));
+    SendMessageW(music_transport_, CB_SETCURSEL, 0, 0);
+    Control(3, L"BUTTON", Tr(L"Start music test", L"开始音乐测试"), WS_TABSTOP | BS_PUSHBUTTON, kMusicTest);
+
     footer_close_ = CreateWindowExW(
         0, L"BUTTON", Tr(L"Minimize to tray", L"最小化到托盘").c_str(),
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
@@ -634,7 +653,8 @@ class Application {
                  reinterpret_cast<WPARAM>(font_), TRUE);
     if (groups_[0].size() != 3 || groups_[1].size() != 2 ||
         groups_[2].size() != 2 || pages_[0].size() != 8 ||
-        pages_[1].size() != 8 || pages_[2].size() != 7 ||
+        pages_[1].size() != 8 || pages_[2].size() != 7 || pages_[3].size() != 10 ||
+        groups_[3].size() != 1 ||
         !port_frame_ || !port_edit_ || !footer_close_ || !footer_exit_) {
       return false;
     }
@@ -662,6 +682,7 @@ class Application {
     Place(groups_[1][1], 32, 237, group_width, 164);
     Place(groups_[2][0], 32, 55, group_width, 220);
     Place(groups_[2][1], 32, 287, group_width, 114);
+    Place(groups_[3][0], 32, 55, group_width, 346);
 
     auto& overview = pages_[0];
     Place(overview[0], 100, 78, group_width - 80, 24);
@@ -693,12 +714,24 @@ class Application {
     Place(settings[5], 44, 312, group_width - 24, 29);
     Place(settings[6], 44, 211, group_width - 24, 51);
 
+    auto& music = pages_[3];
+    Place(music[0], 44, 79, group_width - 24, 45);
+    Place(music[1], 44, 137, group_width - 150, 29);
+    Place(music[2], width - 162, 137, 118, 29);
+    Place(music[3], 44, 188, 112, 29);
+    Place(music[4], 160, 188, 88, 29);
+    Place(music[5], 44, 232, 112, 29);
+    Place(music[6], 160, 232, 88, 29);
+    Place(music[7], 44, 276, 112, 29);
+    Place(music[8], 160, 276, 220, 120);
+    Place(music[9], width - 230, 359, 186, 29);
+
     Place(footer_close_, width - 250, 428, 132, 29);
     Place(footer_exit_, width - 110, 428, 100, 29);
   }
 
   void SelectPage(int page) {
-    for (int index = 0; index < 3; ++index) {
+    for (int index = 0; index < 4; ++index) {
       for (HWND group : groups_[index]) {
         ShowWindow(group, index == page ? SW_SHOW : SW_HIDE);
       }
@@ -812,7 +845,20 @@ class Application {
     std::wstring detail;
     std::wstring audio_label = Tr(L"Audio source: Windows default output",
                                   L"音频来源：Windows 默认输出设备");
-    if (running_ && network_probe_active_ && connected_) {
+    if (running_ && music_test_active_) {
+      audio_label = Tr(L"Audio source: selected file excerpt", L"音频来源：所选文件的固定片段");
+      const auto seconds = service_->music_test_frames_processed() / 48'000;
+      heading = connected_ ? Tr(L"Music test · ", L"音乐测试 · ") +
+          (reliable_ ? L"Reliable stream" : L"Datagram") : Tr(L"Music test ready", L"音乐测试待连接");
+      detail = connected_ ? std::to_wstring(seconds) + L" / " +
+          std::to_wstring(diagnostic_duration_->count()) + Tr(L" seconds", L" 秒") :
+          Tr(L"Connect the iPad using ", L"请在 iPad 选择 ") +
+          (SendMessageW(music_transport_, CB_GETCURSEL, 0, 0) == 1 ? L"Reliable stream" : L"Datagram") +
+          Tr(L" to begin.", L" 后连接，开始播放固定片段。");
+      if (seconds >= diagnostic_duration_->count()) {
+        detail = Tr(L"Playback sent. Waiting for the iPad report.", L"片段已发送，正在等待 iPad 回传报告。");
+      }
+    } else if (running_ && network_probe_active_ && connected_) {
       const std::uint32_t processed = service_->network_probe_packets_processed();
       const auto rounds = service_->network_probe_rounds();
       std::uint32_t before_round = 0;
@@ -922,7 +968,8 @@ class Application {
   }
 
   void StartService(std::optional<std::chrono::seconds> diagnostics = std::nullopt,
-                    bool network_probe = false) {
+                    bool network_probe = false,
+                    std::optional<hearport::windows::MusicExcerpt> music = std::nullopt) {
     if (running_) return;
     error_.clear();
     if (data_dir_.empty()) {
@@ -961,6 +1008,8 @@ class Application {
     service_ = std::make_unique<SenderService>(*identity);
     service_->ConfigureNetworkProbe(network_probe);
     service_->ConfigureDebugDuration(diagnostics);
+    if (music) service_->ConfigureMusicTest(std::move(*music),
+        SendMessageW(music_transport_, CB_GETCURSEL, 0, 0) == 1);
     service_->SetDebugOutputDirectory(data_dir_ / L"diagnostics");
     hearport::security::Bytes32 spki = identity->certificate_spki_sha256;
     authentication_ = std::make_unique<SenderAuthentication>(
@@ -995,6 +1044,7 @@ class Application {
     reliable_ = false;
     diagnostic_duration_ = diagnostics;
     network_probe_active_ = network_probe;
+    music_test_active_ = music.has_value();
     if (diagnostics) {
       diagnostic_started_ = Clock::now();
       const auto message = network_probe
@@ -1030,6 +1080,7 @@ class Application {
     reliable_ = false;
     diagnostic_duration_.reset();
     network_probe_active_ = false;
+    music_test_active_ = false;
     pin_expires_.reset();
     UpdateStatus();
   }
@@ -1089,6 +1140,45 @@ class Application {
     SelectPage(0);
   }
 
+  void ChooseMusicFile() {
+    std::wstring path(32'768, L'\0');
+    OPENFILENAMEW dialog{};
+    dialog.lStructSize = sizeof(dialog); dialog.hwndOwner = hwnd_;
+    dialog.lpstrFile = path.data(); dialog.nMaxFile = static_cast<DWORD>(path.size());
+    dialog.lpstrFilter = L"Audio\0*.flac;*.mp3;*.wav;*.m4a;*.aac;*.wma\0All files\0*.*\0";
+    dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+    if (GetOpenFileNameW(&dialog)) SetWindowTextW(music_file_, path.c_str());
+  }
+
+  void StartMusicTest() {
+    std::wstring path(32'768, L'\0');
+    path.resize(GetWindowTextW(music_file_, path.data(), static_cast<int>(path.size())));
+    const auto number = [](HWND edit) -> std::optional<std::uint32_t> {
+      wchar_t text[24]{}; GetWindowTextW(edit, text, ARRAYSIZE(text));
+      wchar_t* end = nullptr; const auto value = wcstoull(text, &end, 10);
+      if (!text[0] || *end || value > UINT32_MAX) return std::nullopt;
+      return static_cast<std::uint32_t>(value);
+    };
+    const auto start = number(music_start_), seconds = number(music_duration_);
+    if (path.empty() || !start || !seconds || *seconds < 60 || *seconds > 3600) {
+      MessageBoxW(hwnd_, Tr(L"Select an audio file and enter a start time and a duration from 60 to 3600 seconds.",
+                            L"请选择音频文件，填写起点和 60 至 3600 秒的测试时长。").c_str(), L"HearPort", MB_OK | MB_ICONWARNING);
+      return;
+    }
+    try {
+      SetWindowTextW(diagnostic_status_, Tr(L"Decoding the selected excerpt…", L"正在解码所选片段……").c_str());
+      auto clip = hearport::windows::LoadMusicExcerpt(path, *start, *seconds);
+      StopService();
+      StartService(std::chrono::seconds(*seconds), false, std::move(clip));
+      SelectPage(0);
+    } catch (const std::exception& error) {
+      const std::string message = error.what();
+      std::wstring detail(message.begin(), message.end());
+      const auto text = Tr(L"Could not decode the complete excerpt. Check the file and selected time range.\n", L"无法解码完整片段，请检查文件及所选时间范围。\n") + detail;
+      MessageBoxW(hwnd_, text.c_str(), L"HearPort", MB_OK | MB_ICONERROR);
+    }
+  }
+
   void ChooseDuration() {
     HMENU menu = CreatePopupMenu();
     if (!menu) return;
@@ -1137,8 +1227,9 @@ class Application {
     if (restart) {
       const auto diagnostics = diagnostic_duration_;
       const bool network_probe = network_probe_active_;
+      const bool music = music_test_active_;
       StopService();
-      StartService(diagnostics, network_probe);
+      if (music) StartMusicTest(); else StartService(diagnostics, network_probe);
       if (diagnostics && !running_) {
         SetWindowTextW(diagnostic_status_,
                        Tr(L"Diagnostics stopped because the sender could not restart on the new port.",
@@ -1151,7 +1242,7 @@ class Application {
   }
 
   void OnTimer() {
-    if (pin_expires_ || network_probe_active_) UpdateStatus();
+    if (pin_expires_ || network_probe_active_ || music_test_active_) UpdateStatus();
     if (!diagnostic_duration_ || !service_) return;
     if (service_->WaitForDebugCompletion(std::chrono::milliseconds(0))) {
       const bool network_probe = network_probe_active_;
@@ -1286,6 +1377,8 @@ class Application {
             break;
           case kDiagnostics: StartDiagnostics(); break;
           case kNetworkProbe: StartNetworkProbe(); break;
+          case kMusicFile: ChooseMusicFile(); break;
+          case kMusicTest: StartMusicTest(); break;
           case kDuration: ChooseDuration(); break;
           case kLog: OpenPath(data_dir_ / L"HearPort-sender.log"); break;
           case kReports: OpenPath(data_dir_ / L"diagnostics"); break;
@@ -1379,7 +1472,7 @@ class Application {
   HINSTANCE instance_ = nullptr;
   HWND hwnd_ = nullptr;
   HWND tabs_ = nullptr;
-  std::array<std::vector<HWND>, 3> groups_;
+  std::array<std::vector<HWND>, 4> groups_;
   HWND footer_close_ = nullptr;
   HWND footer_exit_ = nullptr;
   HWND status_ = nullptr;
@@ -1399,7 +1492,9 @@ class Application {
   HFONT font_ = nullptr;
   UINT dpi_ = 96;
   UINT taskbar_created_ = 0;
-  std::array<std::vector<HWND>, 3> pages_;
+  std::array<std::vector<HWND>, 4> pages_;
+  HWND music_file_ = nullptr, music_start_ = nullptr, music_duration_ = nullptr, music_transport_ = nullptr;
+  bool music_test_active_ = false;
   bool start_hidden_ = false;
   bool running_ = false;
   bool connected_ = false;
