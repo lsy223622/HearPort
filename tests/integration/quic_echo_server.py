@@ -51,7 +51,7 @@ class EchoProtocol(QuicConnectionProtocol):
                 if reliable:
                     stream = self._quic.get_next_available_stream_id(is_unidirectional=True)
                     preface = (1).to_bytes(4, "big") + generation.to_bytes(4, "big")
-                    self._quic.send_stream_data(stream, preface + len(packet).to_bytes(2, "big") + packet,
+                    self._quic.send_stream_data(stream, preface + packet,
                                                 end_stream=True)
                 else:
                     self._quic.send_datagram_frame(packet)
