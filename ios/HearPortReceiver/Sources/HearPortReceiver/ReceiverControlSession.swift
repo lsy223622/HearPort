@@ -11,6 +11,7 @@ public final class ReceiverControlSession {
     public var onReady: (() -> Void)?
     public var onError: ((String) -> Void)?
     public var onTransportState: ((QuicReceiverState) -> Void)?
+    public var onDiagnosticReportReceived: ((UInt32) -> Void)?
 
     private let provider: any Spake2Provider
     private let keychain: KeychainRememberedCredentialStore
@@ -57,6 +58,7 @@ public final class ReceiverControlSession {
     private var activeDebugSessionID: Data?
     private var activeDebugStreamID: UInt32?
     private var pendingReportSessionID: Data?
+    private var debugEndReason: UInt32?
     private var pairConfirmationVerified = false
     private var rememberedResponseSent = false
 
@@ -181,6 +183,7 @@ public final class ReceiverControlSession {
         self.activeDebugSessionID = nil
         self.activeDebugStreamID = nil
         self.pendingReportSessionID = nil
+        self.debugEndReason = nil
         self.decoder = ControlFrameDecoder()
         self.spakeOutput = nil
         self.pendingCredential = nil
@@ -692,6 +695,7 @@ public final class ReceiverControlSession {
                 throw PairingSecurityError.providerFailure(-10)
             }
             activeDebugStreamID = nil
+            debugEndReason = reason
             let endReason = reason == 1 ? "duration_expired" : "sender_reason_\(reason)"
             debugQueue.async { [weak self] in
                 guard let self else { return }
@@ -715,6 +719,7 @@ public final class ReceiverControlSession {
             guard pendingReportSessionID == sessionID else {
                 throw PairingSecurityError.providerFailure(-11)
             }
+            let completedReason = activeDebugSessionID == sessionID ? debugEndReason : nil
             debugQueue.async { [weak self] in
                 guard let self else { return }
                 do {
@@ -724,7 +729,12 @@ public final class ReceiverControlSession {
                         self.activeDebugSessionID = nil
                         self.activeDebugStreamID = nil
                     }
-                    self.sendReceiverReady()
+                    if let completedReason {
+                        self.stopClockUpdates()
+                        self.onDiagnosticReportReceived?(completedReason)
+                    } else {
+                        self.sendReceiverReady()
+                    }
                 } catch {
                     self.logDebugReportFailure(error, event: "report_acknowledgement_failed")
                     self.onError?("Unable to confirm the diagnostic report")

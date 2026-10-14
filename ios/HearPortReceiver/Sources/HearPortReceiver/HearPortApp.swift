@@ -19,6 +19,8 @@ public struct HearPortApp: View {
     @State private var didLoadRememberedCredential = false
     @State private var status = "Disconnected"
     @State private var connectionError: String?
+    @State private var connectionEstablished = false
+    @State private var completedTestStatus: String?
     @State private var receiver = HearPortReceiver()
     @State private var control: ReceiverControlSession?
     @State private var audioOutput: PlatformAudioOutputController?
@@ -440,6 +442,8 @@ public struct HearPortApp: View {
         let activeConnectionID = connectionID
         isConnecting = true
         connectionError = nil
+        connectionEstablished = false
+        completedTestStatus = nil
         currentHost = endpoint
         let audioMode = AudioTransportMode(rawValue: audioTransportModeRaw) ?? .datagram
         let normalizedJitter = JitterBufferConfiguration(
@@ -491,7 +495,12 @@ public struct HearPortApp: View {
                     try? audioOutput?.stop()
                     audioOutput = nil
                 }
-                status = connectionError ?? Self.label(for: newState)
+                if newState == .failed || newState == .closed {
+                    status = completedTestStatus ?? connectionError ??
+                        (connectionEstablished ? Self.localize("Connection ended. Reconnect to continue.") : Self.label(for: newState))
+                } else {
+                    status = connectionError ?? Self.label(for: newState)
+                }
                 refreshDiagnostics()
             }
         }
@@ -504,6 +513,7 @@ public struct HearPortApp: View {
             )
             DispatchQueue.main.async {
                 guard connectionID == activeConnectionID else { return }
+                guard completedTestStatus == nil else { return }
                 isConnecting = false
                 connectionError = Self.localize(message)
                 status = connectionError ?? Self.localize("Connection failed")
@@ -514,6 +524,7 @@ public struct HearPortApp: View {
             DispatchQueue.main.async {
                 guard connectionID == activeConnectionID else { return }
                 isConnecting = false
+                connectionEstablished = true
                 connectionError = nil
                 if requestedAuthMode == .pair {
                     authMode = .remembered
@@ -553,6 +564,21 @@ public struct HearPortApp: View {
                 refreshDiagnostics()
             }
         }
+        session.onDiagnosticReportReceived = { reason in
+            DispatchQueue.main.async {
+                guard connectionID == activeConnectionID else { return }
+                let message = Self.localize(reason == 1
+                    ? "Test complete. Report saved on the PC."
+                    : "Test ended. Report saved on the PC.")
+                completedTestStatus = message
+                connectionError = nil
+                isConnecting = false
+                try? audioOutput?.stop()
+                audioOutput = nil
+                status = message
+                refreshDiagnostics()
+            }
+        }
         control = session
         session.connect(host: endpoint, mode: requestedAuthMode, pin: pin)
     }
@@ -562,6 +588,8 @@ public struct HearPortApp: View {
         connectionID = UUID()
         isConnecting = false
         connectionError = nil
+        connectionEstablished = false
+        completedTestStatus = nil
         control?.cancel()
         control = nil
         try? audioOutput?.stop()

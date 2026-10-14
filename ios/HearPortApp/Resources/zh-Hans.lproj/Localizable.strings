@@ -6,6 +6,9 @@
 "Connecting" = "正在连接";
 "Connected" = "已连接";
 "Connection failed" = "连接失败";
+"Connection ended. Reconnect to continue." = "连接已结束，可重新连接。";
+"Test complete. Report saved on the PC." = "测试已完成，报告已回收至电脑。";
+"Test ended. Report saved on the PC." = "测试已结束，报告已回收至电脑。";
 "Authentication failed. Check the pairing code or pair again." = "验证失败，请检查配对码或重新配对。";
 "Pairing is not available on the Windows PC." = "Windows 电脑当前未开放配对。";
 "Windows audio is unavailable." = "Windows 电脑的音频不可用。";
