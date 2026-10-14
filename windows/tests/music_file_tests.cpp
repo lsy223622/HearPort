@@ -9,12 +9,24 @@
 #include <stdexcept>
 
 #include "hearport/windows/music_file.h"
+#include "hearport/windows/music_test.h"
+#include "hearport/windows/sender_service.h"
 
 #undef assert
 #define assert(condition) do { if (!(condition)) throw std::runtime_error(#condition); } while (false)
 
 int wmain(int argc, wchar_t** argv) {
   using hearport::windows::LoadMusicExcerpt;
+  using hearport::windows::kMusicTestPolicies;
+  for (std::size_t i = 0; i < kMusicTestPolicies.size(); ++i) {
+    const auto opposite = kMusicTestPolicies[kMusicTestPolicies.size() - 1 - i];
+    assert(kMusicTestPolicies[i].reliable == opposite.reliable);
+    assert(kMusicTestPolicies[i].adaptive == opposite.adaptive);
+  }
+  const auto round = hearport::windows::EncodeMusicTestRound(3, 120, 96'000, 4);
+  assert(round == std::vector<std::byte>({std::byte{3}, std::byte{3}, std::byte{8}, std::byte{3},
+      std::byte{0}, std::byte{120}, std::byte{0}, std::byte{0}, std::byte{0}, std::byte{1},
+      std::byte{119}, std::byte{0}, std::byte{0}, std::byte{0}, std::byte{0}, std::byte{4}}));
   if (argc == 2) {
     const auto first = LoadMusicExcerpt(argv[1], 0, 120);
     const auto second = LoadMusicExcerpt(argv[1], 0, 120);
@@ -22,6 +34,15 @@ int wmain(int argc, wchar_t** argv) {
     assert(first.samples == second.samples);
     std::cout << "music_input_decode_repeatable frames=" << first.samples.size() / 2 << '\n';
     return 0;
+  }
+  {
+    hearport::windows::SenderService service({});
+    hearport::windows::MusicExcerpt clip;
+    clip.duration_seconds = 60;
+    clip.samples.resize(60 * 48'000 * 2);
+    service.ConfigureMusicTest(std::move(clip));
+    assert(service.debug_duration()->count() == 570);
+    assert(service.ObserveAudioProgress(7, 1, 0));
   }
   const auto path = std::filesystem::temp_directory_path() /
       (L"hearport-music-fixture-" + std::to_wstring(GetCurrentProcessId()) + L".wav");

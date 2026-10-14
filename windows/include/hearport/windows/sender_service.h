@@ -22,6 +22,7 @@
 #include "hearport/windows/audio_metrics.h"
 #include "hearport/windows/debug_session_trace.h"
 #include "hearport/windows/music_file.h"
+#include "hearport/windows/music_test.h"
 #include "hearport/windows/packetizer.h"
 #include "hearport/windows/quic_server.h"
 #include "hearport/windows/reliable_audio_lag.h"
@@ -61,10 +62,10 @@ class SenderService {
   bool ConfigurePlayoutBudget(std::uint32_t target_ms, std::uint32_t maximum_ms,
                               std::uint32_t output_reserve_ms);
   void ConfigureNetworkProbe(bool enabled);
-  void ConfigureMusicTest(MusicExcerpt clip, bool reliable);
-  std::optional<bool> music_test_reliable() const noexcept {
-    return music_clip_ ? std::optional(music_reliable_) : std::nullopt;
-  }
+  void ConfigureMusicTest(MusicExcerpt clip);
+  bool music_test() const noexcept { return music_clip_.has_value(); }
+  bool AcknowledgeMusicRound();
+  std::uint32_t music_test_round() const noexcept { return music_round_.load(); }
   std::uint32_t music_test_frames_processed() const noexcept { return music_frames_processed_.load(); }
   bool network_probe() const noexcept { return network_probe_; }
   bool network_probe_recovering() const { return probe_recovering_.load(); }
@@ -169,7 +170,10 @@ class SenderService {
   std::thread probe_thread_;
   std::thread music_thread_;
   std::optional<MusicExcerpt> music_clip_;
-  bool music_reliable_ = false;
+  std::atomic<std::uint32_t> music_round_ = 0;
+  std::mutex music_mutex_;
+  std::condition_variable music_condition_;
+  bool music_round_pending_ = false;
   std::atomic<bool> stop_music_ = false;
   std::atomic<std::uint32_t> music_frames_processed_ = 0;
   std::int64_t music_begin_ns_ = 0;

@@ -120,6 +120,7 @@ bool SenderAuthentication::HandleConnect(
       (wire::kFeatureNetworkProbe | wire::kFeatureNetworkProbeRepeat);
   peer_wants_reliable_ =
       (envelope.feature_bits & wire::kFeatureReliableAudio) != 0;
+  peer_supports_music_test_ = (envelope.feature_bits & wire::kFeatureMusicTest) != 0;
   peer_coordinated_audio_ = (envelope.feature_bits & wire::kFeatureCoordinatedAudio) != 0;
   service_.ConfigureCoordinatedAudio(peer_coordinated_audio_);
 
@@ -227,8 +228,8 @@ bool SenderAuthentication::CompleteAuthentication(bool remember) {
   if (!service_.MarkAuthenticated()) {
     return Fail(ErrorCode::protocol, "session authentication state rejected");
   }
-  if (const auto mode = service_.music_test_reliable(); mode && *mode != peer_wants_reliable_) {
-    return Fail(ErrorCode::protocol, "Select the same music test transport on the iPad and sender.");
+  if (service_.music_test() && (!peer_coordinated_audio_ || !peer_supports_music_test_)) {
+    return Fail(ErrorCode::protocol, "Update HearPort on iPad to use automatic music tests.");
   }
   service_.ConfigureReliableAudio(peer_wants_reliable_ && !service_.network_probe());
   if (service_.debug_duration().has_value() && !peer_supports_diagnostics_) {
@@ -248,6 +249,7 @@ bool SenderAuthentication::CompleteAuthentication(bool remember) {
                            : 0;
   if (peer_wants_reliable_) ready.feature_bits |= wire::kFeatureReliableAudio;
   if (peer_coordinated_audio_) ready.feature_bits |= wire::kFeatureCoordinatedAudio;
+  if (service_.music_test()) ready.feature_bits |= wire::kFeatureMusicTest;
   if (service_.network_probe()) {
     ready.feature_bits |=
         wire::kFeatureNetworkProbe | wire::kFeatureNetworkProbeRepeat;
@@ -262,6 +264,7 @@ bool SenderAuthentication::CompleteAuthentication(bool remember) {
 }
 
 bool SenderAuthentication::HandleReceiverReady() {
+  if (service_.music_test() && flow_ == Flow::debug_stream_active && service_.AcknowledgeMusicRound()) return true;
   if (flow_ == Flow::debug_complete) return true;
   if (flow_ != Flow::waiting_receiver_ready) {
     return Fail(ErrorCode::protocol, "unexpected ReceiverReady");
@@ -449,7 +452,7 @@ bool SenderAuthentication::HandleControlPayload(
       if (connection_handler_) connection_handler_(true, peer_wants_reliable_);
       return true;
     case wire::ControlMessageType::audio_progress:
-      if ((!peer_wants_reliable_ && !service_.network_probe()) || !authenticated_) {
+      if ((!peer_wants_reliable_ && !service_.network_probe() && !service_.music_test()) || !authenticated_) {
         return Fail(ErrorCode::stream_state, "unexpected AudioProgress");
       }
       if (flow_ != Flow::idle && flow_ != Flow::debug_stream_active) {
