@@ -9,7 +9,7 @@ from pathlib import Path
 from statistics import mean
 
 
-def paired_differences(rows):
+def paired_differences(rows, baseline='fixed'):
     grouped = defaultdict(dict)
     for row in rows:
         key = (row['scenario'], row['transport'], row['targetMilliseconds'],
@@ -17,15 +17,36 @@ def paired_differences(rows):
         grouped[key][row['policy']] = row
     differences = defaultdict(list)
     for key, policies in grouped.items():
-        if 'fixed' not in policies:
-            raise ValueError('paired experiment has no fixed control')
-        control = policies['fixed']
+        if baseline not in policies:
+            raise ValueError(f'paired experiment has no {baseline} control')
+        control = policies[baseline]
         for policy, row in policies.items():
             if row['inputFingerprint'] != control['inputFingerprint']:
                 raise ValueError('paired policies used different network inputs')
-            if policy != 'fixed':
+            if policy != baseline:
                 differences[key[:-1] + (policy,)].append(
                     row['unavailableSourcePercent'] - control['unavailableSourcePercent'])
+    return differences
+
+
+def recovery_differences(rows):
+    grouped = defaultdict(dict)
+    for row in rows:
+        if row['transport'].startswith('reliable_'):
+            key = (row['scenario'], row['targetMilliseconds'], row['maximumMilliseconds'],
+                   row['policy'], row['seed'])
+            grouped[key][row['transport']] = row
+    differences = defaultdict(list)
+    for key, transports in grouped.items():
+        control = transports['reliable_legacy_recovery']
+        corrected = transports['reliable_corrected_recovery']
+        if corrected['inputFingerprint'] != control['inputFingerprint']:
+            raise ValueError('recovery comparisons used different network inputs')
+        differences[key[:-1]].append({
+            'unavailable': corrected['unavailableSourcePercent'] - control['unavailableSourcePercent'],
+            'restarts': corrected['restarts'] - control['restarts'],
+            'replays': corrected['replayedPackets'] - control['replayedPackets'],
+        })
     return differences
 
 
@@ -48,21 +69,27 @@ def write_report(directory):
         f'{len(rows)} cases; each case has 30 seconds of virtual source audio. '
         'All policies share an identical input fingerprint within each scenario and seed.', '',
         '## Model boundaries', '',
-        '- Executes the production Swift PlayoutController and ProbeConsumer.',
+        '- Executes the production Swift PlayoutController and ProbeConsumer. Only the guarded '
+        'policy adds an experimental rule to a temporary controller copy: taper negative correction '
+        'within 15 ms of the prepare deadline, reaching zero at 5 ms remaining.',
         '- Datagram delivers surviving packets independently. The reliable model assumes '
         'one successful retry per lost packet and ordered delivery with head-of-line blocking.',
-        '- The reliable playout model has no stream restart, congestion control, or real MsQuic engine. '
-        'Recovery decisions are audited separately using the production C++ ReliableAudioLag.',
+        '- Closed-loop reliable variants call the production C++ ReliableAudioLag, cancel pending '
+        'old-generation deliveries, and send fresh replays through the same impaired channel. '
+        'Feedback every 50 ms uses an ordered return channel with 20–40 ms base delay and shared outages.',
+        '- No congestion control, throughput limit, MsQuic ACK/PTO, restart handshake cost or '
+        'connection failure. Legacy differs only by omitting feedback age from the lag threshold; '
+        'both variants retain the current stale-feedback filter.',
         '- Perfect clock mapping, no callback CPU contention, no audio device or time-stretch DSP. '
         'Presentation age adds an assumed 11 ms output reserve.',
         '- Unavailable source includes concealment, skipped source, and unfinished source. '
         'It is not an acoustic quality score. Concealment runs have 5 ms tick resolution.', '',
         '## Primary budget: target 50 ms / maximum 100 ms', '',
-        '| Scenario | Transport model | Fixed | Speed only | Buffer only | Both |',
-        '|---|---|---:|---:|---:|---:|']
+        '| Scenario | Transport model | Fixed | Speed only | Buffer only | Both | Deadline guard |',
+        '|---|---|---:|---:|---:|---:|---:|']
     scenarios = sorted({row['scenario'] for row in rows})
     transports = sorted({row['transport'] for row in rows})
-    policies = ['fixed', 'speed_only', 'buffer_only', 'adaptive']
+    policies = ['fixed', 'speed_only', 'buffer_only', 'adaptive', 'guarded']
     for scenario in scenarios:
         for transport in transports:
             values = [mean(r['unavailableSourcePercent'] for r in
@@ -85,6 +112,40 @@ def write_report(directory):
         paired_csv.append(dict(scenario=scenario, transport=transport, target_ms=target,
             maximum_ms=maximum, policy=policy, difference_pp=mean(values), low_pp=low,
             high_pp=high, better=better, tie=tie, worse=worse))
+    lines += ['', '## Deadline guard versus adaptive (paired, all budgets)', '',
+        '| Scenario | Transport | Target/max ms | Unavailable difference pp | Seed bootstrap interval | P99 age difference ms |',
+        '|---|---|---|---:|---|---:|']
+    for key, values in sorted(paired_differences(rows, baseline='adaptive').items()):
+        scenario, transport, target, maximum, policy = key
+        if policy != 'guarded':
+            continue
+        low, high = interval(values)
+        guards = aggregate[(scenario, transport, target, maximum, 'guarded')]
+        controls = aggregate[(scenario, transport, target, maximum, 'adaptive')]
+        latency_delta = mean(r['p99PresentationMilliseconds'] for r in guards) - mean(
+            r['p99PresentationMilliseconds'] for r in controls)
+        lines.append(f'| {scenario} | {transport} | {target:g}/{maximum:g} | {mean(values):+.3f} | '
+                     f'[{low:+.3f}, {high:+.3f}] | {latency_delta:+.3f} |')
+    lines += ['', '## Closed-loop recovery: corrected minus legacy (paired)', '',
+        '| Scenario | Target/max ms | Policy | Unavailable difference pp | Seed bootstrap interval | Restart difference | Replay difference |',
+        '|---|---|---|---:|---|---:|---:|']
+    for key, values in sorted(recovery_differences(rows).items()):
+        scenario, target, maximum, policy = key
+        delta = [v['unavailable'] for v in values]
+        low, high = interval(delta)
+        lines.append(f'| {scenario} | {target:g}/{maximum:g} | {policy} | {mean(delta):+.3f} | '
+            f'[{low:+.3f}, {high:+.3f}] | {mean(v["restarts"] for v in values):+.3f} | '
+            f'{mean(v["replays"] for v in values):+.3f} |')
+    lines += ['', '## Closed-loop recovery totals (mean per seed)', '',
+        '| Scenario | Transport | Target/max ms | Policy | Restarts | Replays | Canceled pending packets |',
+        '|---|---|---|---|---:|---:|---:|']
+    for key, selected in sorted(aggregate.items()):
+        scenario, transport, target, maximum, policy = key
+        if transport not in ('reliable_legacy_recovery', 'reliable_corrected_recovery'):
+            continue
+        lines.append(f'| {scenario} | {transport} | {target:g}/{maximum:g} | {policy} | '
+            f'{mean(r["restarts"] for r in selected):.3f} | {mean(r["replayedPackets"] for r in selected):.3f} | '
+            f'{mean(r["canceledPackets"] for r in selected):.3f} |')
     lines += ['', '## Recovery snapshot audit', '',
         'Known receiver lag is measured at feedback generation time. The source is produced '
         'every 2.5 ms; feedback ages are multiples of 5 ms. Each snapshot is independent; '
