@@ -1,0 +1,40 @@
+name: Offline transport simulation
+
+on:
+  workflow_dispatch:
+
+jobs:
+  simulate:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v5
+      - name: Compile production controllers and offline drivers
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_dir=ios/HearPortReceiver/Sources/HearPortReceiver
+          swiftc -O \
+            "$source_dir/AudioDatagram.swift" \
+            "$source_dir/ReceiverModels.swift" \
+            "$source_dir/ControlFraming.swift" \
+            "$source_dir/ControlMessages.swift" \
+            "$source_dir/PlayoutController.swift" \
+            "$source_dir/RepairWindow.swift" \
+            "$source_dir/CoordinatedProbe.swift" \
+            diagnostics/offline_transport.swift \
+            -o "$RUNNER_TEMP/offline-transport"
+          clang++ -std=c++20 -O2 -I windows/include -I core/include \
+            diagnostics/offline_recovery.cpp -o "$RUNNER_TEMP/offline-recovery"
+      - name: Run deterministic paired scenarios
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/offline-results"
+          "$RUNNER_TEMP/offline-transport" "$RUNNER_TEMP/offline-results/playout.json"
+          "$RUNNER_TEMP/offline-recovery" "$RUNNER_TEMP/offline-results/recovery.json"
+          python3 -m unittest tests.test_offline_transport_analysis -v
+          python3 diagnostics/analyze_offline_transport.py "$RUNNER_TEMP/offline-results"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HearPort-offline-transport
+          path: ${{ runner.temp }}/offline-results/
