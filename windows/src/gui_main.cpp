@@ -1303,14 +1303,21 @@ class Application {
     if (service_->WaitForDebugCompletion(std::chrono::milliseconds(0))) {
       const int completed_test = music_test_active_ ? kMusicTest :
           network_probe_active_ ? kNetworkProbe : kDiagnostics;
-      StopService();
-      StartService();
-      completed_test_ = running_ ? completed_test : 0;
+      completed_test_ = completed_test;
+      music_test_active_ = false;
+      network_probe_active_ = false;
+      connected_ = false;
       UpdateStatus();
       SetWindowTextW(diagnostic_status_,
                      Tr(L"Diagnostic report saved in the report folder.",
                         L"诊断报告已保存到报告文件夹。")
                          .c_str());
+      RedrawWindow(hwnd_, nullptr, nullptr,
+                   RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+      StopService();
+      StartService();
+      completed_test_ = running_ ? completed_test : 0;
+      UpdateStatus();
     } else if (Clock::now() - diagnostic_started_ >
                *diagnostic_duration_ + std::chrono::minutes(7)) {
       StopService();

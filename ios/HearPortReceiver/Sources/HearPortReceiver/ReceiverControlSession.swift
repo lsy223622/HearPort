@@ -12,6 +12,9 @@ public final class ReceiverControlSession {
     public var onError: ((String) -> Void)?
     public var onTransportState: ((QuicReceiverState) -> Void)?
     public var onDiagnosticReportReceived: ((UInt32) -> Void)?
+    var onMusicTestRound: ((MusicTestRound) -> Void)?
+    private(set) var musicTestRound: MusicTestRound?
+    var isMusicTest: Bool { (peerFeatures & ControlFeature.musicTest) != 0 }
 
     private let provider: any Spake2Provider
     private let keychain: KeychainRememberedCredentialStore
@@ -177,6 +180,7 @@ public final class ReceiverControlSession {
         self.ready = false
         self.receiverReadyNotified = false
         self.peerFeatures = 0
+        self.musicTestRound = nil
         stopClockUpdates()
         debugSessionDiagnostics.configureProbePlan(nil)
         setNetworkProbe(false)
@@ -651,6 +655,8 @@ public final class ReceiverControlSession {
                     throw ControlMessageError.invalidMessage
                 }
                 transport.prepareMusicRound(round)
+                musicTestRound = round
+                onMusicTestRound?(round)
                 diagnostics.log(.info, category: .audio, message: "music_test_round",
                     fields: ["event": "music_test_round", "round": "\(round.index)",
                         "transport": round.reliable ? "reliable_stream" : "datagram",
