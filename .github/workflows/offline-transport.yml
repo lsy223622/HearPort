@@ -13,15 +13,21 @@ jobs:
         run: |
           set -euo pipefail
           source_dir=ios/HearPortReceiver/Sources/HearPortReceiver
+          python3 diagnostics/prepare_offline_controller.py \
+            "$source_dir/PlayoutController.swift" "$RUNNER_TEMP/PlayoutController.swift"
+          clang++ -std=c++20 -O2 -I windows/include -I core/include -c \
+            diagnostics/offline_recovery_bridge.cpp -o "$RUNNER_TEMP/recovery-bridge.o"
           swiftc -O \
             "$source_dir/AudioDatagram.swift" \
             "$source_dir/ReceiverModels.swift" \
             "$source_dir/ControlFraming.swift" \
             "$source_dir/ControlMessages.swift" \
-            "$source_dir/PlayoutController.swift" \
+            "$RUNNER_TEMP/PlayoutController.swift" \
             "$source_dir/RepairWindow.swift" \
             "$source_dir/CoordinatedProbe.swift" \
             diagnostics/offline_transport.swift \
+            -import-objc-header diagnostics/offline_recovery_bridge.h \
+            "$RUNNER_TEMP/recovery-bridge.o" -lc++ \
             -o "$RUNNER_TEMP/offline-transport"
           clang++ -std=c++20 -O2 -I windows/include -I core/include \
             diagnostics/offline_recovery.cpp -o "$RUNNER_TEMP/offline-recovery"
