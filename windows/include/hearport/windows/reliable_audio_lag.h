@@ -50,7 +50,8 @@ class ReliableAudioLag {
       return false;
     }
     if (feedback_age > maximum_lag_ / 2) return false;
-    const auto lag_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(maximum_lag_).count();
+    const auto snapshot_lag_limit = maximum_lag_ + feedback_age;
+    const auto lag_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(snapshot_lag_limit).count();
     bool behind = produced_count_ * frame_count_ * 1'000'000'000ull / 48000 > static_cast<std::uint64_t>(lag_ns);
     if (latest_received) {
       const auto distance = *latest_produced_ - *latest_received;
@@ -59,7 +60,7 @@ class ReliableAudioLag {
     }
     if (!latest_received && played_source && latest_source_) {
       behind = *latest_source_ > *played_source &&
-               (*latest_source_ - *played_source) / 48 > static_cast<std::uint64_t>(maximum_lag_.count());
+               (*latest_source_ - *played_source) / 48 > static_cast<std::uint64_t>(snapshot_lag_limit.count());
     }
     consecutive_lag_reports_ = behind ? consecutive_lag_reports_ + 1 : 0;
     if (!behind || (!bounded_ && (consecutive_lag_reports_ < 2 ||
