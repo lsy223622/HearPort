@@ -6,7 +6,7 @@ on:
       phase:
         type: choice
         default: decomposition
-        options: [decomposition, sensitivity, components, timing, capacity, replay]
+        options: [decomposition, sensitivity, components, timing, capacity, replay, projection]
 
 jobs:
   simulate:
@@ -55,6 +55,8 @@ jobs:
           elif [ "${{ inputs.phase }}" = replay ]; then
             "$RUNNER_TEMP/offline-transport" "$RUNNER_TEMP/offline-results/incident.json" incident
             "$RUNNER_TEMP/offline-transport" "$RUNNER_TEMP/offline-results/replay.json" replay
+          elif [ "${{ inputs.phase }}" = projection ]; then
+            "$RUNNER_TEMP/offline-transport" "$RUNNER_TEMP/offline-results/projection.json" projection
           else
             "$RUNNER_TEMP/offline-transport" "$RUNNER_TEMP/offline-results/playout.json"
             "$RUNNER_TEMP/offline-transport" "$RUNNER_TEMP/offline-results/ablation.json" ablation
