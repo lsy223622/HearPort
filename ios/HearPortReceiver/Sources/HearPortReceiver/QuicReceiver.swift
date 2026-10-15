@@ -308,8 +308,13 @@ public final class HearPortReceiver {
         lock.lock()
         let accepted = clockMapping.observe(localSent: localSent, remoteReceived: remoteReceived,
                               remoteSent: remoteSent, localReceived: localReceived)
+        let age = clockMapping.ageNanoseconds(at: localReceived)
+        let uncertainty = clockMapping.uncertainty(at: localReceived)
         renderRing.setClockUncertainty(nanoseconds: clockMapping.uncertainty(at: DispatchTime.now().uptimeNanoseconds))
         lock.unlock()
+        debugSessionDiagnostics.recordClockExchange(localSent: localSent, remoteReceived: remoteReceived,
+            remoteSent: remoteSent, localReceived: localReceived, accepted: accepted,
+            mappingAge: age, uncertainty: uncertainty)
         return accepted
     }
 
@@ -423,7 +428,11 @@ public final class HearPortReceiver {
             lock.unlock(); return nil
         }
         let captured = timedRecord.flatMap { clockMapping.map(remoteNanoseconds: $0.capturedAt, at: receivedAt) }
-        if timedRecord != nil && captured == nil { lock.unlock(); return nil }
+        if timedRecord != nil && captured == nil {
+            lock.unlock()
+            debugSessionDiagnostics.recordClockUnavailablePacket()
+            return nil
+        }
         disposition = session.acceptAudio(packet)
         realtimeMetrics.recordDisposition(disposition)
         if disposition == .accepted {

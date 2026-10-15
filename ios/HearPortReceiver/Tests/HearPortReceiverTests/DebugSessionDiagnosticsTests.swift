@@ -3,6 +3,48 @@ import XCTest
 @testable import HearPortReceiver
 
 final class DebugSessionDiagnosticsTests: XCTestCase {
+    func testReceiverCountsPacketsRejectedForMissingClockMapping() throws {
+        let directory = try temporaryDirectory("UnmappedClock")
+        let diagnostics = HearPortDiagnostics(directory: directory.appendingPathComponent("logs"))
+        let transfer = DebugReportTransfer(directory: directory.appendingPathComponent("reports"))
+        let capture = DebugSessionDiagnostics(capacity: 4, reportTransfer: transfer, diagnostics: diagnostics)
+        let receiver = HearPortReceiver(diagnostics: diagnostics, debugSessionDiagnostics: capture)
+        capture.begin(sessionID: Data(repeating: 0x33, count: 16), streamID: 7, durationSeconds: 60)
+        let record = try TimedAudioRecord(streamID: 7, generation: 1, sequence: 0,
+            frameCount: 120, kind: .audio, capturedAt: 1_000_000_000,
+            sourceFrame: 0, payload: Data(repeating: 0, count: 960))
+        XCTAssertNil(receiver.receiveTimedRecord(record))
+        _ = try capture.finish(reason: "test", diagnostics: diagnostics)
+        let report = try XCTUnwrap(String(data: try XCTUnwrap(transfer.pendingReport()).data, encoding: .utf8))
+        XCTAssertTrue(report.contains("clock_unmapped_packets=1"))
+        XCTAssertTrue(report.contains("trace_records=0"))
+    }
+
+    func testClockTraceAndUnmappedDropsSurviveDiagnosticLogRotation() throws {
+        let directory = try temporaryDirectory("ClockTrace")
+        let diagnostics = HearPortDiagnostics(directory: directory.appendingPathComponent("logs"),
+            maxFileBytes: 128, maxRotatedFiles: 0)
+        let transfer = DebugReportTransfer(directory: directory.appendingPathComponent("reports"))
+        let capture = DebugSessionDiagnostics(capacity: 4, reportTransfer: transfer, diagnostics: diagnostics)
+        capture.begin(sessionID: Data(repeating: 0x31, count: 16), streamID: 7, durationSeconds: 60)
+        capture.recordClockExchange(localSent: 1, remoteReceived: 2, remoteSent: 3,
+            localReceived: 4, accepted: false, mappingAge: 5, uncertainty: 6)
+        capture.recordClockUnavailablePacket()
+        capture.recordClockUnavailablePacket()
+        for _ in 0..<10 { diagnostics.log(.info, category: .app, message: "later_event") }
+        _ = try capture.finish(reason: "test", diagnostics: diagnostics)
+        let report = try XCTUnwrap(String(data: try XCTUnwrap(transfer.pendingReport()).data, encoding: .utf8))
+        XCTAssertTrue(report.contains("clock_unmapped_packets=2"))
+        XCTAssertTrue(report.contains("clock_exchange_v1"))
+        XCTAssertTrue(report.contains("1\t2\t3\t4\t0\t5\t6"))
+        try transfer.acknowledge(sessionID: Data(repeating: 0x31, count: 16))
+        capture.begin(sessionID: Data(repeating: 0x32, count: 16), streamID: 7, durationSeconds: 60)
+        _ = try capture.finish(reason: "test", diagnostics: diagnostics)
+        let next = try XCTUnwrap(String(data: try XCTUnwrap(transfer.pendingReport()).data, encoding: .utf8))
+        XCTAssertTrue(next.contains("clock_unmapped_packets=0"))
+        XCTAssertFalse(next.contains("1\t2\t3\t4\t0\t5\t6"))
+    }
+
     func testCoordinatedReportTracksLostRoundWithoutCountingParityAsAudio() throws {
         let directory = try temporaryDirectory("CoordinatedProbeTrace")
         let diagnostics = HearPortDiagnostics(directory: directory.appendingPathComponent("logs"))

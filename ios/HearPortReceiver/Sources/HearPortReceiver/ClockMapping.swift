@@ -4,7 +4,7 @@ public struct ClockMapping: Sendable {
     private var remoteOrigin: UInt64?
     private var localOrigin: UInt64 = 0
     private var updatedAt: UInt64 = 0
-    private var bestRoundTrip: UInt64 = .max
+    private var recentRoundTrips: [(at: UInt64, duration: UInt64)] = []
     private var localPerRemote = 1.0
     public private(set) var uncertaintyNanoseconds: UInt64 = 0
 
@@ -13,17 +13,18 @@ public struct ClockMapping: Sendable {
     @discardableResult
     public mutating func observe(localSent: UInt64, remoteReceived: UInt64,
                                  remoteSent: UInt64, localReceived: UInt64) -> Bool {
-        guard localReceived >= localSent, remoteSent >= remoteReceived else { return false }
+        guard localReceived >= localSent, remoteSent >= remoteReceived,
+              remoteOrigin == nil || localReceived >= updatedAt else { return false }
         let elapsed = localReceived - localSent
         let remoteProcessing = remoteSent - remoteReceived
         guard elapsed >= remoteProcessing else { return false }
         let roundTrip = elapsed - remoteProcessing
-        if remoteOrigin != nil, localReceived >= updatedAt, localReceived - updatedAt > 30_000_000_000 {
-            bestRoundTrip = .max
-        }
-        guard roundTrip <= 500_000_000,
-              bestRoundTrip == .max || roundTrip <= max(1_000_000, bestRoundTrip * 2)
-        else { return false }
+        guard roundTrip <= 500_000_000 else { return false }
+        recentRoundTrips.removeAll { localReceived >= $0.at && localReceived - $0.at > 10_000_000_000 }
+        // Rejected valid exchanges still describe the current path's RTT floor.
+        recentRoundTrips.append((localReceived, roundTrip))
+        let bestRoundTrip = recentRoundTrips.map(\.duration).min()!
+        guard roundTrip <= max(1_000_000, bestRoundTrip * 2) else { return false }
         let local = localSent + elapsed / 2
         let remote = remoteReceived + remoteProcessing / 2
         if let previous = remoteOrigin, remote > previous, local > localOrigin,
@@ -36,20 +37,24 @@ public struct ClockMapping: Sendable {
         remoteOrigin = remote
         localOrigin = local
         updatedAt = localReceived
-        bestRoundTrip = min(bestRoundTrip, roundTrip)
         uncertaintyNanoseconds = (roundTrip + 1) / 2
         return true
     }
 
     public func uncertainty(at now: UInt64) -> UInt64 {
-        guard remoteOrigin != nil, now >= updatedAt, now - updatedAt <= 30_000_000_000 else { return .max }
-        // Holdover uses the same 2000 ppm bound as the accepted clock slope.
-        return uncertaintyNanoseconds + min(now - updatedAt, 30_000_000_000) / 500
+        guard let age = ageNanoseconds(at: now), age <= 30_000_000_000 else { return .max }
+        // Charge both the permitted physical drift and the fitted slope's deviation from nominal.
+        return uncertaintyNanoseconds + UInt64(ceil(Double(age) * (0.002 + abs(localPerRemote - 1))))
+    }
+
+    func ageNanoseconds(at now: UInt64) -> UInt64? {
+        guard remoteOrigin != nil else { return nil }
+        return now >= updatedAt ? now - updatedAt : updatedAt - now
     }
 
     public func map(remoteNanoseconds: UInt64, at now: UInt64) -> UInt64? {
-        guard let remote = remoteOrigin, now >= updatedAt,
-              now - updatedAt <= 30_000_000_000 else { return nil }
+        guard let remote = remoteOrigin, let age = ageNanoseconds(at: now),
+              age <= 30_000_000_000 else { return nil }
         let delta = remoteNanoseconds >= remote
             ? Double(remoteNanoseconds - remote) : -Double(remote - remoteNanoseconds)
         let mapped = Double(localOrigin) + delta * localPerRemote
@@ -58,8 +63,8 @@ public struct ClockMapping: Sendable {
     }
 
     public func remote(localNanoseconds: UInt64, at now: UInt64) -> UInt64? {
-        guard let origin = remoteOrigin, now >= updatedAt,
-              now - updatedAt <= 30_000_000_000 else { return nil }
+        guard let origin = remoteOrigin, let age = ageNanoseconds(at: now),
+              age <= 30_000_000_000 else { return nil }
         let delta = localNanoseconds >= localOrigin
             ? Double(localNanoseconds - localOrigin) : -Double(localOrigin - localNanoseconds)
         let timestamp = Double(origin) + delta / localPerRemote
