@@ -7,10 +7,13 @@ private struct PlaybackResult: Codable {
     let scenario, content: String
     let adaptive: Bool
     let batchMode: Int
+    let observeLate: Bool
     let seed, callbackFrames, uncertaintyMilliseconds: Int
+    let targetMilliseconds, maximumMilliseconds, outputClockPPM: Double
     let concealedPreparedFrames, underflowAfterStartFrames, latePackets, expiredOutputFrames: Int
     let requestedCorrectionMean, realizedCorrection: Double
     let firstOutputMilliseconds, maximumPresentationMilliseconds: Double
+    let maximumSourceAgeBoundMilliseconds, maximumTargetMilliseconds: Double
     let sourceCursor, renderedFrames: UInt64
     let maximumStereoError, outputPeak: Float
 }
@@ -45,9 +48,11 @@ final class OfflinePlaybackTests: XCTestCase {
     }
 
     private func run(scenario: String, content: String, adaptive: Bool, seed: Int,
-                     callback: Int, uncertainty: Int, batchMode: Int) throws -> PlaybackResult {
+                     callback: Int, uncertainty: Int, batchMode: Int, observeLate: Bool = false,
+                     target: Double = 50, maximum: Double = 100, outputClockPPM: Double = 0,
+                     seconds: Int = 12) throws -> PlaybackResult {
         let base: UInt64 = 1_000_000_000
-        let count = 4_800
+        let count = seconds * 400
         var packets: [Packet] = []
         var lastArrival: UInt64 = 0
         for sequence in 0..<count {
@@ -70,6 +75,7 @@ final class OfflinePlaybackTests: XCTestCase {
         offlineNow = base
         offlineLastRendered = 0; offlineConcealedFrames = 0
         offlineBatchMode = batchMode
+        offlineObserveLate = observeLate; offlineMaximumShift = 0
         hearport_offline_reset_age()
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -80,15 +86,16 @@ final class OfflinePlaybackTests: XCTestCase {
         XCTAssertTrue(receiver.markAuthenticated())
         XCTAssertTrue(receiver.beginStream(7))
         XCTAssertTrue(receiver.acknowledgeStartStream(7))
-        receiver.offlineConfigure(try PlayoutBudget(targetMilliseconds: 50,
-            maximumMilliseconds: 100, outputReserveMilliseconds: 11), adaptive: adaptive)
+        receiver.offlineConfigure(try PlayoutBudget(targetMilliseconds: target,
+            maximumMilliseconds: maximum, outputReserveMilliseconds: 11), adaptive: adaptive)
         var index = 0, callbacks = 0, pump = base, render = base, clock = base
         var first: UInt64?, underflow = 0, corrections: [Double] = []
         var renderedFrames: UInt64 = 0
         var stereoError: Float = 0, peak: Float = 0
+        var nonfiniteSamples = 0, maximumTarget = target
         var drift = DriftController(nominalRatio: 1)
         var resampler = StreamingStereoResampler()
-        let finish = base + 12_000_000_000
+        let finish = base + UInt64(seconds) * 1_000_000_000
         while true {
             let next = min(index < packets.count ? packets[index].arrived : .max, pump, render, clock)
             if next >= finish { break }
@@ -109,6 +116,7 @@ final class OfflinePlaybackTests: XCTestCase {
             if next == pump {
                 receiver.offlinePump()
                 corrections.append(receiver.dynamicCorrection)
+                maximumTarget = max(maximumTarget, receiver.offlineTargetMilliseconds)
                 pump += 5_000_000
             }
             if next == render {
@@ -118,6 +126,7 @@ final class OfflinePlaybackTests: XCTestCase {
                 let samples = receiver.renderFrames(required)
                 let output = resampler.process(samples, outputFrameCount: callback, ratio: ratio)
                 XCTAssertEqual(output.count, callback * 2)
+                nonfiniteSamples += output.filter { !$0.isFinite }.count
                 for frame in 0..<callback {
                     stereoError = max(stereoError, abs(output[frame * 2] + output[frame * 2 + 1]))
                     peak = max(peak, abs(output[frame * 2]), abs(output[frame * 2 + 1]))
@@ -126,26 +135,30 @@ final class OfflinePlaybackTests: XCTestCase {
                 if first == nil && offlineLastRendered > 0 { first = next }
                 if first != nil { underflow += required - offlineLastRendered }
                 callbacks += 1
-                render = base + UInt64(Double(callbacks * callback) * 1e9 / 48_000)
+                render = base + UInt64(Double(callbacks * callback) * 1e9 / (48_000 * (1 + outputClockPPM / 1e6)))
             }
         }
         let counts = receiver.offlineStretchCounts
         let result = PlaybackResult(scenario: scenario, content: content, adaptive: adaptive,
-            batchMode: batchMode,
+            batchMode: batchMode, observeLate: observeLate,
             seed: seed, callbackFrames: callback, uncertaintyMilliseconds: uncertainty,
+            targetMilliseconds: target, maximumMilliseconds: maximum, outputClockPPM: outputClockPPM,
             concealedPreparedFrames: offlineConcealedFrames, underflowAfterStartFrames: underflow,
             latePackets: Int(receiver.jitterStats?.latePackets ?? 0), expiredOutputFrames: Int(receiver.offlineExpired),
             requestedCorrectionMean: corrections.reduce(0, +) / Double(corrections.count),
             realizedCorrection: counts.1 > 0 ? Double(counts.0) / Double(counts.1) - 1 : 0,
             firstOutputMilliseconds: first.map { Double($0 - base) / 1e6 } ?? -1,
             maximumPresentationMilliseconds: Double(hearport_offline_maximum_age()) / 1e6 + 11,
+            maximumSourceAgeBoundMilliseconds: Double(hearport_offline_maximum_age()) / 1e6 + 11 + Double(offlineMaximumShift + 1) / 48,
+            maximumTargetMilliseconds: maximumTarget,
             sourceCursor: receiver.offlineSourceCursor ?? 0, renderedFrames: renderedFrames,
             maximumStereoError: stereoError, outputPeak: peak)
         XCTAssertTrue(peak.isFinite)
+        XCTAssertEqual(nonfiniteSamples, 0)
         XCTAssertLessThanOrEqual(peak, 0.5)
         XCTAssertLessThan(stereoError, 0.00001)
         XCTAssertGreaterThanOrEqual(result.firstOutputMilliseconds, 0)
-        XCTAssertLessThan(result.maximumPresentationMilliseconds, 100.001)
+        XCTAssertLessThan(result.maximumSourceAgeBoundMilliseconds, maximum)
         if scenario == "healthy" {
             XCTAssertEqual(result.concealedPreparedFrames, 0)
             XCTAssertEqual(result.underflowAfterStartFrames, 0)
@@ -159,13 +172,33 @@ final class OfflinePlaybackTests: XCTestCase {
             for content in ["tone", "noise", "mixed"] {
                 for adaptive in [false, true] {
                     for uncertainty in [0, 15] {
-                        for batchMode in adaptive ? [0, 1, 2] : [0] {
-                            results.append(try run(scenario: scenario, content: content,
-                                adaptive: adaptive, seed: 1, callback: 256, uncertainty: uncertainty,
-                                batchMode: batchMode))
+                        for batchMode in adaptive ? [0, 2] : [0] {
+                            for observeLate in adaptive ? [false, true] : [false] {
+                                results.append(try run(scenario: scenario, content: content,
+                                    adaptive: adaptive, seed: 1, callback: 256, uncertainty: uncertainty,
+                                    batchMode: batchMode, observeLate: observeLate))
+                            }
                         }
                     }
                 }
+            }
+        }
+        for target in [30.0, 80.0] {
+            for callback in [120, 480] {
+                for scenario in ["healthy", "burst", "hol"] {
+                    for candidate in [false, true] {
+                        results.append(try run(scenario: scenario, content: "mixed", adaptive: true,
+                            seed: 7, callback: callback, uncertainty: 15, batchMode: candidate ? 2 : 0,
+                            observeLate: candidate, target: target, maximum: target * 2))
+                    }
+                }
+            }
+        }
+        for ppm in [-500.0, 500.0] {
+            for candidate in [false, true] {
+                results.append(try run(scenario: "healthy", content: "mixed", adaptive: true,
+                    seed: 7, callback: 256, uncertainty: 15, batchMode: candidate ? 2 : 0,
+                    observeLate: candidate, outputClockPPM: ppm, seconds: 30))
             }
         }
         let encoder = JSONEncoder()
@@ -173,6 +206,6 @@ final class OfflinePlaybackTests: XCTestCase {
         if let path = ProcessInfo.processInfo.environment["HEARPORT_PLAYBACK_RESULTS"] {
             try encoder.encode(results).write(to: URL(fileURLWithPath: path))
         }
-        print("offline_playback_cases=\(results.count) simulated_seconds=\(results.count * 12)")
+        print("offline_playback_cases=\(results.count)")
     }
 }

@@ -45,7 +45,7 @@ public struct StreamingStereoResampler {
             let right: Float
             if lowerIndex < 0 {
                 left = hasPreviousFrame ? previousLeft : interleavedStereo[0]
-                right = interleavedStereo[1]
+                right = hasPreviousFrame ? previousRight : interleavedStereo[1]
             } else if lowerIndex >= inputFrameCount {
                 left = interleavedStereo[(inputFrameCount - 1) * 2]
                 right = interleavedStereo[(inputFrameCount - 1) * 2 + 1]
