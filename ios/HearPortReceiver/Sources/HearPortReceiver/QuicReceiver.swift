@@ -593,9 +593,10 @@ public final class HearPortReceiver {
 
     public func renderFrames(_ frameCount: Int) -> [Float] {
         guard frameCount > 0 else { return [] }
+        let startedAt = DispatchTime.now().uptimeNanoseconds
         renderRequestFramesAtomic.store(UInt64(frameCount))
-        renderStartedAtAtomic.store(DispatchTime.now().uptimeNanoseconds)
         let output = renderRing.pop(frames: frameCount)
+        renderStartedAtAtomic.storeReleasing(startedAt)
         realtimeMetrics.recordRenderBuffer(
             fillFrames: renderRing.fillFrames,
             underflowFrames: frameCount - output.renderedFrames,
@@ -650,7 +651,7 @@ public final class HearPortReceiver {
         let now = DispatchTime.now().uptimeNanoseconds
         let request = max(1, renderRequestFramesAtomic.load())
         let period = request * 1_000_000_000 / 48_000
-        let startedAt = renderStartedAtAtomic.load()
+        let startedAt = renderStartedAtAtomic.loadAcquiring()
         let elapsed = now >= startedAt ? now - startedAt : 0
         let untilNext = period > elapsed ? period - elapsed : 0
         // Cover callbacks due before the 5 ms preparation timer and its 1 ms leeway.
@@ -698,7 +699,8 @@ public final class HearPortReceiver {
             guard let captured, let budget = playoutBudget else { break }
             let deadline = budget.prepareDeadline(capturedAt: captured,
                 uncertaintyNanoseconds: max(stored?.uncertainty ?? 0, clockMapping.uncertainty(at: now)))
-            if stored != nil, deadline <= now {
+            let presentation = now + untilNext + UInt64(renderRing.fillFrames) * 1_000_000_000 / 48_000
+            if deadline <= presentation {
                 jitter?.skip(to: SequenceNumber.next(sequence))
                 timedPackets.removeValue(forKey: sequence)
                 continue

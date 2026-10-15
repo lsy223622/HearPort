@@ -18,6 +18,14 @@ final class AtomicUInt64: @unchecked Sendable {
         hearport_atomic_load_u64(storage)
     }
 
+    func loadAcquiring() -> UInt64 {
+        hearport_atomic_load_acquire_u64(storage)
+    }
+
+    func storeReleasing(_ value: UInt64) {
+        hearport_atomic_store_release_u64(storage, value)
+    }
+
     @discardableResult
     func increment(by amount: UInt64 = 1) -> UInt64 {
         hearport_atomic_fetch_add_u64(storage, amount) + amount

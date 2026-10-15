@@ -4,6 +4,14 @@ uint64_t hearport_atomic_load_u64(const uint64_t *value) {
     return __atomic_load_n(value, __ATOMIC_RELAXED);
 }
 
+uint64_t hearport_atomic_load_acquire_u64(const uint64_t *value) {
+    return __atomic_load_n(value, __ATOMIC_ACQUIRE);
+}
+
+void hearport_atomic_store_release_u64(uint64_t *value, uint64_t replacement) {
+    __atomic_store_n(value, replacement, __ATOMIC_RELEASE);
+}
+
 uint64_t hearport_atomic_fetch_add_u64(uint64_t *value, uint64_t amount) {
     return __atomic_fetch_add(value, amount, __ATOMIC_RELAXED);
 }

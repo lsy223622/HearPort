@@ -57,6 +57,10 @@ def prepare(source, destination):
         'renderRing.fillFrames + 840 <= (offlineBatchMode > 0 ? renderRing.capacityFrames : ringReserveFrames),')
     text = replace_once(text, 'minimumBufferMilliseconds: Double(request) / 48 + 6)',
         'minimumBufferMilliseconds: offlineScheduledConceal ? Double(request) / 48 + 6 : 0)')
+    text = replace_once(text, '            if deadline <= presentation {',
+        '            if offlineScheduledConceal ? deadline <= presentation : (stored != nil && deadline <= now) {')
+    text = replace_once(text, '                jitter?.skip(to: SequenceNumber.next(sequence))',
+        '                offlineSkippedFrames += 120\n                jitter?.skip(to: SequenceNumber.next(sequence))')
     text = replace_once(text, '(deadline <= now || renderRing.fillFrames < demand)',
         '(deadline <= now || (offlineScheduledConceal ? renderRing.fillFrames < demand : renderRing.fillFrames <= Int(renderRequestFramesAtomic.load()) + 240))')
     text = replace_once(text, '                samples = timeStretch.process(samples, correction: decision.correction)', '''                let inputFrames = samples.count / 2
@@ -72,6 +76,7 @@ def prepare(source, destination):
 var offlineNow: UInt64 = 1_000_000_000
 var offlineLastRendered = 0
 var offlineConcealedFrames = 0
+var offlineSkippedFrames = 0
 var offlineBatchMode = 0
 var offlineObserveLate = false
 var offlineMaximumShift = 0
