@@ -13,6 +13,8 @@ jobs:
           swiftc -O ios/HearPortReceiver/Sources/HearPortReceiver/ClockMapping.swift \
             diagnostics/offline_clock.swift -o "$RUNNER_TEMP/offline-clock"
           "$RUNNER_TEMP/offline-clock" "$RUNNER_TEMP/offline-clock.json"
+      - name: Run focused clock regression tests
+        run: swift test --package-path ios/HearPortReceiver --filter ClockMappingTests
       - uses: actions/upload-artifact@v4
         if: always()
         with:

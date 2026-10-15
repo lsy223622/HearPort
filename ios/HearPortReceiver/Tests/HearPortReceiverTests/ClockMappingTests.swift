@@ -41,9 +41,11 @@ final class ClockMappingTests: XCTestCase {
         XCTAssertTrue(clock.observe(localSent: 1_000_000_000, remoteReceived: 1_001_000_000,
             remoteSent: 1_001_000_000, localReceived: 1_002_000_000))
         for second in stride(from: UInt64(2), through: 120, by: 2) {
-            let sent = 1_000_000_000 + second * 1_000_000_000
-            _ = clock.observe(localSent: sent, remoteReceived: sent + 10_000_000,
-                remoteSent: sent + 10_000_000, localReceived: sent + 20_000_000)
+            let delay: UInt64 = second == 8 ? 100_000_000 : 0
+            let sent = 1_000_000_000 + second * 1_000_000_000 + delay
+            let halfRtt: UInt64 = second < 10 ? 1_000_000 : 10_000_000
+            _ = clock.observe(localSent: sent, remoteReceived: sent + halfRtt,
+                remoteSent: sent + halfRtt, localReceived: sent + halfRtt * 2)
             for offset in stride(from: UInt64(20_000_000), to: 2_000_000_000, by: 10_000_000) {
                 XCTAssertNotNil(clock.map(remoteNanoseconds: sent + offset, at: sent + offset))
             }

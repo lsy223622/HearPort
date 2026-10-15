@@ -13,7 +13,7 @@ private struct Result: Encodable {
 private struct OfflineClock {
     static func main() throws {
         let scenarios = ["healthy", "rtt_step", "rtt_high", "asymmetric", "spikes", "outage", "invalid_rtt",
-                         "forward_only", "reverse_only", "drift_reversal", "server_processing"]
+                         "forward_only", "reverse_only", "drift_reversal", "server_processing", "probe_schedule_jitter"]
         var results: [Result] = []
         for scenario in scenarios {
             for seed in 0..<8 {
@@ -43,13 +43,14 @@ private struct OfflineClock {
                         if scenario == "forward_only" { forward = 20_000_000 + jitter; back = 0 }
                         if scenario == "reverse_only" || scenario == "server_processing" { forward = 0; back = 20_000_000 + jitter }
                         if second >= 10 {
-                            if scenario == "rtt_step" { forward += 9_000_000; back += 9_000_000 }
+                            if scenario == "rtt_step" || scenario == "probe_schedule_jitter" { forward += 9_000_000; back += 9_000_000 }
                             if scenario == "rtt_high" { forward += 39_000_000; back += 39_000_000 }
                             if scenario == "asymmetric" { forward += 30_000_000 }
                             if scenario == "spikes", sampleIndex % 7 == 0 { back += 150_000_000 }
                             if scenario == "invalid_rtt" { back += 600_000_000 }
                         }
-                        let sent = base + UInt64(second) * 1_000_000_000
+                        let scheduleDelay: UInt64 = scenario == "probe_schedule_jitter" && second == 8 ? 100_000_000 : 0
+                        let sent = base + UInt64(second) * 1_000_000_000 + scheduleDelay
                         let received = sent + forward + processing + back
                         if now >= received {
                             if !(scenario == "outage" && second >= 10 && second < 50) {
