@@ -1,4 +1,5 @@
 #include "offline_recovery_bridge.h"
+static int offlineRecoveryLeadMilliseconds = 0;
 #include "hearport/windows/reliable_audio_lag.h"
 
 namespace {
@@ -34,7 +35,7 @@ void offline_recovery_produced(void* context, uint32_t sequence, uint64_t captur
   state.lag.Retain(record, now);
 }
 int offline_recovery_feedback(void* context, uint32_t generation, uint32_t received,
-    uint64_t played, uint64_t generated, uint64_t now, int corrected, int replay,
+    uint64_t played, uint64_t generated, uint64_t now, int corrected, int replay, int lead_ms,
     uint32_t* replay_sequences, int capacity) {
   auto& state = *static_cast<Context*>(context);
   const auto age = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -42,6 +43,7 @@ int offline_recovery_feedback(void* context, uint32_t generation, uint32_t recei
   if (age > std::chrono::milliseconds(state.budget) / 2) return -1;
   const auto received_value = received == UINT32_MAX ? std::nullopt : std::optional(received);
   const auto played_value = played == UINT64_MAX ? std::nullopt : std::optional(played);
+  offlineRecoveryLeadMilliseconds = lead_ms;
   if (!state.lag.ConfirmReceived(7, generation, received_value, played_value) ||
       !state.lag.Observe(7, generation, received_value, time_at(now),
           corrected ? age : std::chrono::milliseconds(0), played_value)) return -1;

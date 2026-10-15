@@ -6,7 +6,7 @@ on:
       phase:
         type: choice
         default: decomposition
-        options: [decomposition, sensitivity, components]
+        options: [decomposition, sensitivity, components, timing]
 
 jobs:
   simulate:
@@ -20,8 +20,10 @@ jobs:
           source_dir=ios/HearPortReceiver/Sources/HearPortReceiver
           python3 diagnostics/prepare_offline_controller.py \
             "$source_dir/PlayoutController.swift" "$RUNNER_TEMP/PlayoutController.swift" \
-            "$source_dir/CoordinatedProbe.swift" "$RUNNER_TEMP/CoordinatedProbe.swift"
-          clang++ -std=c++20 -O2 -I windows/include -I core/include -c \
+            "$source_dir/CoordinatedProbe.swift" "$RUNNER_TEMP/CoordinatedProbe.swift" \
+            windows/include/hearport/windows/reliable_audio_lag.h \
+            "$RUNNER_TEMP/experiment/hearport/windows/reliable_audio_lag.h"
+          clang++ -std=c++20 -O2 -I "$RUNNER_TEMP/experiment" -I windows/include -I core/include -c \
             diagnostics/offline_recovery_bridge.cpp -o "$RUNNER_TEMP/recovery-bridge.o"
           swiftc -O \
             "$source_dir/AudioDatagram.swift" \
@@ -46,6 +48,8 @@ jobs:
             "$RUNNER_TEMP/offline-transport" "$RUNNER_TEMP/offline-results/sensitivity.json" sensitivity
           elif [ "${{ inputs.phase }}" = components ]; then
             "$RUNNER_TEMP/offline-transport" "$RUNNER_TEMP/offline-results/components.json" components
+          elif [ "${{ inputs.phase }}" = timing ]; then
+            "$RUNNER_TEMP/offline-transport" "$RUNNER_TEMP/offline-results/timing.json" timing
           else
             "$RUNNER_TEMP/offline-transport" "$RUNNER_TEMP/offline-results/playout.json"
             "$RUNNER_TEMP/offline-transport" "$RUNNER_TEMP/offline-results/ablation.json" ablation

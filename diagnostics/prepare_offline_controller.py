@@ -90,6 +90,17 @@ def prepare_probe(source, destination):
     destination.write_text(text, encoding='utf-8')
 
 
+def prepare_recovery(source, destination):
+    text = source.read_text(encoding='utf-8')
+    before = 'const auto snapshot_lag_limit = maximum_lag_ + feedback_age;'
+    after = 'const auto snapshot_lag_limit = maximum_lag_ + feedback_age - std::chrono::milliseconds(offlineRecoveryLeadMilliseconds);'
+    if text.count(before) != 1:
+        raise ValueError('production recovery timing experiment insertion point changed')
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(text.replace(before, after), encoding='utf-8')
+
+
 if __name__ == '__main__':
     prepare(Path(sys.argv[1]), Path(sys.argv[2]))
     prepare_probe(Path(sys.argv[3]), Path(sys.argv[4]))
+    prepare_recovery(Path(sys.argv[5]), Path(sys.argv[6]))
