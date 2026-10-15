@@ -41,9 +41,9 @@ def compare(root, unchanged=False):
                 'maximumSourceAgeBoundMilliseconds': value['maximumSourceAgeBoundMilliseconds'],
                 'recovery': value['recovery'],
             }
-        if metrics['working']['unavailableSourceMilliseconds'] > metrics['49b8ee5']['unavailableSourceMilliseconds'] + 2.5:
+        if row['sourceCursor'] - row['originalSourceSpan'] > baseline['sourceCursor'] - baseline['originalSourceSpan'] + 120:
             failures.append({'configuration': dict(zip(CONFIGURATION, key)), 'reason': 'additional unavailable source exceeds one packet'})
-        if row['longestNearSilenceMilliseconds'] > baseline['longestNearSilenceMilliseconds'] + row['callbackFrames'] / 48:
+        if round(row['longestNearSilenceMilliseconds'] * 48) > round(baseline['longestNearSilenceMilliseconds'] * 48) + row['callbackFrames']:
             failures.append({'configuration': dict(zip(CONFIGURATION, key)), 'reason': 'additional near-silence exceeds one callback'})
         results.append({'configuration': dict(zip(CONFIGURATION, key)), 'inputFingerprint': row['inputFingerprint'], 'metrics': metrics})
     return {'casesPerRevision': len(current), 'identicalPacketInputs': True,
