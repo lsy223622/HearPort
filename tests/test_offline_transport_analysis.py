@@ -59,6 +59,12 @@ class OfflineTransportAnalysisTests(unittest.TestCase):
             changed[field] += 1
             with self.assertRaises(ValueError):
                 experiment_pairs([row, changed])
+        row.pop('outputGapPercent')
+        row.pop('p99PresentationMilliseconds')
+        pair = experiment_pairs([row, variant])[0]
+        self.assertIsNone(pair['outputGapPercentDifference'])
+        self.assertIsNone(pair['p99PresentationMillisecondsDifference'])
+        self.assertEqual(pair['unavailableSourcePercentDifference'], -2)
 
 
 if __name__ == '__main__':
