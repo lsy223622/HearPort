@@ -20,6 +20,9 @@ def prepare(source, destination):
 def prepare_probe(source, destination):
     text = source.read_text(encoding='utf-8')
     changes = [(
+        '    mutating func updateUncertainty(_ uncertainty: UInt64) { clockUncertainty = uncertainty }',
+        '    var offlineSourceFrame: UInt64 { sourceFrame }\n\n'
+        '    mutating func updateUncertainty(_ uncertainty: UInt64) { clockUncertainty = uncertainty }'), (
         '                let retainedFrames = running ? min(bufferedFrames, renderReserveFrames) : 0',
         '                let previousPackets = packets\n'
         '                let retainedFrames = running ? min(bufferedFrames, renderReserveFrames) : 0'), (
