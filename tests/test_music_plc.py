@@ -5,7 +5,7 @@ from pathlib import Path
 
 import numpy as np
 
-from diagnostics.music_plc import replay, arrival_trace, coverage_curve, CurrentConcealment, ar_predict
+from diagnostics.music_plc import replay, arrival_trace, coverage_curve, CurrentConcealment, ar_predict, quality
 
 
 class Predictor:
@@ -41,6 +41,39 @@ class MusicPLCTests(unittest.TestCase):
         self.assertLess(float(np.max(np.abs(output[:, 0] - source[2000:2120]))), 0.1)
         np.testing.assert_allclose(output[:, 0], -output[:, 1], atol=1e-6)
 
+    def test_ar_handles_loss_before_any_committed_history(self):
+        from diagnostics.music_plc import Autoregressive
+        arrivals = np.arange(32) * 2.5 + 1
+        arrivals[:4] = np.inf
+        result, output = replay(self.audio(), arrivals, 100, Autoregressive(), execution_ms=4,
+                                runtime_ms=[1])
+        self.assertEqual(result['unavailableSourceFrames'], 480)
+        self.assertTrue(np.all(np.isfinite(output)))
+        np.testing.assert_array_equal(output[:480], 0)
+
+    def test_current_reference_matches_packetwise_state_in_partially_missing_blocks(self):
+        t = np.arange(480 * 8) / 48000
+        audio = np.stack((0.3 * np.sin(2 * np.pi * (220 * t + 100 * t * t)),
+                          0.2 * np.sin(2 * np.pi * 330 * t)), axis=1).astype(np.float32)
+        arrivals = np.arange(32) * 2.5 + 1
+        arrivals[19] = np.inf
+        _, output = replay(audio, arrivals, 100, CurrentConcealment(), execution_ms=4, runtime_ms=[0])
+        baseline = CurrentConcealment()
+        expected = np.concatenate([baseline.conceal(120) if i == 19 else baseline.accept(audio[i*120:(i+1)*120])
+                                   for i in range(32)])
+        np.testing.assert_array_equal(output, expected)
+
+    def test_quality_detects_recovery_damage_outside_missing_packet(self):
+        audio = self.audio()
+        missing = np.zeros(32, bool)
+        missing[12] = True
+        unchanged = quality(audio, audio, missing)
+        damaged = audio.copy()
+        damaged[13*120:14*120] = 0
+        changed = quality(audio, damaged, missing)
+        self.assertEqual(unchanged['gapRecoveryLogMagnitudeError'], 0)
+        self.assertGreater(changed['gapRecoveryLogMagnitudeError'], 0)
+
     def test_original_arriving_during_prediction_wins_without_polluting_history(self):
         audio = self.audio()
         arrivals = np.arange(32) * 2.5 + 1
@@ -68,6 +101,21 @@ class MusicPLCTests(unittest.TestCase):
         corrupted[960:2400] = -0.9
         _, actual = replay(corrupted, arrivals, 100, Predictor(), execution_ms=4, margin_ms=2)
         np.testing.assert_array_equal(expected, actual)
+
+    def test_future_context_contains_only_packets_received_before_launch(self):
+        class FutureProbe(Predictor):
+            def predict(self, history, frames):
+                self.contexts.append(None if self.future is None else self.future.copy())
+                return np.zeros((frames, 2), np.float32)
+        arrivals = np.full(32, np.inf)
+        arrivals[12:16] = 108
+        model = FutureProbe()
+        replay(self.audio(), arrivals, 100, model, execution_ms=4, margin_ms=2)
+        self.assertIsNone(model.contexts[2])
+        arrivals[12:16] = 102
+        model = FutureProbe()
+        replay(self.audio(), arrivals, 100, model, execution_ms=4, margin_ms=2)
+        self.assertEqual(len(model.contexts[2]), 480)
 
     def test_compute_queue_continues_past_discarded_jobs(self):
         result, _ = replay(self.audio(), np.full(32, np.inf), 100, Predictor(),
