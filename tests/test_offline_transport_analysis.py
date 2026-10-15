@@ -1,6 +1,6 @@
 import unittest
 
-from diagnostics.analyze_offline_transport import interval, paired_differences, recovery_differences
+from diagnostics.analyze_offline_transport import interval, paired_differences, recovery_differences, experiment_pairs
 
 
 class OfflineTransportAnalysisTests(unittest.TestCase):
@@ -45,6 +45,20 @@ class OfflineTransportAnalysisTests(unittest.TestCase):
         rows[-1]['inputFingerprint'] = 'different'
         with self.assertRaises(ValueError):
             recovery_differences(rows)
+
+    def test_experiments_do_not_pair_different_feedback_or_capacity(self):
+        row = self.row(1, 'adaptive', 5)
+        row.update(experiment='baseline', feedbackIntervalMilliseconds=25, restartDelayMilliseconds=10,
+            recoveryLeadMilliseconds=0, sendMegabitsPerSecond=6, outputGapPercent=6,
+            p99PresentationMilliseconds=90, restarts=4, replayedPackets=20, skippedFrames=120,
+            waitingOutputMilliseconds=5)
+        variant = dict(row, experiment='keep_controller', unavailableSourcePercent=3)
+        self.assertEqual(experiment_pairs([row, variant])[0]['unavailableSourcePercentDifference'], -2)
+        for field in ('feedbackIntervalMilliseconds', 'sendMegabitsPerSecond', 'seed'):
+            changed = dict(variant)
+            changed[field] += 1
+            with self.assertRaises(ValueError):
+                experiment_pairs([row, changed])
 
 
 if __name__ == '__main__':

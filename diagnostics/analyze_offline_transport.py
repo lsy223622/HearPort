@@ -56,6 +56,45 @@ def interval(values):
     return bootstraps[49], bootstraps[1949]
 
 
+def experiment_pairs(rows):
+    axes = ('scenario', 'transport', 'targetMilliseconds', 'maximumMilliseconds',
+            'feedbackIntervalMilliseconds', 'restartDelayMilliseconds',
+            'recoveryLeadMilliseconds', 'sendMegabitsPerSecond', 'seed')
+    grouped = defaultdict(dict)
+    for row in rows:
+        key = tuple(row.get(axis, 0) for axis in axes)
+        experiment = row['experiment']
+        if experiment in grouped[key]:
+            raise ValueError('duplicate experimental result')
+        grouped[key][experiment] = row
+    pairs = []
+    for key, variants in grouped.items():
+        if 'baseline' not in variants:
+            raise ValueError('experiment has no matching baseline')
+        baseline = variants['baseline']
+        for experiment, row in variants.items():
+            if row['inputFingerprint'] != baseline['inputFingerprint']:
+                raise ValueError('experiment changed network input')
+            if experiment == 'baseline':
+                continue
+            pair = dict(zip(axes, key))
+            pair['experiment'] = experiment
+            for metric in ('unavailableSourcePercent', 'outputGapPercent',
+                           'p99PresentationMilliseconds', 'restarts', 'replayedPackets',
+                           'skippedFrames', 'waitingOutputMilliseconds'):
+                pair[metric + 'Difference'] = row[metric] - baseline[metric]
+            pairs.append(pair)
+    return pairs
+
+
+def write_experiment_pairs(source):
+    pairs = experiment_pairs(json.loads(source.read_text(encoding='utf-8')))
+    with source.with_suffix('.paired.csv').open('w', newline='', encoding='utf-8') as output:
+        writer = csv.DictWriter(output, fieldnames=list(pairs[0]))
+        writer.writeheader()
+        writer.writerows(pairs)
+
+
 def write_report(directory):
     rows = json.loads((directory / 'playout.json').read_text(encoding='utf-8'))
     recovery = json.loads((directory / 'recovery.json').read_text(encoding='utf-8'))['rows']
@@ -171,4 +210,10 @@ def write_report(directory):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('directory', type=Path)
-    write_report(parser.parse_args().directory)
+    directory = parser.parse_args().directory
+    if (directory / 'playout.json').exists():
+        write_report(directory)
+    for name in ('ablation', 'components', 'sensitivity', 'capacity'):
+        source = directory / f'{name}.json'
+        if source.exists():
+            write_experiment_pairs(source)
