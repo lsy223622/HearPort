@@ -1,4 +1,4 @@
-"""Local music PLC experiments with a fixed 10 ms submission schedule.
+"""Local music PLC experiments with a fixed 2.5 ms packet submission schedule.
 
 This isolates concealment and prediction scheduling; it is not the production
 adaptive receiver or an iPad performance measurement. Audio never leaves disk.
@@ -109,6 +109,7 @@ class BidirectionalAR(Autoregressive):
 
 class PARCnet:
     name = 'parcnet32k'
+    predictionFrames = BLOCK
 
     def __init__(self, source, checkpoint):
         import torch
@@ -127,8 +128,8 @@ class PARCnet:
 
     def predict(self, history, frames):
         from scipy.signal import resample_poly
-        if frames != BLOCK:
-            raise ValueError('original PARCnet probe requires 10 ms blocks')
+        if not 0 < frames <= BLOCK:
+            raise ValueError('original PARCnet probe predicts at most 10 ms ahead')
         past = resample_poly(history[-4800:], 2, 3, axis=0).astype(np.float32)
         past = np.pad(past, ((max(0, 3200 - len(past)), 0), (0, 0)))
         ar = ar_predict(past[-3200:], 400, order=128)
@@ -170,7 +171,7 @@ def coverage_curve(arrivals, budgets):
     fingerprint = hashlib.sha256(np.asarray(arrivals, dtype='<f8').tobytes()).hexdigest()
     rows = []
     for budget in budgets:
-        commits = (np.arange(len(arrivals)) // 4) * 10 + budget - RESERVE_MS
+        commits = np.arange(len(arrivals)) * 2.5 + budget - RESERVE_MS
         missing = arrivals > commits
         rows.append(dict(budgetMilliseconds=budget, inputFingerprint=fingerprint,
                          **missing_summary(missing)))
@@ -180,61 +181,87 @@ def coverage_curve(arrivals, budgets):
 def replay(audio, arrivals, budget, predictor, execution_ms, margin_ms=1, runtime_ms=None, executor=None):
     if execution_ms + margin_ms > 10 or execution_ms < 0 or margin_ms < 0:
         raise ValueError('prediction lead must fit within this probe\'s 10 ms committed-history window')
-    count = len(audio) // BLOCK
-    output = np.zeros((count * BLOCK, 2), np.float32)
+    count = len(audio) // PACKET
+    output = np.zeros((count * PACKET, 2), np.float32)
     baseline = CurrentConcealment()
     busy_until = -np.inf
-    jobs = unused = misses = 0
+    jobs = misses = 0
     maximum_queue = 0.0
     elapsed = []
-    missing = np.zeros(count * 4, dtype=bool)
-    for block in range(count):
-        begin = block * BLOCK
-        commit = block * 10 + budget - RESERVE_MS
-        launch = commit - execution_ms - margin_ms
-        packet_arrivals = arrivals[block * 4:block * 4 + 4]
-        candidate = None
-        ready = np.inf
-        if not isinstance(predictor, CurrentConcealment) and np.any(packet_arrivals > launch):
-            predictor.state = baseline
-            future_end = (block + 1) * 4
-            while future_end < min(len(arrivals), (block + 1) * 4 + 8) and arrivals[future_end] <= launch:
-                future_end += 1
-            predictor.future = audio[begin + BLOCK:future_end * PACKET] if future_end > (block + 1) * 4 else None
+    missing = np.zeros(count, dtype=bool)
+    commits = np.arange(count) * 2.5 + budget - RESERVE_MS
+    events = sorted([(commit - execution_ms - margin_ms, packet, 0) for packet, commit in enumerate(commits)] +
+                    [(commit, packet, 1) for packet, commit in enumerate(commits)])
+    pending = {}
+    epoch = 0
+    used_jobs = set()
+    committed = compute_fallback = 0
+    rejected = 0
+    for now, packet, is_commit in events:
+        begin = packet * PACKET
+        if not is_commit:
+            if isinstance(predictor, CurrentConcealment) or arrivals[packet] <= now:
+                continue
+            cached = pending.get(packet)
+            if cached is not None and (cached[2] == epoch or cached[4] == packet):
+                continue
+            if max(now, busy_until) + execution_ms > commits[packet]:
+                rejected += 1
+                continue
             before = time.perf_counter_ns()
-            context = output[max(0, begin - 4800):begin]
-            candidate = (executor.submit(predictor.predict, context, BLOCK).result() if executor
-                         else predictor.predict(context, BLOCK))
+            state = copy.deepcopy(baseline)
+            anchor = committed
+            context = output[max(0, anchor * PACKET - 4800):anchor * PACKET].copy()
+            while anchor < packet and arrivals[anchor] <= now:
+                known = state.accept(audio[anchor * PACKET:(anchor + 1) * PACKET])
+                context = np.concatenate((context, known))[-4800:]
+                anchor += 1
+            frames = (packet + 1 - anchor) * PACKET
+            frames = max(frames, getattr(predictor, 'predictionFrames', 0))
+            predictor.state = state
+            future_end = packet + 1
+            while future_end < min(count, packet + 9) and arrivals[future_end] <= now:
+                future_end += 1
+            predictor.future = audio[begin + PACKET:future_end * PACKET] if future_end > packet + 1 else None
+            candidate = (executor.submit(predictor.predict, context, frames).result() if executor
+                         else predictor.predict(context, frames))
             duration = (time.perf_counter_ns() - before) / 1e6
             elapsed.append(duration)
             duration = runtime_ms[jobs % len(runtime_ms)] if runtime_ms is not None else duration
-            start = max(launch, busy_until)
-            maximum_queue = max(maximum_queue, start - launch)
+            start = max(now, busy_until)
+            maximum_queue = max(maximum_queue, start - now)
             ready = start + duration
             busy_until = ready
             jobs += 1
-            if ready > commit:
+            for predicted in range(packet, min(count, anchor + frames // PACKET)):
+                offset = (predicted - anchor) * PACKET
+                pending[predicted] = (candidate[offset:offset + PACKET], ready, epoch, jobs, packet)
+            if ready > commits[packet]:
                 misses += 1
-        used = False
-        for packet in range(4):
-            first = begin + packet * PACKET
-            original = packet_arrivals[packet] <= commit
-            missing[block * 4 + packet] = not original
-            if original:
-                selected = baseline.accept(audio[first:first + PACKET])
-            else:
-                selected = baseline.conceal(PACKET)
-                if candidate is not None and ready <= commit:
-                    selected = candidate[packet * PACKET:(packet + 1) * PACKET]
-                    baseline.last = selected[-1].copy()
-                    used = True
-            output[first:first + PACKET] = selected
-        if candidate is not None and not used:
-            unused += 1
+            continue
+        candidate, ready, branch, job, origin = pending.pop(packet, (None, np.inf, epoch, 0, packet))
+        if branch != epoch and origin != packet:
+            candidate = None
+        original = arrivals[packet] <= now
+        missing[packet] = not original
+        if original:
+            selected = baseline.accept(audio[begin:begin + PACKET])
+            epoch += 1
+        else:
+            selected = baseline.conceal(PACKET)
+            if candidate is not None and ready <= now:
+                selected = candidate
+                baseline.last = selected[-1].copy()
+                used_jobs.add(job)
+            elif not isinstance(predictor, CurrentConcealment):
+                compute_fallback += PACKET
+        output[begin:begin + PACKET] = selected
+        committed = packet + 1
     execution_model = ('instantaneous_packetwise_quality_reference' if isinstance(predictor, CurrentConcealment)
-                       else 'measured_single_worker_10ms')
-    return dict(**missing_summary(missing), executionModel=execution_model, predictions=jobs, unusedPredictions=unused,
+                       else 'measured_single_worker_2.5ms_packets')
+    return dict(**missing_summary(missing), executionModel=execution_model, predictions=jobs, unusedPredictions=jobs-len(used_jobs),
                 predictionDeadlineMisses=misses, maximumWorkerQueueMilliseconds=maximum_queue,
+                deadlineQueueRejections=rejected, computeFallbackSourceFrames=compute_fallback,
                 executionMilliseconds=elapsed), output
 
 
@@ -274,6 +301,10 @@ def main():
     parser.add_argument('--seconds', type=float, default=120)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--vendor', type=Path)
+    parser.add_argument('--algorithms', nargs='+', choices=['current', 'ar256', 'ar256_available_future', 'parcnet32k'])
+    parser.add_argument('--seeds', nargs='+', type=int, default=[1, 7, 19])
+    parser.add_argument('--budgets', nargs='+', type=float, default=[80, 120, 200])
+    parser.add_argument('--arrivals', type=Path, help='local NumPy array of arrival times in ms on the source timeline')
     parser.add_argument('--quality-only', action='store_true',
                         help='zero compute-cost quality ceiling; never a real-time eligibility result')
     args = parser.parse_args()
@@ -304,7 +335,7 @@ def main():
     models = [CurrentConcealment, Autoregressive, BidirectionalAR]
     executor = ThreadPoolExecutor(max_workers=1)
     load = {}
-    if args.vendor:
+    if args.vendor and (args.algorithms is None or 'parcnet32k' in args.algorithms):
         before = time.perf_counter_ns()
         import torch
         torch.set_num_threads(1)
@@ -315,7 +346,16 @@ def main():
                                 modelSourceSHA256=hashlib.sha256((args.vendor / 'model-32k.py').read_bytes()).hexdigest(),
                                 torchVersion=torch.__version__)
         models.append(lambda model=model: model)
+    if args.algorithms:
+        models = [factory for factory in models if factory().name in args.algorithms]
+        if {factory().name for factory in models} != set(args.algorithms):
+            parser.error('PARCnet requires --vendor with matching official source and checkpoint')
     budgets = [60, 80, 100, 120, 160, 200, 300]
+    scenarios = ('recorded',) if args.arrivals else ('healthy', 'burst', 'hol', 'stall200', 'drop300', 'loss')
+    seeds = [1] if args.arrivals else args.seeds
+    recorded = np.load(args.arrivals, allow_pickle=False) if args.arrivals else None
+    if recorded is not None and (recorded.shape != (len(audio) // PACKET,) or np.any(np.isnan(recorded))):
+        raise ValueError('arrival array must contain one finite time or infinity per 2.5 ms packet')
     rows, curves, timing, excluded = [], [], {}, {}
     warm_history = audio[:4800]
     for factory in models:
@@ -347,12 +387,12 @@ def main():
                                  warmMaximumMilliseconds=max(durations[5:]),
                                  idle100msWakeMaximumMilliseconds=max(idle),
                                  idle1000msWakeMaximumMilliseconds=max(long_idle))
-    for scenario in ('healthy', 'burst', 'hol', 'stall200', 'drop300', 'loss'):
-        for seed in (1, 7, 19):
-            arrivals = arrival_trace(len(audio), scenario, seed)
+    for scenario in scenarios:
+        for seed in seeds:
+            arrivals = recorded if recorded is not None else arrival_trace(len(audio), scenario, seed)
             curves.extend(dict(scenario=scenario, seed=seed, **row) for row in coverage_curve(arrivals, budgets))
             for factory in models:
-                for budget in (80, 120, 200):
+                for budget in args.budgets:
                     model = factory()
                     lead = max(timing[model.name]['warmMaximumMilliseconds'],
                                timing[model.name]['idle100msWakeMaximumMilliseconds'],
@@ -367,7 +407,7 @@ def main():
                         runtime_ms=[0] if args.quality_only else None, executor=executor)
                     if args.quality_only and not isinstance(model, CurrentConcealment):
                         result['executionModel'] = 'zero_compute_cost_quality_ceiling'
-                    commits = (np.arange(len(arrivals)) // 4) * 10 + budget - RESERVE_MS
+                    commits = np.arange(len(arrivals)) * 2.5 + budget - RESERVE_MS
                     result.update(quality(audio, output, arrivals > commits))
                     elapsed = result.pop('executionMilliseconds')
                     result.update(scenario=scenario, seed=seed, algorithm=model.name, budgetMilliseconds=budget,
@@ -376,9 +416,9 @@ def main():
                         outputPeak=float(np.max(np.abs(output))))
                     assert np.all(np.isfinite(output))
                     rows.append(result)
-                    if seed == 1 and budget == 120 and scenario in ('stall200', 'loss'):
-                        sf.write(args.output / f'{scenario}-{budget}-{model.name}.wav', output, RATE, subtype='FLOAT')
-            (args.output / 'results.json').write_text(json.dumps(dict(scope='fixed_10ms_reference_not_production_or_ipad',
+                    if seed == 1 and budget == args.budgets[len(args.budgets) // 2] and scenario in ('stall200', 'loss', 'recorded'):
+                        sf.write(args.output / f'{scenario}-{budget:g}-{model.name}.wav', output, RATE, subtype='FLOAT')
+            (args.output / 'results.json').write_text(json.dumps(dict(scope='fixed_2.5ms_reference_not_production_or_ipad',
                 platform=platform.platform(), audioSHA256=hashlib.sha256(audio.tobytes()).hexdigest(),
                 implementationSHA256=implementation_hash,
                 durationSeconds=len(audio) / RATE, qualityOnly=args.quality_only, load=load, timing=timing,
@@ -389,14 +429,14 @@ def main():
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
-    for scenario in ('healthy', 'burst', 'hol', 'stall200', 'drop300', 'loss'):
+    for scenario in scenarios:
         selected = [row for row in curves if row['scenario'] == scenario]
         values = [np.mean([row['unavailableSourceFrames'] / len(audio) * 100 for row in selected
                            if row['budgetMilliseconds'] == budget]) for budget in budgets]
         plt.plot(budgets, values, marker='o', label=scenario)
     plt.xlabel('End-to-end budget (ms); 11 ms output reserve included')
     plt.ylabel('Unavailable original source (%)')
-    plt.title('Identical arrivals; fixed 10 ms submission reference')
+    plt.title('Identical arrivals; fixed 2.5 ms submission reference')
     plt.legend(); plt.grid(alpha=0.3); plt.tight_layout()
     plt.savefig(args.output / 'latency-coverage.png', dpi=160)
 
