@@ -1,6 +1,7 @@
 """Run the receiver's production playback path with a virtual clock in a temporary package."""
 import shutil
 import sys
+import os
 from pathlib import Path
 
 
@@ -59,6 +60,14 @@ def prepare(source, destination):
     text = replace_once(text, 'sourceEnd: position + 120, capturedAt: captured, deadline: .max)',
         'sourceEnd: position + 120, capturedAt: captured, deadline: .max)\n                hearport_offline_set_concealing(0)')
     text = replace_once(text, 'import Foundation', 'import Foundation\nimport HearPortAtomics')
+    if os.environ.get('HEARPORT_PLAYBACK_REFERENCE') == 'working':
+        text = replace_once(text, '        if !preserveOutput { renderActiveAtomic.store(0) }',
+            '        if preserveOutput { jitter?.offlineResume() }\n        if !preserveOutput { renderActiveAtomic.store(0) }')
+        jitter = directory / 'JitterBuffer.swift'
+        code = jitter.read_text(encoding='utf-8')
+        code = replace_once(code, '    public mutating func setTargetPackets(',
+            '    mutating func offlineResume() { mode = .running }\n\n    public mutating func setTargetPackets(')
+        jitter.write_text(code, encoding='utf-8')
     path.write_text(text, encoding='utf-8')
     path = directory / 'RenderRingBuffer.swift'
     text = path.read_text(encoding='utf-8').replace('DispatchTime.now().uptimeNanoseconds', 'offlineNow')

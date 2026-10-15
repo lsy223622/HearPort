@@ -89,6 +89,13 @@ final class OfflinePlaybackTests: XCTestCase {
                 if scenario.hasPrefix("drop") || scenario.hasPrefix("restart") { continue }
                 arrived = base + UInt64(range.upperBound) * 2_500_000 + 5_000_000
             }
+            if scenario.hasPrefix("restartbursty") {
+                for range in stalledRanges {
+                    if (40..<56).contains(sequence - range.upperBound) {
+                        arrived = base + UInt64(range.upperBound + 56) * 2_500_000 + 5_000_000
+                    }
+                }
+            }
             packets.append(Packet(sequence: UInt32(sequence), captured: captured, arrived: arrived))
         }
         packets.sort { $0.arrived == $1.arrived ? $0.sequence < $1.sequence : $0.arrived < $1.arrived }
@@ -238,7 +245,7 @@ final class OfflinePlaybackTests: XCTestCase {
 
     func testProductionPlaybackMatrix() throws {
         var results: [PlaybackResult] = []
-        for scenario in ["healthy", "burst", "loss", "hol", "stall200", "stall300", "drop200", "drop300", "restart200", "restart300"] {
+        for scenario in ["healthy", "burst", "loss", "hol", "stall200", "stall300", "drop200", "drop300", "restart200", "restart300", "restartbursty200", "restartbursty300"] {
             for content in ["tone", "noise", "mixed"] {
                 for uncertainty in [0, 15] {
                     for adaptive in [false, true] {
