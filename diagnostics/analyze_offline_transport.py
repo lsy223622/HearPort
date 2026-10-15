@@ -58,6 +58,7 @@ def interval(values):
 
 def experiment_pairs(rows, baseline_name='baseline'):
     axes = ('scenario', 'transport', 'targetMilliseconds', 'maximumMilliseconds',
+            'sourceDurationSeconds',
             'feedbackIntervalMilliseconds', 'restartDelayMilliseconds',
             'recoveryLeadMilliseconds', 'sendMegabitsPerSecond', 'seed')
     grouped = defaultdict(dict)
@@ -214,7 +215,7 @@ if __name__ == '__main__':
     directory = parser.parse_args().directory
     if (directory / 'playout.json').exists():
         write_report(directory)
-    for name in ('ablation', 'components', 'sensitivity', 'capacity', 'replay'):
+    for name in ('ablation', 'components', 'sensitivity', 'capacity', 'replay', 'endurance'):
         source = directory / f'{name}.json'
         if source.exists():
             write_experiment_pairs(source)

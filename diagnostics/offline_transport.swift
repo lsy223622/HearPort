@@ -2,8 +2,10 @@ import Foundation
 
 private let captureStart: UInt64 = 1_000_000_000
 private let packetInterval: UInt64 = 2_500_000
-private let packetCount = 12_000
-private let totalFrames = packetCount * 120
+private var packetCount = 12_000
+private var totalFrames: Int { packetCount * 120 }
+private var sourceDuration: UInt64 { UInt64(packetCount) * packetInterval }
+var offlineSourceFrameCount: UInt64 { UInt64(totalFrames) }
 var offlineDeadlineGuardMilliseconds = 0.0
 var offlineKeepController = false
 var offlineKeepBuffer = false
@@ -29,16 +31,22 @@ private enum Experiment: String, CaseIterable {
     case deadlineReplay = "deadline_replay", boundedReplay = "bounded_replay"
     case projectedReplay = "projected_replay", projectedOnly = "projected_only"
     case capacityLow = "capacity_low", capacityHigh = "capacity_high"
+    case conservative = "conservative", conservativeLow = "conservative_low", conservativeHigh = "conservative_high"
     var keepsController: Bool { [.keepController, .keepBoth, .controllerNoReplay, .keepAll,
                                 .deadlineReplay, .boundedReplay, .projectedReplay,
-                                .projectedOnly, .capacityLow, .capacityHigh].contains(self) }
+                                .projectedOnly, .capacityLow, .capacityHigh, .conservative,
+                                .conservativeLow, .conservativeHigh].contains(self) }
     var keepsBuffer: Bool { [.keepBuffer, .keepBoth, .keepAll].contains(self) }
     var replays: Bool { ![.noReplay, .controllerNoReplay, .keepAll].contains(self) }
     var replayMode: Int32 {
-        self == .projectedOnly ? 4 : [.projectedReplay, .capacityLow, .capacityHigh].contains(self) ? 3
+        self == .projectedOnly ? 4 : [.projectedReplay, .capacityLow, .capacityHigh, .conservative,
+                                    .conservativeLow, .conservativeHigh].contains(self) ? 3
             : self == .boundedReplay ? 2 : self == .deadlineReplay ? 1 : 0
     }
-    var capacityEstimateScale: Double { self == .capacityLow ? 0.75 : self == .capacityHigh ? 1.25 : 1 }
+    var capacityEstimateScale: Double {
+        self == .conservativeLow ? 0.75 * 0.75 : self == .conservativeHigh ? 0.75 * 1.25
+            : self == .conservative || self == .capacityLow ? 0.75 : self == .capacityHigh ? 1.25 : 1
+    }
 }
 
 private struct RandomSource {
@@ -73,7 +81,7 @@ private struct NetworkTrace {
         var random = RandomSource(state: seed)
         var pauses: [(UInt64, UInt64)] = []
         if scenario == .jitter || scenario == .weakWifi {
-            for index in 1..<40 {
+            for index in 1..<(packetCount / 300) {
                 let start = UInt64(index) * 750_000_000 + random.next(150_000_000)
                 let duration = 10_000_000 + random.next(scenario == .weakWifi ? 170_000_000 : 50_000_000)
                 pauses.append((captureStart + start, captureStart + start + duration))
@@ -187,6 +195,7 @@ private struct Result: Codable, Equatable {
     let scenario, transport, policy, inputFingerprint, experiment: String
     let seed: UInt64
     let targetMilliseconds, maximumMilliseconds: Double
+    let sourceDurationSeconds: Int
     let feedbackIntervalMilliseconds, restartDelayMilliseconds: Int
     let recoveryLeadMilliseconds: Int
     let sendMegabitsPerSecond: Double
@@ -268,7 +277,7 @@ private func simulate(trace: NetworkTrace, scenario: Scenario, seed: UInt64,
     var concealRun = 0, longestConcealRun = 0
     var rebufferWait = 0
     var concealedOutput = 0.0, playedOutput = 0.0
-    for now in stride(from: captureStart, through: captureStart + 32_000_000_000, by: 2_500_000) {
+    for now in stride(from: captureStart, through: captureStart + sourceDuration + 2_000_000_000, by: 2_500_000) {
         var incoming: [Delivery] = []
         if let recovery {
             while producedIndex < trace.packets.count && trace.packets[producedIndex].captured <= now {
@@ -333,7 +342,7 @@ private func simulate(trace: NetworkTrace, scenario: Scenario, seed: UInt64,
         if (now - captureStart) % 5_000_000 != 0 { continue }
         let consumed = consumer.tick(now: now)
         if firstConsumption != nil && consumer.offlineSourceFrame < UInt64(totalFrames) &&
-            now <= captureStart + 30_000_000_000 + UInt64(budget.maximumMilliseconds -
+            now <= captureStart + sourceDuration + UInt64(budget.maximumMilliseconds -
                 budget.outputReserveMilliseconds) * 1_000_000 {
             rebufferWait += consumed.waitingFrames
         }
@@ -385,6 +394,7 @@ private func simulate(trace: NetworkTrace, scenario: Scenario, seed: UInt64,
     return Result(scenario: scenario.rawValue, transport: transport.rawValue,
         policy: policy.rawValue, inputFingerprint: trace.fingerprint, experiment: experiment.rawValue, seed: seed,
         targetMilliseconds: budget.targetMilliseconds, maximumMilliseconds: budget.maximumMilliseconds,
+        sourceDurationSeconds: packetCount / 400,
         feedbackIntervalMilliseconds: feedbackIntervalMilliseconds, restartDelayMilliseconds: restartDelayMilliseconds,
         recoveryLeadMilliseconds: recoveryLeadMilliseconds,
         sendMegabitsPerSecond: sendMegabitsPerSecond,
@@ -415,7 +425,7 @@ private func simulate(trace: NetworkTrace, scenario: Scenario, seed: UInt64,
 private struct OfflineTransport {
     static func main() throws {
         guard (2...3).contains(CommandLine.arguments.count) else {
-            throw NSError(domain: "Usage: offline-transport report.json [ablation|sensitivity|components|timing|capacity|replay]", code: 2)
+            throw NSError(domain: "Usage: offline-transport report.json [ablation|sensitivity|components|timing|capacity|replay|projection|endurance|incident]", code: 2)
         }
         let mode = CommandLine.arguments.count == 3 ? CommandLine.arguments[2] : "baseline"
         let ablation = mode != "baseline"
@@ -426,7 +436,10 @@ private struct OfflineTransport {
         let replay = mode == "replay"
         let incident = mode == "incident"
         let projection = mode == "projection"
-        let experiments: [Experiment] = projection ? [.baseline, .boundedReplay, .projectedOnly, .projectedReplay, .capacityLow, .capacityHigh]
+        let endurance = mode == "endurance"
+        if endurance { packetCount = 48_000 }
+        let experiments: [Experiment] = endurance ? [.baseline, .projectedReplay, .conservative, .conservativeLow, .conservativeHigh]
+            : projection ? [.baseline, .boundedReplay, .projectedOnly, .projectedReplay, .capacityLow, .capacityHigh]
             : replay || incident ? [.baseline, .keepController, .controllerNoReplay, .deadlineReplay, .boundedReplay]
             : capacity ? [.baseline, .keepController]
             : timing ? [.keepController]
@@ -462,19 +475,19 @@ private struct OfflineTransport {
         try require(noPackets.playedFrames == 0 && noPackets.unavailableSourcePercent == 100 &&
                     noPackets.maxPresentationMilliseconds == nil, "no-input control reported playback")
         var results: [Result] = []
-        for scenario in (incident ? [.isolatedLoss] : ablation && !timing && !capacity && !replay && !projection ? [.isolatedLoss, .weakWifi] : Scenario.allCases) {
-            for seed in (incident ? UInt64(1)...1 : projection ? UInt64(33)...40 : capacity || replay ? UInt64(25)...32 : timing ? UInt64(17)...24 : sensitivity ? UInt64(9)...16 : UInt64(1)...8) {
+        for scenario in (incident ? [.isolatedLoss] : ablation && !timing && !capacity && !replay && !projection && !endurance ? [.isolatedLoss, .weakWifi] : Scenario.allCases) {
+            for seed in (incident ? UInt64(1)...1 : endurance ? UInt64(41)...44 : projection ? UInt64(33)...40 : capacity || replay ? UInt64(25)...32 : timing ? UInt64(17)...24 : sensitivity ? UInt64(9)...16 : UInt64(1)...8) {
                 let trace = NetworkTrace.make(scenario, seed: seed, singleLoss: incident)
                 for (target, maximum) in (incident ? [(50.0, 100.0)] : [(50.0, 100.0), (80.0, 160.0), (120.0, 240.0)]) {
                     let budget = try PlayoutBudget(targetMilliseconds: target, maximumMilliseconds: maximum,
                                                    outputReserveMilliseconds: 11)
-                    for transport in (capacity ? [.datagram, .hol, .corrected] : projection || incident || replay || timing || sensitivity || components ? [.corrected] : ablation ? [.legacy, .corrected] : Transport.allCases) {
+                    for transport in (capacity ? [.datagram, .hol, .corrected] : endurance || projection || incident || replay || timing || sensitivity || components ? [.corrected] : ablation ? [.legacy, .corrected] : Transport.allCases) {
                         for experiment in experiments {
                           for policy in (ablation ? [experiment == .fixedConsumer ? .fixed : .adaptive] : Policy.allCases) {
-                            for interval in (timing || capacity || replay || incident || projection ? [25] : sensitivity ? [25, 50] : [50]) {
-                              for delay in (capacity || replay || incident || projection ? [10] : sensitivity || timing ? [0, 10, 25] : [0]) {
+                            for interval in (timing || capacity || replay || incident || projection || endurance ? [25] : sensitivity ? [25, 50] : [50]) {
+                              for delay in (capacity || replay || incident || projection || endurance ? [10] : sensitivity || timing ? [0, 10, 25] : [0]) {
                                for lead in (timing ? [0, 15, 30, 45] : [0]) {
-                                for rate in (capacity || replay || incident || projection ? [0.0, 3.5, 6.0] : [0.0]) {
+                                for rate in (endurance ? [3.5, 6.0] : capacity || replay || incident || projection ? [0.0, 3.5, 6.0] : [0.0]) {
                                 results.append(try simulate(trace: trace, scenario: scenario, seed: seed,
                                     transport: transport, policy: policy, budget: budget, experiment: experiment,
                                     feedbackIntervalMilliseconds: interval, restartDelayMilliseconds: delay,
@@ -492,6 +505,6 @@ private struct OfflineTransport {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(results).write(to: URL(fileURLWithPath: CommandLine.arguments[1]))
-        print("offline_transport_checks_passed cases=\(results.count) simulated_seconds=\(results.count * 30)")
+        print("offline_transport_checks_passed cases=\(results.count) simulated_seconds=\(results.count * packetCount / 400)")
     }
 }

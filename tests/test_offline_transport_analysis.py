@@ -49,12 +49,12 @@ class OfflineTransportAnalysisTests(unittest.TestCase):
     def test_experiments_do_not_pair_different_feedback_or_capacity(self):
         row = self.row(1, 'adaptive', 5)
         row.update(experiment='baseline', feedbackIntervalMilliseconds=25, restartDelayMilliseconds=10,
-            recoveryLeadMilliseconds=0, sendMegabitsPerSecond=6, outputGapPercent=6,
+            recoveryLeadMilliseconds=0, sendMegabitsPerSecond=6, sourceDurationSeconds=30, outputGapPercent=6,
             p99PresentationMilliseconds=90, restarts=4, replayedPackets=20, skippedFrames=120,
             waitingOutputMilliseconds=5)
         variant = dict(row, experiment='keep_controller', unavailableSourcePercent=3)
         self.assertEqual(experiment_pairs([row, variant])[0]['unavailableSourcePercentDifference'], -2)
-        for field in ('feedbackIntervalMilliseconds', 'sendMegabitsPerSecond', 'seed'):
+        for field in ('feedbackIntervalMilliseconds', 'sendMegabitsPerSecond', 'sourceDurationSeconds', 'seed'):
             changed = dict(variant)
             changed[field] += 1
             with self.assertRaises(ValueError):
