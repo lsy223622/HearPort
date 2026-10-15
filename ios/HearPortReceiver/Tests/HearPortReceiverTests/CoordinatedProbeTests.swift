@@ -2,6 +2,32 @@ import XCTest
 @testable import HearPortReceiver
 
 final class CoordinatedProbeTests: XCTestCase {
+    func testReliableGenerationKeepsLearnedDelayTarget() throws {
+        let plan = try CoordinatedProbePlan(encoded: Data([1, 1, 30, 0, 3, 224, 1, 144, 1, 1, 1, 1, 2, 0, 5, 0]))
+        let budget = try PlayoutBudget(targetMilliseconds: 50, maximumMilliseconds: 100,
+                                       outputReserveMilliseconds: 1)
+        var consumer = ProbeConsumer(round: plan.rounds[0], budget: budget,
+                                     firstSequence: 0, sourceFrame: 0)
+        for sequence in UInt32(0)..<20 {
+            let capture = UInt64(1_000_000_000) + UInt64(sequence) * 2_500_000
+            let record = try TimedAudioRecord(streamID: 7, generation: 1, sequence: sequence,
+                frameCount: 120, kind: .probe, capturedAt: capture,
+                sourceFrame: UInt64(sequence) * 120, payload: Data(repeating: 1, count: 960))
+            consumer.receive(record, capturedAt: capture, uncertainty: 0, now: 1_080_000_000)
+        }
+        _ = consumer.tick(now: 1_080_000_000)
+        let learned = consumer.tick(now: 1_130_000_000).targetMilliseconds
+        XCTAssertGreaterThan(learned, 55)
+        let next = try TimedAudioRecord(streamID: 7, generation: 2, sequence: 40,
+            frameCount: 120, kind: .probe, capturedAt: 1_100_000_000,
+            sourceFrame: 4_800, payload: Data(repeating: 1, count: 960))
+        consumer.receive(next, capturedAt: next.capturedAt, uncertainty: 0, now: 1_135_000_000)
+        XCTAssertGreaterThanOrEqual(consumer.tick(now: 1_135_000_000).targetMilliseconds, learned)
+        var newRound = ProbeConsumer(round: plan.rounds[0], budget: budget,
+                                     firstSequence: 40, sourceFrame: 4_800)
+        XCTAssertEqual(newRound.tick(now: 1_135_000_000).targetMilliseconds, 50)
+    }
+
     func testSharedManifestPreservesPolicyAndRejectsInvalidPlans() throws {
         let bytes = Data([1, 1, 30, 0, 3, 224, 1, 144, 1, 1, 0, 1, 2, 1, 5, 0])
         let plan = try CoordinatedProbePlan(encoded: bytes)

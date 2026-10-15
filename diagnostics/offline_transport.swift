@@ -32,20 +32,21 @@ private enum Experiment: String, CaseIterable {
     case projectedReplay = "projected_replay", projectedOnly = "projected_only"
     case capacityLow = "capacity_low", capacityHigh = "capacity_high"
     case conservative = "conservative", conservativeLow = "conservative_low", conservativeHigh = "conservative_high"
+    case production
     var keepsController: Bool { [.keepController, .keepBoth, .controllerNoReplay, .keepAll,
                                 .deadlineReplay, .boundedReplay, .projectedReplay,
                                 .projectedOnly, .capacityLow, .capacityHigh, .conservative,
-                                .conservativeLow, .conservativeHigh].contains(self) }
+                                .conservativeLow, .conservativeHigh, .production].contains(self) }
     var keepsBuffer: Bool { [.keepBuffer, .keepBoth, .keepAll].contains(self) }
     var replays: Bool { ![.noReplay, .controllerNoReplay, .keepAll].contains(self) }
     var replayMode: Int32 {
-        self == .projectedOnly ? 4 : [.projectedReplay, .capacityLow, .capacityHigh, .conservative,
+        self == .production ? 5 : self == .projectedOnly ? 4 : [.projectedReplay, .capacityLow, .capacityHigh, .conservative,
                                     .conservativeLow, .conservativeHigh].contains(self) ? 3
             : self == .boundedReplay ? 2 : self == .deadlineReplay ? 1 : 0
     }
     var capacityEstimateScale: Double {
         self == .conservativeLow ? 0.75 * 0.75 : self == .conservativeHigh ? 0.75 * 1.25
-            : self == .conservative || self == .capacityLow ? 0.75 : self == .capacityHigh ? 1.25 : 1
+            : [.conservative, .capacityLow, .production].contains(self) ? 0.75 : self == .capacityHigh ? 1.25 : 1
     }
 }
 
@@ -438,7 +439,7 @@ private struct OfflineTransport {
         let projection = mode == "projection"
         let endurance = mode == "endurance"
         if endurance { packetCount = 48_000 }
-        let experiments: [Experiment] = endurance ? [.baseline, .projectedReplay, .conservative, .conservativeLow, .conservativeHigh]
+        let experiments: [Experiment] = endurance ? [.baseline, .projectedReplay, .conservative, .conservativeLow, .conservativeHigh, .production]
             : projection ? [.baseline, .boundedReplay, .projectedOnly, .projectedReplay, .capacityLow, .capacityHigh]
             : replay || incident ? [.baseline, .keepController, .controllerNoReplay, .deadlineReplay, .boundedReplay]
             : capacity ? [.baseline, .keepController]

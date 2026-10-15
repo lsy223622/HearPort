@@ -34,6 +34,12 @@ struct QuicServerCallbacks {
   std::function<void()> on_closed;
 };
 
+struct ReliableAudioCapacity {
+  double acknowledged_bytes_per_second = 0;
+  std::uint32_t congestion_window_bytes = 0;
+  std::uint64_t round_trip_ns = 0;
+};
+
 class QuicServer {
  public:
   virtual ~QuicServer() = default;
@@ -50,6 +56,7 @@ class QuicServer {
                                     std::uint32_t output_reserve_ms) = 0;
   virtual void ConfirmReliableReceived(std::uint32_t stream_id, std::uint32_t generation,
                                        std::uint32_t sequence) = 0;
+  virtual ReliableAudioCapacity AudioCapacity() = 0;
   virtual void StopReliableAudio() = 0;
   virtual void CloseConnection() = 0;
   virtual void Stop() = 0;

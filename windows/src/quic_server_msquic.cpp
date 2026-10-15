@@ -332,6 +332,29 @@ class MsQuicServer final : public QuicServer {
     datagram_window_frames_ = std::uint64_t(target_ms - output_reserve_ms) * 48;
     reliable_window_frames_ = std::uint64_t(maximum_ms - output_reserve_ms) * 48;
     last_probe_statistics_ns_.store(0);
+    acknowledged_audio_bytes_ = 0;
+    capacity_sample_at_ = std::chrono::steady_clock::now();
+    acknowledged_bytes_per_second_ = 0;
+    previous_acknowledged_bytes_per_second_ = 0;
+  }
+
+  ReliableAudioCapacity AudioCapacity() override {
+    std::lock_guard lock(mutex_);
+    if (!started_ || connection_ == nullptr || api_ == nullptr) return {};
+    const auto now = std::chrono::steady_clock::now();
+    const auto elapsed = std::chrono::duration<double>(now - capacity_sample_at_).count();
+    if (elapsed >= 0.1) {
+      previous_acknowledged_bytes_per_second_ = acknowledged_bytes_per_second_;
+      acknowledged_bytes_per_second_ = elapsed <= 0.25 ? acknowledged_audio_bytes_ / elapsed : 0;
+      acknowledged_audio_bytes_ = 0;
+      capacity_sample_at_ = now;
+    }
+    QUIC_STATISTICS_V2 statistics{};
+    std::uint32_t size = sizeof(statistics);
+    if (QUIC_FAILED(api_->GetParam(connection_, QUIC_PARAM_CONN_STATISTICS_V2, &size, &statistics))) return {};
+    // Send buffering is disabled: only completed, uncanceled audio contributes ACK goodput.
+    return {(std::min)(previous_acknowledged_bytes_per_second_, acknowledged_bytes_per_second_),
+            statistics.SendCongestionWindow, std::uint64_t(statistics.Rtt) * 1'000};
   }
 
   void ConfirmReliableReceived(std::uint32_t stream_id, std::uint32_t generation,
@@ -712,6 +735,9 @@ class MsQuicServer final : public QuicServer {
           {
             std::lock_guard lock(server->mutex_);
             if (send_context->audio_epoch == server->audio_epoch_.load()) {
+              if (!event->SEND_COMPLETE.Canceled && send_context->stream_id != 0) {
+                server->acknowledged_audio_bytes_ += send_context->buffer.Length;
+              }
               server->pending_reliable_sends_.fetch_sub(1);
               server->reliable_pending_frames_ -= send_context->source_frames;
               server->reliable_pending_buffers_.erase(send_context);
@@ -855,6 +881,10 @@ class MsQuicServer final : public QuicServer {
   std::uint64_t reliable_window_frames_ = 0;
   std::atomic<std::uint64_t> reliable_pending_frames_ = 0;
   std::set<SendBufferContext*> reliable_pending_buffers_;
+  std::uint64_t acknowledged_audio_bytes_ = 0;
+  std::chrono::steady_clock::time_point capacity_sample_at_{};
+  double acknowledged_bytes_per_second_ = 0;
+  double previous_acknowledged_bytes_per_second_ = 0;
   std::atomic<std::int64_t> last_probe_statistics_ns_ = 0;
   bool started_ = false;
 };
@@ -887,6 +917,7 @@ class UnavailableQuicServer final : public QuicServer {
   }
   void ConfigureAudioWindow(std::uint32_t, std::uint32_t, std::uint32_t) override {}
   void ConfirmReliableReceived(std::uint32_t, std::uint32_t, std::uint32_t) override {}
+  ReliableAudioCapacity AudioCapacity() override { return {}; }
   void StopReliableAudio() override {}
   bool StartReliableAudio(std::uint32_t, std::uint32_t) override { return false; }
   void CloseConnection() override {}

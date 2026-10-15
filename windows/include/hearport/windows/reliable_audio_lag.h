@@ -1,5 +1,7 @@
 #pragma once
 
+#include <algorithm>
+#include <cmath>
 #include <chrono>
 #include <cstdint>
 #include <optional>
@@ -13,6 +15,12 @@ namespace hearport::windows {
 class ReliableAudioLag {
  public:
   using Clock = std::chrono::steady_clock;
+
+  struct ReplayBudget {
+    double bytes_per_second = 0;
+    std::uint64_t delivery_delay_ns = 0;
+    std::size_t reserved_bytes = 0;
+  };
 
   void Begin(std::uint32_t stream_id, std::uint32_t generation,
              Clock::time_point now,
@@ -29,6 +37,9 @@ class ReliableAudioLag {
     latest_source_.reset();
     frame_count_ = 120;
     fresh_records_.clear();
+    previous_played_.reset();
+    previous_feedback_ns_ = 0;
+    consumption_frames_per_ns_ = 0;
   }
 
   void Produced(std::uint32_t sequence, std::optional<std::uint64_t> source_end = std::nullopt,
@@ -83,8 +94,20 @@ class ReliableAudioLag {
 
   bool ConfirmReceived(std::uint32_t stream_id, std::uint32_t generation,
                        std::optional<std::uint32_t> latest_received,
-                       std::optional<std::uint64_t> played_source) {
+                       std::optional<std::uint64_t> played_source,
+                       std::uint64_t feedback_at_ns = 0) {
     if (stream_id != stream_id_ || generation != generation_) return false;
+    if (feedback_at_ns != 0 && feedback_at_ns <= previous_feedback_ns_) return false;
+    consumption_frames_per_ns_ = 0;
+    if (played_source && previous_played_ && previous_feedback_ns_ != 0 &&
+        feedback_at_ns > previous_feedback_ns_ && *played_source >= *previous_played_) {
+      const auto interval = feedback_at_ns - previous_feedback_ns_;
+      const double rate = double(*played_source - *previous_played_) / double(interval);
+      if (interval <= std::uint64_t(maximum_lag_.count()) * 1'000'000 &&
+          rate <= 48'000.0 * 1.05 / 1e9) consumption_frames_per_ns_ = rate;
+    }
+    previous_played_ = played_source;
+    previous_feedback_ns_ = feedback_at_ns;
     while (!fresh_records_.empty()) {
       const auto& record = fresh_records_.front();
       const bool delivered = latest_received && (*latest_received - record.sequence) < 0x80000000u;
@@ -111,6 +134,45 @@ class ReliableAudioLag {
     return result;
   }
 
+  std::vector<wire::TimedAudioRecord> ReplayForDelivery(std::uint32_t generation,
+      std::uint64_t now, std::optional<std::uint32_t> latest_received,
+      std::optional<std::uint64_t> played_source, const ReplayBudget& budget) const {
+    const auto allowance = std::uint64_t(maximum_lag_.count()) * 1'000'000;
+    if (!std::isfinite(budget.bytes_per_second) || budget.bytes_per_second <= 0 ||
+        budget.delivery_delay_ns >= allowance) return {};
+    auto candidates = ReplayFresh(generation, now, latest_received, played_source);
+    double live_bytes_per_second = 0;
+    for (const auto& record : candidates) {
+      if (record.frame_count == 0) return {};
+      live_bytes_per_second = std::max(live_bytes_per_second,
+          double(record.payload.size() + 34) * 48'000 / record.frame_count);
+    }
+    const double spare = std::max(0.0, budget.bytes_per_second - live_bytes_per_second);
+    double remaining = std::max(0.0, spare * double(allowance - budget.delivery_delay_ns) / 1e9 -
+                                    double(budget.reserved_bytes));
+    auto first = candidates.size();
+    while (first > 0) {
+      const auto bytes = candidates[first - 1].payload.size() + 34;
+      if (double(bytes) > remaining) break;
+      remaining -= double(bytes); --first;
+    }
+    std::vector<wire::TimedAudioRecord> result;
+    auto arrival = now + budget.delivery_delay_ns;
+    for (auto index = first; index < candidates.size(); ++index) {
+      const auto& record = candidates[index];
+      const auto service = static_cast<std::uint64_t>(std::ceil(
+          double(record.payload.size() + 34) * 1e9 / budget.bytes_per_second));
+      const auto delivered = arrival + service;
+      if (delivered < record.captured_at_ns || delivered - record.captured_at_ns >= allowance) continue;
+      if (played_source && previous_feedback_ns_ != 0 && delivered >= previous_feedback_ns_ &&
+          double(record.source_frame + record.frame_count) <= double(*played_source) +
+              double(delivered - previous_feedback_ns_) * consumption_frames_per_ns_) continue;
+      result.push_back(record);
+      arrival = delivered;
+    }
+    return result;
+  }
+
   std::optional<std::uint32_t> latest_produced() const noexcept {
     return latest_produced_;
   }
@@ -128,6 +190,9 @@ class ReliableAudioLag {
   std::optional<std::uint64_t> latest_source_;
   std::uint16_t frame_count_ = 120;
   std::deque<wire::TimedAudioRecord> fresh_records_;
+  std::optional<std::uint64_t> previous_played_;
+  std::uint64_t previous_feedback_ns_ = 0;
+  double consumption_frames_per_ns_ = 0;
 };
 
 }  // namespace hearport::windows

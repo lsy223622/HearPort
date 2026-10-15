@@ -107,9 +107,6 @@ struct ProbeConsumer: Sendable {
                 if !running { fractionalFrames = 0 }
                 latestReceivedSequence = nil
                 latestPlayableSequence = nil
-                control = PlayoutController(budget: budget,
-                    maximumCorrection: round.controller == 0 ? 0 : Double(round.correctionPercent) / 100,
-                    adaptive: round.controller >= 2)
             }
             generation = record.generation
         }
