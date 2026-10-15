@@ -48,6 +48,8 @@ def prepare(source, destination):
         raise ValueError('concealment insertion points changed')
     text = text.replace('                realtimeMetrics.recordConcealment()',
         '                offlineConcealedFrames += 120\n                realtimeMetrics.recordConcealment()')
+    text = replace_once(text, 'renderRing.fillFrames + 840 <= ringReserveFrames,',
+        'renderRing.fillFrames + 840 <= (offlineBatchCapacity ? renderRing.capacityFrames : ringReserveFrames),')
     path.write_text(text, encoding='utf-8')
     path = directory / 'RenderRingBuffer.swift'
     text = path.read_text(encoding='utf-8').replace('DispatchTime.now().uptimeNanoseconds', 'offlineNow')
@@ -58,6 +60,7 @@ def prepare(source, destination):
 var offlineNow: UInt64 = 1_000_000_000
 var offlineLastRendered = 0
 var offlineConcealedFrames = 0
+var offlineBatchCapacity = false
 ''', encoding='utf-8')
     c = destination / 'Sources/HearPortAtomics/AudioRing.c'
     text = c.read_text(encoding='utf-8')

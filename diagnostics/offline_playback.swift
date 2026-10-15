@@ -6,6 +6,7 @@ import HearPortAtomics
 private struct PlaybackResult: Codable {
     let scenario, content: String
     let adaptive: Bool
+    let capacityBatch: Bool
     let seed, callbackFrames, uncertaintyMilliseconds: Int
     let concealedPreparedFrames, underflowAfterStartFrames, latePackets, expiredOutputFrames: Int
     let requestedCorrectionMean, realizedCorrection: Double
@@ -43,7 +44,7 @@ final class OfflinePlaybackTests: XCTestCase {
     }
 
     private func run(scenario: String, content: String, adaptive: Bool, seed: Int,
-                     callback: Int, uncertainty: Int) throws -> PlaybackResult {
+                     callback: Int, uncertainty: Int, capacityBatch: Bool) throws -> PlaybackResult {
         let base: UInt64 = 1_000_000_000
         let count = 4_800
         var packets: [Packet] = []
@@ -67,6 +68,7 @@ final class OfflinePlaybackTests: XCTestCase {
         packets.sort { $0.arrived == $1.arrived ? $0.sequence < $1.sequence : $0.arrived < $1.arrived }
         offlineNow = base
         offlineLastRendered = 0; offlineConcealedFrames = 0
+        offlineBatchCapacity = capacityBatch
         hearport_offline_reset_age()
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -120,6 +122,7 @@ final class OfflinePlaybackTests: XCTestCase {
         }
         let counts = receiver.offlineStretchCounts
         let result = PlaybackResult(scenario: scenario, content: content, adaptive: adaptive,
+            capacityBatch: capacityBatch,
             seed: seed, callbackFrames: callback, uncertaintyMilliseconds: uncertainty,
             concealedPreparedFrames: offlineConcealedFrames, underflowAfterStartFrames: underflow,
             latePackets: Int(receiver.jitterStats?.latePackets ?? 0), expiredOutputFrames: Int(receiver.offlineExpired),
@@ -143,8 +146,11 @@ final class OfflinePlaybackTests: XCTestCase {
             for content in ["tone", "noise", "mixed"] {
                 for adaptive in [false, true] {
                     for uncertainty in [0, 15] {
-                        results.append(try run(scenario: scenario, content: content,
-                            adaptive: adaptive, seed: 1, callback: 256, uncertainty: uncertainty))
+                        for capacityBatch in adaptive ? [false, true] : [false] {
+                            results.append(try run(scenario: scenario, content: content,
+                                adaptive: adaptive, seed: 1, callback: 256, uncertainty: uncertainty,
+                                capacityBatch: capacityBatch))
+                        }
                     }
                 }
             }
