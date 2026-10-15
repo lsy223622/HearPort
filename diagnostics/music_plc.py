@@ -74,7 +74,7 @@ def ar_predict(history, frames, order=256):
     from scipy.signal import correlate, lfiltic, lfilter
     result = []
     for channel in history.T:
-        channel = np.pad(channel.astype(np.float64), (max(0, order - len(channel)), 0))
+        channel = np.pad(channel.astype(np.float64), (max(0, order + 1 - len(channel)), 0))
         acf = correlate(channel, channel, method='fft')[len(channel) - 1:len(channel) + order]
         column = acf[:order].copy()
         column[0] += 0.001
@@ -93,6 +93,18 @@ class Autoregressive:
 
     def predict(self, history, frames):
         return ar_predict(history[-4800:], frames)
+
+
+class BidirectionalAR(Autoregressive):
+    name = 'ar256_available_future'
+
+    def predict(self, history, frames):
+        forward = super().predict(history, frames)
+        if self.future is None or len(self.future) < 256:
+            return forward
+        backward = ar_predict(self.future[::-1], frames)[::-1]
+        weight = np.linspace(0, 1, frames, dtype=np.float32)[:, None]
+        return forward * (1 - weight) + backward * weight
 
 
 class PARCnet:
@@ -183,8 +195,12 @@ def replay(audio, arrivals, budget, predictor, execution_ms, margin_ms=1, runtim
         packet_arrivals = arrivals[block * 4:block * 4 + 4]
         candidate = None
         ready = np.inf
-        if np.any(packet_arrivals > launch):
+        if not isinstance(predictor, CurrentConcealment) and np.any(packet_arrivals > launch):
             predictor.state = baseline
+            future_end = (block + 1) * 4
+            while future_end < min(len(arrivals), (block + 1) * 4 + 8) and arrivals[future_end] <= launch:
+                future_end += 1
+            predictor.future = audio[begin + BLOCK:future_end * PACKET] if future_end > (block + 1) * 4 else None
             before = time.perf_counter_ns()
             context = output[max(0, begin - 4800):begin]
             candidate = (executor.submit(predictor.predict, context, BLOCK).result() if executor
@@ -215,7 +231,9 @@ def replay(audio, arrivals, budget, predictor, execution_ms, margin_ms=1, runtim
             output[first:first + PACKET] = selected
         if candidate is not None and not used:
             unused += 1
-    return dict(**missing_summary(missing), predictions=jobs, unusedPredictions=unused,
+    execution_model = ('instantaneous_packetwise_quality_reference' if isinstance(predictor, CurrentConcealment)
+                       else 'measured_single_worker_10ms')
+    return dict(**missing_summary(missing), executionModel=execution_model, predictions=jobs, unusedPredictions=unused,
                 predictionDeadlineMisses=misses, maximumWorkerQueueMilliseconds=maximum_queue,
                 executionMilliseconds=elapsed), output
 
@@ -223,21 +241,41 @@ def replay(audio, arrivals, budget, predictor, execution_ms, margin_ms=1, runtim
 def quality(reference, output, missing):
     mask = np.repeat(missing, PACKET)[:len(output)]
     if not np.any(mask):
-        return dict(gapSDRDecibels=None, gapErrorRMS=0.0)
+        return dict(gapSDRDecibels=None, gapErrorRMS=0.0, gapRecoveryLogMagnitudeError=None)
     clean = reference[:len(output)][mask].astype(np.float64)
     error = output[mask].astype(np.float64) - clean
+    spectral = []
+    for size in (240, 960, 1920):
+        centers = np.arange(size // 2, len(output) - size // 2, PACKET)
+        affected = np.convolve(missing.astype(np.int32), np.ones(2 + size // PACKET, np.int32), mode='same')
+        centers = centers[affected[centers // PACKET] > 0]
+        if not len(centers):
+            continue
+        window = np.hanning(size)[None, :, None]
+        error_sum, bins = 0.0, 0
+        for begin in range(0, len(centers), 128):
+            positions = centers[begin:begin + 128, None] + np.arange(size) - size // 2
+            a = np.abs(np.fft.rfft(reference[positions] * window, axis=1))
+            b = np.abs(np.fft.rfft(output[positions] * window, axis=1))
+            error_sum += float(np.sum(np.abs(np.log1p(a) - np.log1p(b))))
+            bins += a.size
+        spectral.append(error_sum / bins)
     return dict(gapSDRDecibels=float(10 * np.log10((np.sum(clean ** 2) + 1e-15) /
                                                  (np.sum(error ** 2) + 1e-15))),
-                gapErrorRMS=float(np.sqrt(np.mean(error ** 2))))
+                gapErrorRMS=float(np.sqrt(np.mean(error ** 2))),
+                gapRecoveryLogMagnitudeError=float(np.mean(spectral)) if spectral else None)
 
 
 def main():
+    implementation_hash = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--audio', type=Path)
     parser.add_argument('--start', type=float, default=30)
     parser.add_argument('--seconds', type=float, default=120)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--vendor', type=Path)
+    parser.add_argument('--quality-only', action='store_true',
+                        help='zero compute-cost quality ceiling; never a real-time eligibility result')
     args = parser.parse_args()
     if args.audio is None:
         from tkinter import Tk, filedialog
@@ -263,7 +301,7 @@ def main():
     audio = audio[:len(audio) // BLOCK * BLOCK]
     args.output.mkdir(parents=True, exist_ok=False)
     sf.write(args.output / 'reference.wav', audio, RATE, subtype='FLOAT')
-    models = [CurrentConcealment, Autoregressive]
+    models = [CurrentConcealment, Autoregressive, BidirectionalAR]
     executor = ThreadPoolExecutor(max_workers=1)
     load = {}
     if args.vendor:
@@ -273,15 +311,20 @@ def main():
         torch.set_num_interop_threads(1)
         model = PARCnet(args.vendor / 'model-32k.py', args.vendor / 'parcnet-32k.ckpt')
         load[model.name] = dict(loadMilliseconds=(time.perf_counter_ns() - before) / 1e6,
-                                checkpointSHA256=hashlib.sha256((args.vendor / 'parcnet-32k.ckpt').read_bytes()).hexdigest())
-        models.append(lambda: model)
+                                checkpointSHA256=hashlib.sha256((args.vendor / 'parcnet-32k.ckpt').read_bytes()).hexdigest(),
+                                modelSourceSHA256=hashlib.sha256((args.vendor / 'model-32k.py').read_bytes()).hexdigest(),
+                                torchVersion=torch.__version__)
+        models.append(lambda model=model: model)
     budgets = [60, 80, 100, 120, 160, 200, 300]
-    rows, curves, timing = [], [], {}
+    rows, curves, timing, excluded = [], [], {}, {}
     warm_history = audio[:4800]
     for factory in models:
         model = factory()
+        if model.name in timing:
+            raise ValueError(f'duplicate algorithm: {model.name}')
         model.state = CurrentConcealment()
         model.state.accept(warm_history)
+        model.future = audio[4800:5760]
         durations = []
         for _ in range(25):
             before = time.perf_counter_ns()
@@ -293,10 +336,17 @@ def main():
             before = time.perf_counter_ns()
             executor.submit(model.predict, warm_history, BLOCK).result()
             idle.append((time.perf_counter_ns() - before) / 1e6)
+        long_idle = []
+        for _ in range(3):
+            time.sleep(1)
+            before = time.perf_counter_ns()
+            executor.submit(model.predict, warm_history, BLOCK).result()
+            long_idle.append((time.perf_counter_ns() - before) / 1e6)
         timing[model.name] = dict(firstMilliseconds=durations[0], warmP50Milliseconds=float(np.median(durations[5:])),
                                  warmP99Milliseconds=float(np.percentile(durations[5:], 99)),
                                  warmMaximumMilliseconds=max(durations[5:]),
-                                 idle100msWakeMaximumMilliseconds=max(idle))
+                                 idle100msWakeMaximumMilliseconds=max(idle),
+                                 idle1000msWakeMaximumMilliseconds=max(long_idle))
     for scenario in ('healthy', 'burst', 'hol', 'stall200', 'drop300', 'loss'):
         for seed in (1, 7, 19):
             arrivals = arrival_trace(len(audio), scenario, seed)
@@ -305,11 +355,18 @@ def main():
                 for budget in (80, 120, 200):
                     model = factory()
                     lead = max(timing[model.name]['warmMaximumMilliseconds'],
-                               timing[model.name]['idle100msWakeMaximumMilliseconds'])
+                               timing[model.name]['idle100msWakeMaximumMilliseconds'],
+                               timing[model.name]['idle1000msWakeMaximumMilliseconds'])
+                    if isinstance(model, CurrentConcealment) or args.quality_only:
+                        lead = 0
                     if lead + 1 > 10:
+                        excluded[model.name] = 'measured Python worker cost exceeds this 10 ms reference window; iPad untested'
                         continue
                     result, output = replay(audio, arrivals, budget, model,
-                        execution_ms=lead, margin_ms=1, executor=executor)
+                        execution_ms=lead, margin_ms=0 if args.quality_only else 1,
+                        runtime_ms=[0] if args.quality_only else None, executor=executor)
+                    if args.quality_only and not isinstance(model, CurrentConcealment):
+                        result['executionModel'] = 'zero_compute_cost_quality_ceiling'
                     commits = (np.arange(len(arrivals)) // 4) * 10 + budget - RESERVE_MS
                     result.update(quality(audio, output, arrivals > commits))
                     elapsed = result.pop('executionMilliseconds')
@@ -319,11 +376,13 @@ def main():
                         outputPeak=float(np.max(np.abs(output))))
                     assert np.all(np.isfinite(output))
                     rows.append(result)
-                    if seed == 1 and scenario in ('stall200', 'loss'):
+                    if seed == 1 and budget == 120 and scenario in ('stall200', 'loss'):
                         sf.write(args.output / f'{scenario}-{budget}-{model.name}.wav', output, RATE, subtype='FLOAT')
             (args.output / 'results.json').write_text(json.dumps(dict(scope='fixed_10ms_reference_not_production_or_ipad',
                 platform=platform.platform(), audioSHA256=hashlib.sha256(audio.tobytes()).hexdigest(),
-                durationSeconds=len(audio) / RATE, load=load, timing=timing, coverage=curves, comparisons=rows), indent=2), encoding='utf-8')
+                implementationSHA256=implementation_hash,
+                durationSeconds=len(audio) / RATE, qualityOnly=args.quality_only, load=load, timing=timing,
+                excluded=excluded, coverage=curves, comparisons=rows), indent=2), encoding='utf-8')
             print(f'completed {scenario} seed={seed}', flush=True)
     executor.shutdown()
     os.environ.setdefault('MPLCONFIGDIR', str(args.output / 'matplotlib-cache'))
