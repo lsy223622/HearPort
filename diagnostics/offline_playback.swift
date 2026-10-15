@@ -284,6 +284,18 @@ final class OfflinePlaybackTests: XCTestCase {
                 }
             }
         }
+        for maximum in [60.0, 80, 100, 120, 160, 200, 300] {
+            for seed in [1, 7, 19] {
+                if maximum == 100 && seed == 1 { continue }
+                for scenario in ["healthy", "burst", "hol", "stall200", "drop300", "loss"] {
+                    for adaptive in [false, true] {
+                        results.append(try run(scenario: scenario, content: "mixed", adaptive: adaptive,
+                            seed: seed, callback: 256, uncertainty: 15,
+                            target: maximum / 2, maximum: maximum))
+                    }
+                }
+            }
+        }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         if let path = ProcessInfo.processInfo.environment["HEARPORT_PLAYBACK_RESULTS"] {

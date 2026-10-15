@@ -4,6 +4,20 @@ on:
   workflow_dispatch:
 
 jobs:
+  music-reference:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v5
+      - name: Verify local music renderer against production concealment
+        run: |
+          swiftc -O ios/HearPortReceiver/Sources/HearPortReceiver/StreamingTimeStretch.swift \
+            diagnostics/music_concealment_reference.swift -o "$RUNNER_TEMP/music-reference"
+          "$RUNNER_TEMP/music-reference" "$RUNNER_TEMP/music-reference.json"
+          python3 -m venv "$RUNNER_TEMP/music-python"
+          "$RUNNER_TEMP/music-python/bin/pip" install numpy scipy
+          HEARPORT_MUSIC_REFERENCE="$RUNNER_TEMP/music-reference.json" \
+            "$RUNNER_TEMP/music-python/bin/python" -m unittest tests.test_music_plc -v
+
   playback:
     runs-on: macos-14
     strategy:
