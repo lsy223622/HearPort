@@ -12,7 +12,7 @@ jobs:
         run: |
           python3 diagnostics/prepare_offline_playback.py ios/HearPortReceiver "$RUNNER_TEMP/playback"
           HEARPORT_PLAYBACK_RESULTS="$RUNNER_TEMP/playback.json" \
-            swift test --package-path "$RUNNER_TEMP/playback" -c release --filter OfflinePlaybackTests
+            swift test --package-path "$RUNNER_TEMP/playback" -c release --filter 'OfflinePlaybackTests|ReceiverCoreTests.testStreamingResampler'
       - uses: actions/upload-artifact@v4
         if: always()
         with:

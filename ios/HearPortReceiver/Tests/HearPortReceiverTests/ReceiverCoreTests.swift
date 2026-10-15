@@ -310,6 +310,14 @@ final class ReceiverCoreTests: XCTestCase {
         XCTAssertEqual(resampler.process(second, outputFrameCount: 256, ratio: 1), second)
     }
 
+    func testStreamingResamplerPreservesStereoAcrossFractionalBlockBoundary() {
+        var resampler = StreamingStereoResampler()
+        _ = resampler.process([0, 0, 1, -1], outputFrameCount: 2, ratio: 0.999)
+        let output = resampler.process([2, -2, 3, -3], outputFrameCount: 2, ratio: 0.999)
+        XCTAssertEqual(output[0], 1.998, accuracy: 0.000001)
+        XCTAssertEqual(output[1], -1.998, accuracy: 0.000001)
+    }
+
     func testSequenceComparisonHandlesWrap() {
         XCTAssertTrue(SequenceNumber.isBefore(UInt32.max, 0))
         XCTAssertTrue(SequenceNumber.isBefore(0, 1))
