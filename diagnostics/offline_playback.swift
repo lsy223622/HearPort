@@ -11,6 +11,7 @@ private struct PlaybackResult: Codable {
     let scheduledConceal: Bool
     let seed, callbackFrames, uncertaintyMilliseconds: Int
     let targetMilliseconds, maximumMilliseconds, outputClockPPM: Double
+    let pumpJitterMilliseconds, callbackPhaseMicroseconds: Int
     let concealedPreparedFrames, underflowAfterStartFrames, latePackets, expiredOutputFrames: Int
     let requestedCorrectionMean, realizedCorrection: Double
     let firstOutputMilliseconds, maximumPresentationMilliseconds: Double
@@ -51,7 +52,8 @@ final class OfflinePlaybackTests: XCTestCase {
     private func run(scenario: String, content: String, adaptive: Bool, seed: Int,
                      callback: Int, uncertainty: Int, batchMode: Int, observeLate: Bool = false,
                      target: Double = 50, maximum: Double = 100, outputClockPPM: Double = 0,
-                     seconds: Int = 12, scheduledConceal: Bool = false) throws -> PlaybackResult {
+                     seconds: Int = 12, scheduledConceal: Bool = false,
+                     pumpJitterMilliseconds: Int = 0, callbackPhaseMicroseconds: Int = 0) throws -> PlaybackResult {
         let base: UInt64 = 1_000_000_000
         let count = seconds * 400
         var packets: [Packet] = []
@@ -77,7 +79,7 @@ final class OfflinePlaybackTests: XCTestCase {
         offlineLastRendered = 0; offlineConcealedFrames = 0
         offlineBatchMode = batchMode
         offlineObserveLate = observeLate; offlineMaximumShift = 0
-        offlineScheduledConceal = scheduledConceal; offlineLastRenderAt = 0
+        offlineScheduledConceal = scheduledConceal
         hearport_offline_reset_age()
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -90,7 +92,9 @@ final class OfflinePlaybackTests: XCTestCase {
         XCTAssertTrue(receiver.acknowledgeStartStream(7))
         receiver.offlineConfigure(try PlayoutBudget(targetMilliseconds: target,
             maximumMilliseconds: maximum, outputReserveMilliseconds: 11), adaptive: adaptive)
-        var index = 0, callbacks = 0, pump = base, render = base, clock = base
+        var index = 0, callbacks = 0, pumpCount = 0, pump = base, clock = base
+        let renderBase = base + UInt64(callbackPhaseMicroseconds) * 1_000
+        var render = renderBase
         var first: UInt64?, underflow = 0, corrections: [Double] = []
         var renderedFrames: UInt64 = 0
         var stereoError: Float = 0, peak: Float = 0
@@ -119,7 +123,8 @@ final class OfflinePlaybackTests: XCTestCase {
                 receiver.offlinePump()
                 corrections.append(receiver.dynamicCorrection)
                 maximumTarget = max(maximumTarget, receiver.offlineTargetMilliseconds)
-                pump += 5_000_000
+                pumpCount += 1
+                pump = base + UInt64(pumpCount) * 5_000_000 + UInt64(pumpCount % 2 * pumpJitterMilliseconds) * 1_000_000
             }
             if next == render {
                 let ratio = drift.update(fillError: Double(receiver.renderFillFrames - receiver.jitterTargetFrames),
@@ -137,7 +142,7 @@ final class OfflinePlaybackTests: XCTestCase {
                 if first == nil && offlineLastRendered > 0 { first = next }
                 if first != nil { underflow += required - offlineLastRendered }
                 callbacks += 1
-                render = base + UInt64(Double(callbacks * callback) * 1e9 / (48_000 * (1 + outputClockPPM / 1e6)))
+                render = renderBase + UInt64(Double(callbacks * callback) * 1e9 / (48_000 * (1 + outputClockPPM / 1e6)))
             }
         }
         let counts = receiver.offlineStretchCounts
@@ -145,6 +150,7 @@ final class OfflinePlaybackTests: XCTestCase {
             batchMode: batchMode, observeLate: observeLate, scheduledConceal: scheduledConceal,
             seed: seed, callbackFrames: callback, uncertaintyMilliseconds: uncertainty,
             targetMilliseconds: target, maximumMilliseconds: maximum, outputClockPPM: outputClockPPM,
+            pumpJitterMilliseconds: pumpJitterMilliseconds, callbackPhaseMicroseconds: callbackPhaseMicroseconds,
             concealedPreparedFrames: offlineConcealedFrames, underflowAfterStartFrames: underflow,
             latePackets: Int(receiver.jitterStats?.latePackets ?? 0), expiredOutputFrames: Int(receiver.offlineExpired),
             requestedCorrectionMean: corrections.reduce(0, +) / Double(corrections.count),
@@ -198,6 +204,17 @@ final class OfflinePlaybackTests: XCTestCase {
                 results.append(try run(scenario: "healthy", content: "mixed", adaptive: true,
                     seed: 7, callback: 256, uncertainty: 15, batchMode: candidate ? 2 : 0,
                     observeLate: candidate, outputClockPPM: ppm, seconds: 30, scheduledConceal: candidate))
+            }
+        }
+        for callback in [256, 480] {
+            for scenario in ["healthy", "hol"] {
+                for candidate in [false, true] {
+                    results.append(try run(scenario: scenario, content: "mixed", adaptive: true,
+                        seed: 7, callback: callback, uncertainty: 15, batchMode: candidate ? 2 : 0,
+                        observeLate: candidate, target: callback == 480 ? 30 : 50,
+                        maximum: callback == 480 ? 60 : 100, scheduledConceal: candidate,
+                        pumpJitterMilliseconds: 1, callbackPhaseMicroseconds: 2_100))
+                }
             }
         }
         let encoder = JSONEncoder()

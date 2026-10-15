@@ -2,6 +2,40 @@ import XCTest
 @testable import HearPortReceiver
 
 final class PlayoutControllerTests: XCTestCase {
+    func testAdaptiveBudgetAccommodatesCallbackPreparationWithinMaximum() throws {
+        let budget = try PlayoutBudget(targetMilliseconds: 30, maximumMilliseconds: 60,
+                                       outputReserveMilliseconds: 11)
+        var controller = PlayoutController(budget: budget)
+        controller.observeArrival(sourceFrame: 0, capturedAt: 1_000_000_000, receivedAt: 1_005_000_000)
+        let decision = controller.decision(now: 1_020_000_000, nextSourceFrame: 0,
+            playableFrames: 720, stagedSourceFrames: 0, uncertaintyNanoseconds: 15_000_000,
+            minimumBufferMilliseconds: 16)
+        XCTAssertGreaterThanOrEqual(decision.bufferTargetMilliseconds, 16)
+        XCTAssertEqual(decision.targetMilliseconds, 32)
+        XCTAssertLessThanOrEqual(controller.decision(now: 1_025_000_000, nextSourceFrame: 0,
+            playableFrames: 720, stagedSourceFrames: 0, uncertaintyNanoseconds: 40_000_000,
+            minimumBufferMilliseconds: 16).targetMilliseconds, 15)
+    }
+
+    func testRepeatedConsumedOriginalDoesNotBiasDelayEstimate() throws {
+        let budget = try PlayoutBudget(targetMilliseconds: 50, maximumMilliseconds: 100,
+                                       outputReserveMilliseconds: 11)
+        var controller = PlayoutController(budget: budget)
+        for frame in 0..<16 {
+            controller.observeArrival(sourceFrame: UInt64(frame) * 120,
+                capturedAt: 1_000_000_000 + UInt64(frame) * 2_500_000,
+                receivedAt: 1_005_000_000 + UInt64(frame) * 2_500_000)
+        }
+        _ = controller.decision(now: 1_100_000_000, nextSourceFrame: 1920,
+            playableFrames: 1920, stagedSourceFrames: 0)
+        for _ in 0..<300 {
+            controller.observeArrival(sourceFrame: 0, capturedAt: 1_000_000_000,
+                receivedAt: 1_400_000_000)
+        }
+        XCTAssertEqual(controller.decision(now: 1_500_000_000, nextSourceFrame: 1920,
+            playableFrames: 1920, stagedSourceFrames: 0).targetMilliseconds, 50)
+    }
+
     func testClockMappingPreservesOffsetAndUncertainty() {
         var clock = ClockMapping()
         XCTAssertNil(clock.map(remoteNanoseconds: 1_600_000_000, at: 1_010_000_000))
