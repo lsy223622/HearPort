@@ -333,7 +333,7 @@ public final class HearPortReceiver {
     func mappedCapture(_ record: TimedAudioRecord, at now: UInt64) -> (UInt64, UInt64)? {
         lock.lock(); defer { lock.unlock() }
         guard let timestamp = clockMapping.map(remoteNanoseconds: record.capturedAt, at: now) else { return nil }
-        return (timestamp, clockMapping.uncertainty(at: now))
+        return (timestamp, clockMapping.uncertainty(at: now, remoteNanoseconds: record.capturedAt))
     }
 
     var clockUncertainty: UInt64 {
@@ -446,7 +446,8 @@ public final class HearPortReceiver {
             if let insertResult = jitter?.insert(packet, stagedFrames: stagedBeforeInsert) {
                 jitterResult = insertResult
                 if insertResult == .inserted, let timedRecord, let captured {
-                    timedPackets[packet.sequence] = (timedRecord, captured, clockMapping.uncertainty(at: receivedAt))
+                    timedPackets[packet.sequence] = (timedRecord, captured,
+                        clockMapping.uncertainty(at: receivedAt, remoteNanoseconds: timedRecord.capturedAt))
                     if sourceAnchor == nil { sourceAnchor = (packet.sequence, timedRecord.sourceFrame) }
                     playoutController?.observeArrival(sourceFrame: timedRecord.sourceFrame,
                         capturedAt: captured, receivedAt: receivedAt, original: timedRecord.kind == .audio)
