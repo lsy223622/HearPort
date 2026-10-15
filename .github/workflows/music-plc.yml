@@ -1,0 +1,30 @@
+name: Offline music concealment references
+
+on:
+  workflow_dispatch:
+
+jobs:
+  music-reference:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v5
+      - name: Compile synthetic production and native AR references
+        run: |
+          swiftc -O ios/HearPortReceiver/Sources/HearPortReceiver/StreamingTimeStretch.swift \
+            diagnostics/music_concealment_reference.swift -o "$RUNNER_TEMP/music-reference"
+          "$RUNNER_TEMP/music-reference" "$RUNNER_TEMP/music-reference.json"
+          swiftc -O diagnostics/music_ar_benchmark.swift -o "$RUNNER_TEMP/music-ar"
+          "$RUNNER_TEMP/music-ar" "$RUNNER_TEMP/music-ar.json"
+      - name: Verify numerical agreement and prediction deadlines
+        run: |
+          python3 -m venv "$RUNNER_TEMP/music-python"
+          "$RUNNER_TEMP/music-python/bin/pip" install numpy scipy
+          HEARPORT_MUSIC_REFERENCE="$RUNNER_TEMP/music-reference.json" \
+          HEARPORT_AR_REFERENCE="$RUNNER_TEMP/music-ar.json" \
+            "$RUNNER_TEMP/music-python/bin/python" -m unittest tests.test_music_plc -v
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HearPort-native-music-references
+          path: |
+            ${{ runner.temp }}/music-reference.json
+            ${{ runner.temp }}/music-ar.json

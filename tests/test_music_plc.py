@@ -41,6 +41,14 @@ class MusicPLCTests(unittest.TestCase):
         self.assertLess(float(np.max(np.abs(output[:, 0] - source[2000:2120]))), 0.1)
         np.testing.assert_allclose(output[:, 0], -output[:, 1], atol=1e-6)
 
+    @unittest.skipUnless(os.environ.get('HEARPORT_AR_REFERENCE'), 'native Swift AR reference generated on macOS')
+    def test_native_ar_matches_research_predictor(self):
+        records = json.loads(Path(os.environ['HEARPORT_AR_REFERENCE']).read_text())
+        for record in records['fixtures']:
+            history = np.asarray(record['input'], np.float32).reshape(-1, 2)
+            expected = ar_predict(history, record['frames'])
+            np.testing.assert_allclose(expected.ravel(), record['output'], rtol=0, atol=5e-5)
+
     def test_ar_handles_loss_before_any_committed_history(self):
         from diagnostics.music_plc import Autoregressive
         arrivals = np.arange(32) * 2.5 + 1
@@ -108,20 +116,34 @@ class MusicPLCTests(unittest.TestCase):
                 self.contexts.append(None if self.future is None else self.future.copy())
                 return np.zeros((frames, 2), np.float32)
         arrivals = np.full(32, np.inf)
+        arrivals[12:16] = 114
+        model = FutureProbe()
+        replay(self.audio(), arrivals, 100, model, execution_ms=4, margin_ms=2)
+        self.assertIsNone(model.contexts[11])
         arrivals[12:16] = 108
         model = FutureProbe()
         replay(self.audio(), arrivals, 100, model, execution_ms=4, margin_ms=2)
-        self.assertIsNone(model.contexts[2])
-        arrivals[12:16] = 102
-        model = FutureProbe()
-        replay(self.audio(), arrivals, 100, model, execution_ms=4, margin_ms=2)
-        self.assertEqual(len(model.contexts[2]), 480)
+        self.assertEqual(len(model.contexts[11]), 480)
 
-    def test_compute_queue_continues_past_discarded_jobs(self):
+    def test_inflight_job_retains_cost_while_obsolete_queued_work_is_rejected(self):
         result, _ = replay(self.audio(), np.full(32, np.inf), 100, Predictor(),
                            execution_ms=4, margin_ms=2, runtime_ms=[30])
-        self.assertGreater(result['maximumWorkerQueueMilliseconds'], 0)
+        self.assertGreater(result['deadlineQueueRejections'], 1)
+        self.assertLessEqual(result['maximumWorkerQueueMilliseconds'], 2)
         self.assertGreater(result['predictionDeadlineMisses'], 1)
+
+    def test_native_prediction_chunk_is_reused_until_original_audio_returns(self):
+        class ChunkPredictor(Predictor):
+            predictionFrames = 480
+        arrivals = np.full(32, np.inf)
+        result, first = replay(self.audio(), arrivals, 100, ChunkPredictor(), execution_ms=1,
+                               margin_ms=1, runtime_ms=[0])
+        self.assertEqual(result['predictions'], 8)
+        arrivals[1] = 91
+        result, second = replay(self.audio(), arrivals, 100, ChunkPredictor(), execution_ms=1,
+                                margin_ms=1, runtime_ms=[0])
+        self.assertEqual(result['predictions'], 9)
+        self.assertGreater(float(second[240, 0]), float(first[240, 0]))
 
     def test_budget_sweep_uses_identical_arrivals_and_cannot_fix_permanent_loss(self):
         arrivals = arrival_trace(48000 * 12, 'loss', 7)
