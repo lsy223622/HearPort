@@ -3,6 +3,17 @@ import XCTest
 @testable import HearPortReceiver
 
 final class LockFreeReceiverTests: XCTestCase {
+    func testTimedAudioQueuedBeforeClockUpdateIsAccepted() throws {
+        let receiver = readyReceiver(target: 4)
+        let now = DispatchTime.now().uptimeNanoseconds
+        XCTAssertTrue(receiver.observeClock(localSent: now, remoteReceived: now + 100_000_000,
+            remoteSent: now + 100_000_000, localReceived: now + 200_000_000))
+        let record = try TimedAudioRecord(streamID: 7, generation: 1, sequence: 0,
+            frameCount: 120, kind: .audio, capturedAt: now, sourceFrame: 0,
+            payload: Data(repeating: 0, count: 960))
+        XCTAssertEqual(receiver.receiveTimedRecord(record), .accepted)
+    }
+
     func testStagedAudioExpiresWhenClockUncertaintyGrows() {
         let ring = RenderRingBuffer(capacityFrames: 240)
         let now = DispatchTime.now().uptimeNanoseconds

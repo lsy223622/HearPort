@@ -102,6 +102,8 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
     private let lock = NSLock()
     private let recording = AtomicUInt64()
     private let dropped = AtomicUInt64()
+    private let clockUnavailablePackets = AtomicUInt64()
+    private var clockExchanges: [String] = []
     private var session: DebugSessionMetadata?
     private var records: [DebugPacketTraceRecord] = []
     private var jitterDecisions: [DebugJitterDecisionRecord] = []
@@ -143,6 +145,8 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
         probePackets.removeAll(keepingCapacity: true)
         probeHeartbeats.removeAll(keepingCapacity: true)
         playback.removeAll(keepingCapacity: true)
+        clockExchanges.removeAll(keepingCapacity: true)
+        clockUnavailablePackets.store(0)
         consumer = nil; consumerRound = -1; consumerGeneration = 0
         lastPlaybackAt = 0; accumulatedPlayed = 0; accumulatedConcealed = 0
         accumulatedSkipped = 0; accumulatedWaiting = 0; maximumAge = 0; probeStartedAt = nil
@@ -177,6 +181,21 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
                 "trace_capacity": "\(capacity)"
             ]
         )
+    }
+
+    func recordClockExchange(localSent: UInt64, remoteReceived: UInt64, remoteSent: UInt64,
+                             localReceived: UInt64, accepted: Bool,
+                             mappingAge: UInt64?, uncertainty: UInt64) {
+        guard recording.load() != 0 else { return }
+        lock.lock()
+        defer { lock.unlock() }
+        guard recording.load() != 0 else { return }
+        guard clockExchanges.count < capacity else { dropped.increment(); return }
+        clockExchanges.append("\(localSent)\t\(remoteReceived)\t\(remoteSent)\t\(localReceived)\t\(accepted ? 1 : 0)\t\(mappingAge.map(String.init) ?? "none")\t\(uncertainty)")
+    }
+
+    func recordClockUnavailablePacket() {
+        if recording.load() != 0 { clockUnavailablePackets.increment() }
     }
 
     public func recordProbePacket(_ data: Data,
@@ -377,6 +396,8 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
         let dropCount: UInt64
         let capturedPlayback: [String]
         let capturedBudget: PlayoutBudget
+        let capturedClockExchanges: [String]
+        let clockUnavailableCount: UInt64
         lock.lock()
         guard recording.load() != 0, let current = session else {
             lock.unlock()
@@ -391,6 +412,8 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
         dropCount = dropped.load()
         capturedPlayback = playback
         capturedBudget = probeBudget
+        capturedClockExchanges = clockExchanges
+        clockUnavailableCount = clockUnavailablePackets.load()
         lock.unlock()
 
         do {
@@ -404,6 +427,8 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
                 probePackets: capturedProbePackets,
                 probeHeartbeats: capturedProbeHeartbeats,
                 playback: capturedPlayback,
+                clockExchanges: capturedClockExchanges,
+                clockUnavailableCount: clockUnavailableCount,
                 budget: capturedBudget,
                 dropCount: dropCount,
                 reason: reason,
@@ -450,6 +475,8 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
                                    probePackets: [DebugProbePacketRecord],
                                    probeHeartbeats: [(at: UInt64, scheduledAt: UInt64)],
                                    playback: [String],
+                                   clockExchanges: [String],
+                                   clockUnavailableCount: UInt64,
                                    budget: PlayoutBudget,
                                    dropCount: UInt64,
                                    reason: String,
@@ -479,9 +506,13 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
             "end_reason=\(safeField(reason))",
             "trace_records=\(records.count)",
             "jitter_decision_records=\(jitterDecisions.count)",
-            "trace_dropped=\(dropCount)"
+            "trace_dropped=\(dropCount)",
+            "clock_unmapped_packets=\(clockUnavailableCount)"
         ]
         lines.reserveCapacity(records.count + jitterDecisions.count + probePackets.count + 30)
+        lines.append("\nclock_exchange_v1")
+        lines.append("local_sent_ns\tremote_received_ns\tremote_sent_ns\tlocal_received_ns\taccepted\tmapping_age_ns\tuncertainty_ns")
+        lines.append(contentsOf: clockExchanges)
         if metadata.networkProbe {
             lines.insert("probe_mode=network", at: 5)
             if metadata.coordinatedPlan != nil {

@@ -44,6 +44,9 @@ jobs:
             sleep 0.1
           done
           grep -q quic_test_server_ready "$RUNNER_TEMP/quic-server.log"
+          swiftc -O ios/HearPortReceiver/Sources/HearPortReceiver/ClockMapping.swift \
+            diagnostics/offline_clock.swift -o "$RUNNER_TEMP/offline-clock"
+          "$RUNNER_TEMP/offline-clock"
           cd ios/HearPortReceiver
           HEARPORT_QUIC_INTEGRATION=1 swift test
 
