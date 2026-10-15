@@ -27,10 +27,18 @@ private enum Experiment: String, CaseIterable {
     case keepTarget = "keep_target", keepHistory = "keep_history", keepRate = "keep_rate"
     case keepAnchor = "keep_anchor", keepTargetHistory = "keep_target_history"
     case deadlineReplay = "deadline_replay", boundedReplay = "bounded_replay"
+    case projectedReplay = "projected_replay", projectedOnly = "projected_only"
+    case capacityLow = "capacity_low", capacityHigh = "capacity_high"
     var keepsController: Bool { [.keepController, .keepBoth, .controllerNoReplay, .keepAll,
-                                .deadlineReplay, .boundedReplay].contains(self) }
+                                .deadlineReplay, .boundedReplay, .projectedReplay,
+                                .projectedOnly, .capacityLow, .capacityHigh].contains(self) }
     var keepsBuffer: Bool { [.keepBuffer, .keepBoth, .keepAll].contains(self) }
     var replays: Bool { ![.noReplay, .controllerNoReplay, .keepAll].contains(self) }
+    var replayMode: Int32 {
+        self == .projectedOnly ? 4 : [.projectedReplay, .capacityLow, .capacityHigh].contains(self) ? 3
+            : self == .boundedReplay ? 2 : self == .deadlineReplay ? 1 : 0
+    }
+    var capacityEstimateScale: Double { self == .capacityLow ? 0.75 : self == .capacityHigh ? 1.25 : 1 }
 }
 
 private struct RandomSource {
@@ -182,6 +190,7 @@ private struct Result: Codable, Equatable {
     let feedbackIntervalMilliseconds, restartDelayMilliseconds: Int
     let recoveryLeadMilliseconds: Int
     let sendMegabitsPerSecond: Double
+    let estimatedReplaySendMegabitsPerSecond: Double
     let lostPackets, playedFrames, concealedFrames, unfinishedFrames: Int
     let skippedFrames: UInt64
     let unavailableSourcePercent: Double
@@ -225,8 +234,8 @@ private func simulate(trace: NetworkTrace, scenario: Scenario, seed: UInt64,
     let deliveries = trace.deliveries(reliable: transport.reliable, sendMegabitsPerSecond: sendMegabitsPerSecond)
     let recovery = transport.recovery ? offline_recovery_create(
         Int32(budget.maximumMilliseconds - budget.outputReserveMilliseconds),
-        experiment == .boundedReplay ? 2 : experiment == .deadlineReplay ? 1 : 0,
-        Int32(restartDelayMilliseconds), sendMegabitsPerSecond) : nil
+        experiment.replayMode, Int32(restartDelayMilliseconds),
+        sendMegabitsPerSecond * experiment.capacityEstimateScale) : nil
     defer { if let recovery { offline_recovery_destroy(recovery) } }
     var pending: [Delivery] = [], feedback: [Feedback] = []
     var generation: UInt32 = 1
@@ -379,6 +388,7 @@ private func simulate(trace: NetworkTrace, scenario: Scenario, seed: UInt64,
         feedbackIntervalMilliseconds: feedbackIntervalMilliseconds, restartDelayMilliseconds: restartDelayMilliseconds,
         recoveryLeadMilliseconds: recoveryLeadMilliseconds,
         sendMegabitsPerSecond: sendMegabitsPerSecond,
+        estimatedReplaySendMegabitsPerSecond: sendMegabitsPerSecond * experiment.capacityEstimateScale,
         lostPackets: trace.packets.filter { $0.lost }.count, playedFrames: played,
         concealedFrames: concealed, unfinishedFrames: unfinished, skippedFrames: skipped,
         unavailableSourcePercent: Double(concealed + Int(skipped) + unfinished) / Double(totalFrames) * 100,
@@ -415,7 +425,9 @@ private struct OfflineTransport {
         let capacity = mode == "capacity"
         let replay = mode == "replay"
         let incident = mode == "incident"
-        let experiments: [Experiment] = replay || incident ? [.baseline, .keepController, .controllerNoReplay, .deadlineReplay, .boundedReplay]
+        let projection = mode == "projection"
+        let experiments: [Experiment] = projection ? [.baseline, .boundedReplay, .projectedOnly, .projectedReplay, .capacityLow, .capacityHigh]
+            : replay || incident ? [.baseline, .keepController, .controllerNoReplay, .deadlineReplay, .boundedReplay]
             : capacity ? [.baseline, .keepController]
             : timing ? [.keepController]
             : sensitivity ? [.baseline, .keepController, .keepBoth, .noReplay, .fixedConsumer]
@@ -450,19 +462,19 @@ private struct OfflineTransport {
         try require(noPackets.playedFrames == 0 && noPackets.unavailableSourcePercent == 100 &&
                     noPackets.maxPresentationMilliseconds == nil, "no-input control reported playback")
         var results: [Result] = []
-        for scenario in (incident ? [.isolatedLoss] : ablation && !timing && !capacity && !replay ? [.isolatedLoss, .weakWifi] : Scenario.allCases) {
-            for seed in (incident ? UInt64(1)...1 : capacity || replay ? UInt64(25)...32 : timing ? UInt64(17)...24 : sensitivity ? UInt64(9)...16 : UInt64(1)...8) {
+        for scenario in (incident ? [.isolatedLoss] : ablation && !timing && !capacity && !replay && !projection ? [.isolatedLoss, .weakWifi] : Scenario.allCases) {
+            for seed in (incident ? UInt64(1)...1 : projection ? UInt64(33)...40 : capacity || replay ? UInt64(25)...32 : timing ? UInt64(17)...24 : sensitivity ? UInt64(9)...16 : UInt64(1)...8) {
                 let trace = NetworkTrace.make(scenario, seed: seed, singleLoss: incident)
                 for (target, maximum) in (incident ? [(50.0, 100.0)] : [(50.0, 100.0), (80.0, 160.0), (120.0, 240.0)]) {
                     let budget = try PlayoutBudget(targetMilliseconds: target, maximumMilliseconds: maximum,
                                                    outputReserveMilliseconds: 11)
-                    for transport in (capacity ? [.datagram, .hol, .corrected] : incident || replay || timing || sensitivity || components ? [.corrected] : ablation ? [.legacy, .corrected] : Transport.allCases) {
+                    for transport in (capacity ? [.datagram, .hol, .corrected] : projection || incident || replay || timing || sensitivity || components ? [.corrected] : ablation ? [.legacy, .corrected] : Transport.allCases) {
                         for experiment in experiments {
                           for policy in (ablation ? [experiment == .fixedConsumer ? .fixed : .adaptive] : Policy.allCases) {
-                            for interval in (timing || capacity || replay || incident ? [25] : sensitivity ? [25, 50] : [50]) {
-                              for delay in (capacity || replay || incident ? [10] : sensitivity || timing ? [0, 10, 25] : [0]) {
+                            for interval in (timing || capacity || replay || incident || projection ? [25] : sensitivity ? [25, 50] : [50]) {
+                              for delay in (capacity || replay || incident || projection ? [10] : sensitivity || timing ? [0, 10, 25] : [0]) {
                                for lead in (timing ? [0, 15, 30, 45] : [0]) {
-                                for rate in (capacity || replay || incident ? [0.0, 3.5, 6.0] : [0.0]) {
+                                for rate in (capacity || replay || incident || projection ? [0.0, 3.5, 6.0] : [0.0]) {
                                 results.append(try simulate(trace: trace, scenario: scenario, seed: seed,
                                     transport: transport, policy: policy, budget: budget, experiment: experiment,
                                     feedbackIntervalMilliseconds: interval, restartDelayMilliseconds: delay,

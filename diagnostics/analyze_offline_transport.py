@@ -56,7 +56,7 @@ def interval(values):
     return bootstraps[49], bootstraps[1949]
 
 
-def experiment_pairs(rows):
+def experiment_pairs(rows, baseline_name='baseline'):
     axes = ('scenario', 'transport', 'targetMilliseconds', 'maximumMilliseconds',
             'feedbackIntervalMilliseconds', 'restartDelayMilliseconds',
             'recoveryLeadMilliseconds', 'sendMegabitsPerSecond', 'seed')
@@ -69,13 +69,13 @@ def experiment_pairs(rows):
         grouped[key][experiment] = row
     pairs = []
     for key, variants in grouped.items():
-        if 'baseline' not in variants:
+        if baseline_name not in variants:
             raise ValueError('experiment has no matching baseline')
-        baseline = variants['baseline']
+        baseline = variants[baseline_name]
         for experiment, row in variants.items():
             if row['inputFingerprint'] != baseline['inputFingerprint']:
                 raise ValueError('experiment changed network input')
-            if experiment == 'baseline':
+            if experiment == baseline_name:
                 continue
             pair = dict(zip(axes, key))
             pair['experiment'] = experiment
@@ -88,8 +88,8 @@ def experiment_pairs(rows):
     return pairs
 
 
-def write_experiment_pairs(source):
-    pairs = experiment_pairs(json.loads(source.read_text(encoding='utf-8')))
+def write_experiment_pairs(source, baseline_name='baseline'):
+    pairs = experiment_pairs(json.loads(source.read_text(encoding='utf-8')), baseline_name)
     with source.with_suffix('.paired.csv').open('w', newline='', encoding='utf-8') as output:
         writer = csv.DictWriter(output, fieldnames=list(pairs[0]))
         writer.writeheader()
@@ -218,3 +218,6 @@ if __name__ == '__main__':
         source = directory / f'{name}.json'
         if source.exists():
             write_experiment_pairs(source)
+    source = directory / 'projection.json'
+    if source.exists():
+        write_experiment_pairs(source, baseline_name='bounded_replay')
