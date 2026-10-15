@@ -41,6 +41,7 @@ void offline_recovery_produced(void* context, uint32_t sequence, uint64_t captur
   record.captured_at_ns = captured;
   record.source_frame = uint64_t(sequence) * 120;
   record.kind = hearport::wire::AudioRecordKind::probe;
+  record.payload.resize(960);
   state.lag.Produced(sequence, record.source_frame + 120, 120);
   state.lag.Retain(record, now);
 }
@@ -64,10 +65,16 @@ int offline_recovery_feedback(void* context, uint32_t generation, uint32_t recei
   state.previous_played = played_value;
   state.previous_generated = generated;
   offlineRecoveryLeadMilliseconds = lead_ms;
-  if (!state.lag.ConfirmReceived(7, generation, received_value, played_value) ||
+  if (!state.lag.ConfirmReceived(7, generation, received_value, played_value,
+          state.replay_mode == 5 ? generated : 0) ||
       !state.lag.Observe(7, generation, received_value, time_at(now),
           corrected ? age : std::chrono::milliseconds(0), played_value)) return -1;
-  auto replays = replay ? state.lag.ReplayFresh(state.generation + 1, now, received_value, played_value)
+  Lag::ReplayBudget budget;
+  budget.bytes_per_second = state.capacity * 1'000'000 / 8;
+  budget.delivery_delay_ns = (state.startup + 12) * 1'000'000ull;
+  auto replays = replay ? (state.replay_mode == 5 ?
+      state.lag.ReplayForDelivery(state.generation + 1, now, received_value, played_value, budget) :
+      state.lag.ReplayFresh(state.generation + 1, now, received_value, played_value))
                        : std::vector<hearport::wire::TimedAudioRecord>{};
   if ((state.replay_mode == 2 || state.replay_mode == 3) && state.capacity > 0) {
     const double spare = std::max(0.0, state.capacity * 1'000'000 - 992.0 * 8 * 400);
@@ -75,7 +82,7 @@ int offline_recovery_feedback(void* context, uint32_t generation, uint32_t recei
     const size_t limit = static_cast<size_t>(spare * horizon / (992 * 8));
     if (replays.size() > limit) replays.erase(replays.begin(), replays.end() - limit);
   }
-  if (state.replay_mode > 0) {
+  if (state.replay_mode > 0 && state.replay_mode != 5) {
     const auto service = state.capacity > 0 ? static_cast<uint64_t>(992 * 8 * 1000 / state.capacity) : 0;
     uint64_t arrival = now + (state.startup + 12) * 1'000'000ull + service;
     std::vector<hearport::wire::TimedAudioRecord> eligible;

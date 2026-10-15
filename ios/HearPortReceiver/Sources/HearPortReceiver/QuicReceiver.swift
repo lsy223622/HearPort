@@ -181,6 +181,10 @@ public final class HearPortReceiver {
         if accepted {
             reliableSourceFloor = 0
             playoutAdaptive = true; playoutMaximumCorrection = 0.05
+            if let budget = playoutBudget {
+                playoutController = PlayoutController(budget: budget,
+                    maximumCorrection: playoutMaximumCorrection, adaptive: playoutAdaptive)
+            }
             timedPackets.removeAll(keepingCapacity: true)
             sourceAnchor = nil
         timeStretch.reset()
@@ -232,7 +236,6 @@ public final class HearPortReceiver {
         concealment.reset()
         concealingAtomic.store(0)
         dynamicCorrectionAtomic.store(Double(0).bitPattern)
-        if let budget = playoutBudget { playoutController = PlayoutController(budget: budget, maximumCorrection: playoutMaximumCorrection, adaptive: playoutAdaptive) }
         if !preserveOutput { renderActiveAtomic.store(0) }
         jitterFillFramesAtomic.store(0)
         if !preserveOutput {
@@ -733,7 +736,6 @@ public final class HearPortReceiver {
         concealment.reset()
         concealingAtomic.store(0)
         dynamicCorrectionAtomic.store(Double(0).bitPattern)
-            if let budget = playoutBudget { playoutController = PlayoutController(budget: budget, maximumCorrection: playoutMaximumCorrection, adaptive: playoutAdaptive) }
             session.enterSilentRebuffer()
             lifecycle.enterSilentRebuffer()
             renderActiveAtomic.store(0)

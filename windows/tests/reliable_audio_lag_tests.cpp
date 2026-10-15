@@ -133,4 +133,36 @@ int main() {
                      std::chrono::milliseconds(10), 240));
 
 
+  lag.Begin(7, 13, start, std::chrono::milliseconds(100));
+  for (std::uint32_t sequence = 0; sequence < 20; ++sequence) {
+    audio.generation = 13; audio.sequence = sequence;
+    audio.source_frame = sequence * 120; audio.frame_count = 120;
+    audio.captured_at_ns = 1'000'000'000 + sequence * 2'500'000ull;
+    lag.Retain(audio, audio.captured_at_ns);
+  }
+  ReliableAudioLag::ReplayBudget budget;
+  budget.delivery_delay_ns = 10'000'000;
+  assert(lag.ReplayForDelivery(14, 1'050'000'000, {}, {}, budget).empty());
+  budget.bytes_per_second = 300'000;
+  assert(lag.ReplayForDelivery(14, 1'050'000'000, {}, {}, budget).empty());
+  budget.bytes_per_second = 450'000;
+  auto bounded = lag.ReplayForDelivery(14, 1'050'000'000, {}, {}, budget);
+  assert(bounded.size() == 4 && bounded.front().sequence == 16);
+  budget.reserved_bytes = 4'000;
+  assert(lag.ReplayForDelivery(14, 1'050'000'000, {}, {}, budget).empty());
+  budget.reserved_bytes = 0;
+  budget.delivery_delay_ns = 99'000'000;
+  assert(lag.ReplayForDelivery(14, 1'050'000'000, {}, {}, budget).empty());
+  budget.delivery_delay_ns = 10'000'000;
+  budget.bytes_per_second = 1'000'000;
+  assert(lag.ConfirmReceived(7, 13, {}, 0, 1'000'000'000));
+  assert(lag.ConfirmReceived(7, 13, {}, 1'200, 1'025'000'000));
+  auto projected = lag.ReplayForDelivery(14, 1'050'000'000, {}, 1'200, budget);
+  assert(projected.empty());
+  // A stopped consumer must not keep projecting the preceding running rate.
+  assert(lag.ConfirmReceived(7, 13, {}, 1'200, 1'050'000'000));
+  assert(!lag.ReplayForDelivery(14, 1'050'000'000, {}, 1'200, budget).empty());
+  // A source jump is not a measurement of the playback clock.
+  assert(lag.ConfirmReceived(7, 13, {}, 2'000, 1'051'000'000));
+  assert(!lag.ReplayForDelivery(14, 1'051'000'000, {}, 2'000, budget).empty());
 }

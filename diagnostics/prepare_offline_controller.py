@@ -50,10 +50,9 @@ def prepare_probe(source, destination):
                     offlineProbeAudit.discardedSequences.insert(sequence)
                     offlineProbeAudit.droppedBufferedFrames += Int(packet.record.frameCount) - (sequence == nextSequence ? offset : 0)
                 }'''), (
-        '''                control = PlayoutController(budget: budget,
-                    maximumCorrection: round.controller == 0 ? 0 : Double(round.correctionPercent) / 100,
-                    adaptive: round.controller >= 2)''',
-        '''                if !offlineKeepController {
+        '                latestPlayableSequence = nil',
+        '''                latestPlayableSequence = nil
+                if !offlineKeepController {
                     let previousControl = control
                     control = PlayoutController(budget: budget,
                         maximumCorrection: round.controller == 0 ? 0 : Double(round.correctionPercent) / 100,

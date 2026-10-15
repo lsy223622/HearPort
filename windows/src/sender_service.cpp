@@ -698,6 +698,23 @@ bool SenderService::ObserveAudioProgress(
   if (!reliable_mode_.load()) return music_test();
   std::optional<std::uint32_t> latest_produced;
   std::vector<wire::TimedAudioRecord> replay;
+  ReliableAudioLag::ReplayBudget replay_budget;
+  if (coordinated_audio_.load()) {
+    const auto capacity = quic_->AudioCapacity();
+    if (capacity.round_trip_ns != 0) {
+      replay_budget.bytes_per_second = 0.75 * std::min(capacity.acknowledged_bytes_per_second,
+          double(capacity.congestion_window_bytes) * 1e9 / double(capacity.round_trip_ns));
+      replay_budget.delivery_delay_ns = capacity.round_trip_ns;
+    }
+    std::lock_guard queue_lock(queue_mutex_);
+    const auto now = static_cast<std::uint64_t>(MonotonicNanoseconds());
+    const AudioDeadline deadline(maximum_ms_.load(), output_reserve_ms_.load());
+    for (const auto& queued : audio_queue_) {
+      if (!deadline.Expired(static_cast<std::uint64_t>(queued.captured_at_ns), now)) {
+        replay_budget.reserved_bytes += queued.packet.pcm.size() + 34;
+      }
+    }
+  }
   std::chrono::milliseconds feedback_age{0};
   const auto next_generation = generation == UINT32_MAX ? 1 : generation + 1;
   {
@@ -710,15 +727,16 @@ bool SenderService::ObserveAudioProgress(
     }
     if (coordinated_audio_.load() && feedback_age >
         std::chrono::milliseconds((maximum_ms_.load() - output_reserve_ms_.load()) / 2)) return true;
-    if (!reliable_lag_.ConfirmReceived(stream_id, generation, latest_received, played_source)) return true;
+    if (!reliable_lag_.ConfirmReceived(stream_id, generation, latest_received, played_source,
+                                     coordinated_audio_.load() ? feedback_at_ns : 0)) return true;
     if (latest_received) quic_->ConfirmReliableReceived(stream_id, generation, *latest_received);
     if (!reliable_lag_.Observe(stream_id, generation, latest_received,
                                ReliableAudioLag::Clock::now(), feedback_age, played_source)) {
       return true;
     }
     latest_produced = reliable_lag_.latest_produced();
-    if (coordinated_audio_.load()) replay = reliable_lag_.ReplayFresh(next_generation,
-        static_cast<std::uint64_t>(MonotonicNanoseconds()), latest_received, played_source);
+    if (coordinated_audio_.load()) replay = reliable_lag_.ReplayForDelivery(next_generation,
+        static_cast<std::uint64_t>(MonotonicNanoseconds()), latest_received, played_source, replay_budget);
   }
   std::size_t discarded = 0;
   {
@@ -770,6 +788,8 @@ bool SenderService::ObserveAudioProgress(
                 (latest_received ? std::to_string(*latest_received) : "none") +
                 " played_source=" + (played_source ? std::to_string(*played_source) : "none") +
                 " feedback_age_ms=" + std::to_string(feedback_age.count()) +
+                " replay_capacity_bytes_per_second=" + std::to_string(replay_budget.bytes_per_second) +
+                " replay_delivery_delay_ms=" + std::to_string(replay_budget.delivery_delay_ns / 1'000'000) +
                 " replay_candidates=" + std::to_string(replay.size()) +
                 " replayed_packets=" + std::to_string(replayed) +
                 " discarded_queue_packets=" + std::to_string(discarded));
