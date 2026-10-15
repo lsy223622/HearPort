@@ -10,6 +10,8 @@ extern "C" {
 #endif
 
 uint64_t hearport_atomic_load_u64(const uint64_t *value);
+uint64_t hearport_atomic_load_acquire_u64(const uint64_t *value);
+void hearport_atomic_store_release_u64(uint64_t *value, uint64_t replacement);
 uint64_t hearport_atomic_fetch_add_u64(uint64_t *value, uint64_t amount);
 uint64_t hearport_atomic_exchange_u64(uint64_t *value, uint64_t replacement);
 bool hearport_atomic_compare_exchange_u64(uint64_t *value,

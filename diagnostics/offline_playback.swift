@@ -13,6 +13,7 @@ private struct PlaybackResult: Codable {
     let targetMilliseconds, maximumMilliseconds, outputClockPPM: Double
     let pumpJitterMilliseconds, callbackPhaseMicroseconds: Int
     let concealedPreparedFrames, underflowAfterStartFrames, latePackets, expiredOutputFrames: Int
+    let skippedSourceFrames: Int
     let requestedCorrectionMean, realizedCorrection: Double
     let firstOutputMilliseconds, maximumPresentationMilliseconds: Double
     let maximumSourceAgeBoundMilliseconds, maximumTargetMilliseconds: Double
@@ -76,7 +77,7 @@ final class OfflinePlaybackTests: XCTestCase {
         }
         packets.sort { $0.arrived == $1.arrived ? $0.sequence < $1.sequence : $0.arrived < $1.arrived }
         offlineNow = base
-        offlineLastRendered = 0; offlineConcealedFrames = 0
+        offlineLastRendered = 0; offlineConcealedFrames = 0; offlineSkippedFrames = 0
         offlineBatchMode = batchMode
         offlineObserveLate = observeLate; offlineMaximumShift = 0
         offlineScheduledConceal = scheduledConceal
@@ -153,6 +154,7 @@ final class OfflinePlaybackTests: XCTestCase {
             pumpJitterMilliseconds: pumpJitterMilliseconds, callbackPhaseMicroseconds: callbackPhaseMicroseconds,
             concealedPreparedFrames: offlineConcealedFrames, underflowAfterStartFrames: underflow,
             latePackets: Int(receiver.jitterStats?.latePackets ?? 0), expiredOutputFrames: Int(receiver.offlineExpired),
+            skippedSourceFrames: offlineSkippedFrames,
             requestedCorrectionMean: corrections.reduce(0, +) / Double(corrections.count),
             realizedCorrection: counts.1 > 0 ? Double(counts.0) / Double(counts.1) - 1 : 0,
             firstOutputMilliseconds: first.map { Double($0 - base) / 1e6 } ?? -1,
@@ -170,6 +172,7 @@ final class OfflinePlaybackTests: XCTestCase {
         if scenario == "healthy" {
             if scheduledConceal { XCTAssertEqual(result.concealedPreparedFrames, 0) }
             XCTAssertEqual(result.underflowAfterStartFrames, 0)
+            if scheduledConceal { XCTAssertLessThanOrEqual(result.skippedSourceFrames, 120) }
         }
         return result
     }
