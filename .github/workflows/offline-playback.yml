@@ -1,0 +1,20 @@
+name: Offline production playback
+
+on:
+  workflow_dispatch:
+
+jobs:
+  playback:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v5
+      - name: Prepare virtual clock copy and exercise production playback
+        run: |
+          python3 diagnostics/prepare_offline_playback.py ios/HearPortReceiver "$RUNNER_TEMP/playback"
+          HEARPORT_PLAYBACK_RESULTS="$RUNNER_TEMP/playback.json" \
+            swift test --package-path "$RUNNER_TEMP/playback" -c release --filter OfflinePlaybackTests
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: HearPort-offline-playback
+          path: ${{ runner.temp }}/playback.json
