@@ -101,3 +101,21 @@
 "Maximum total delay: %lld ms" = "总延迟上限：%lld 毫秒";
 "The target and maximum include transport, processing and output. Changes take effect on the next connection. A higher maximum can tolerate longer interruptions." = "目标和上限包含传输、处理及输出。设置在下次连接时生效。较高上限可以容纳更长的网络空窗。";
 "Selected delay budget is too small for this audio output." = "所选延迟预算不足以容纳当前音频输出。";
+
+"Run music prediction benchmark" = "运行音乐补偿性能测试";
+"Measuring prediction and idle wake…" = "正在测量补偿计算与闲置唤醒…";
+"AR with available future" = "AR + 已到达后续音频修复";
+"Forward AR" = "前向 AR 预测";
+"Output %.1f ms · 100 ms context" = "生成 %.1f 毫秒音频 · 使用 100 毫秒历史";
+"%@ · P99 %.2f ms · max %.2f ms" = "%@ · P99 %.2f 毫秒 · 最慢 %.2f 毫秒";
+"Prediction phase first" = "该组合首次计算";
+"Prediction phase warm" = "预热后计算";
+"Prediction phase consecutive" = "连续缺包计算";
+"Prediction phase idle100" = "闲置 100 毫秒后唤醒";
+"Prediction phase idle1000" = "闲置 1 秒后唤醒";
+"Share prediction benchmark" = "分享补偿性能测试结果";
+"Music prediction performance" = "音乐补偿性能";
+"Disconnect first. Uses synthetic stereo data and takes about 20 seconds. Keep the app in the foreground. Measures CPU, conversion and worker dispatch; not audio playback deadlines or listening quality. AR has no external model to load. First means first call of each case, not process cold start; idle samples are limited." = "请先断开连接。使用合成立体声数据，约需 20 秒，请保持前台运行。测量 CPU、数据转换、工作队列派发及返回耗时，不代表已通过播放截止时间或听感验证。AR 无需加载外部模型。“首次”是每组的首次计算，并非进程冷启动；闲置唤醒样本量有限。";
+"Prediction benchmark complete. Share the result for analysis." = "补偿性能测试完成，可以分享结果进行分析。";
+"Benchmark interrupted. Keep the app in the foreground and run again." = "测试已中断，请保持前台运行后重新测试。";
+"Unable to save the prediction benchmark." = "无法保存补偿性能测试结果。";

@@ -49,6 +49,18 @@ class MusicPLCTests(unittest.TestCase):
             expected = ar_predict(history, record['frames'])
             np.testing.assert_allclose(expected.ravel(), record['output'], rtol=0, atol=5e-5)
 
+    @unittest.skipUnless(os.environ.get('HEARPORT_AR_REFERENCE'), 'native Swift AR reference generated on macOS')
+    def test_native_available_future_repair_matches_research_predictor(self):
+        from diagnostics.music_plc import BidirectionalAR
+        records = json.loads(Path(os.environ['HEARPORT_AR_REFERENCE']).read_text())
+        self.assertTrue('bidirectionalFixtures' in records, 'native future-repair fixtures missing')
+        for record in records['bidirectionalFixtures']:
+            predictor = BidirectionalAR()
+            predictor.future = np.asarray(record['future'], np.float32).reshape(-1, 2)
+            history = np.asarray(record['input'], np.float32).reshape(-1, 2)
+            expected = predictor.predict(history, record['frames'])
+            np.testing.assert_allclose(expected.ravel(), record['output'], rtol=0, atol=5e-5)
+
     def test_ar_handles_loss_before_any_committed_history(self):
         from diagnostics.music_plc import Autoregressive
         arrivals = np.arange(32) * 2.5 + 1
