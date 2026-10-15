@@ -41,6 +41,7 @@ def prepare(source, destination):
 
     var offlineExpired: UInt64 { renderRing.expiredFrames }
     var offlineSourceCursor: UInt64? { renderRing.lastSourceFrame }
+    var offlineTargetMilliseconds: Double { playoutController?.targetMilliseconds ?? 0 }
     var offlineStretchCounts: (UInt64, UInt64) { (timeStretch.inputFrames, timeStretch.outputFrames) }
 
     private func pumpLocked() {''')
@@ -48,6 +49,11 @@ def prepare(source, destination):
         raise ValueError('concealment insertion points changed')
     text = text.replace('                realtimeMetrics.recordConcealment()',
         '                offlineConcealedFrames += 120\n                realtimeMetrics.recordConcealment()')
+    text = replace_once(text, '                let started = playoutController == nil ?', '''                if offlineObserveLate, insertResult == .late, let timedRecord, let captured {
+                    playoutController?.observeArrival(sourceFrame: timedRecord.sourceFrame,
+                        capturedAt: captured, receivedAt: receivedAt, original: timedRecord.kind == .audio)
+                }
+                let started = playoutController == nil ?''')
     text = replace_once(text, '            if let packet = jitter?.consumeNext() {\n                timedPackets.removeValue(forKey: sequence)', '''            if offlineBatchMode == 2, abs(decision.correction) > 0.001,
                (jitter?.contiguousPackets ?? 0) > 0, (jitter?.contiguousPackets ?? 0) < 6,
                renderRing.fillFrames > Int(renderRequestFramesAtomic.load()) + 240 {
@@ -57,6 +63,9 @@ def prepare(source, destination):
                 timedPackets.removeValue(forKey: sequence)''')
     text = replace_once(text, 'renderRing.fillFrames + 840 <= ringReserveFrames,',
         'renderRing.fillFrames + 840 <= (offlineBatchMode > 0 ? renderRing.capacityFrames : ringReserveFrames),')
+    text = replace_once(text, '                samples = timeStretch.process(samples, correction: decision.correction)', '''                let inputFrames = samples.count / 2
+                samples = timeStretch.process(samples, correction: decision.correction)
+                offlineMaximumShift = max(offlineMaximumShift, abs(inputFrames - samples.count / 2))''')
     path.write_text(text, encoding='utf-8')
     path = directory / 'RenderRingBuffer.swift'
     text = path.read_text(encoding='utf-8').replace('DispatchTime.now().uptimeNanoseconds', 'offlineNow')
@@ -68,6 +77,8 @@ var offlineNow: UInt64 = 1_000_000_000
 var offlineLastRendered = 0
 var offlineConcealedFrames = 0
 var offlineBatchMode = 0
+var offlineObserveLate = false
+var offlineMaximumShift = 0
 ''', encoding='utf-8')
     c = destination / 'Sources/HearPortAtomics/AudioRing.c'
     text = c.read_text(encoding='utf-8')
