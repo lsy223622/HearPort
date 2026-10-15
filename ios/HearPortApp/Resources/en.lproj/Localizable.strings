@@ -101,3 +101,21 @@
 "Maximum total delay: %lld ms" = "Maximum total delay: %lld ms";
 "The target and maximum include transport, processing and output. Changes take effect on the next connection. A higher maximum can tolerate longer interruptions." = "The target and maximum include transport, processing and output. Changes take effect on the next connection. A higher maximum can tolerate longer interruptions.";
 "Selected delay budget is too small for this audio output." = "Selected delay budget is too small for this audio output.";
+
+"Run music prediction benchmark" = "Run music prediction benchmark";
+"Measuring prediction and idle wake…" = "Measuring prediction and idle wake…";
+"AR with available future" = "AR with available future";
+"Forward AR" = "Forward AR";
+"Output %.1f ms · 100 ms context" = "Output %.1f ms · 100 ms context";
+"%@ · P99 %.2f ms · max %.2f ms" = "%@ · P99 %.2f ms · max %.2f ms";
+"Prediction phase first" = "Prediction phase first";
+"Prediction phase warm" = "Prediction phase warm";
+"Prediction phase consecutive" = "Prediction phase consecutive";
+"Prediction phase idle100" = "Prediction phase idle100";
+"Prediction phase idle1000" = "Prediction phase idle1000";
+"Share prediction benchmark" = "Share prediction benchmark";
+"Music prediction performance" = "Music prediction performance";
+"Disconnect first. Uses synthetic stereo data and takes about 20 seconds. Keep the app in the foreground. Measures CPU, conversion and worker dispatch; not audio playback deadlines or listening quality. AR has no external model to load. First means first call of each case, not process cold start; idle samples are limited." = "Disconnect first. Uses synthetic stereo data and takes about 20 seconds. Keep the app in the foreground. Measures CPU, conversion and worker dispatch; not audio playback deadlines or listening quality. AR has no external model to load. First means first call of each case, not process cold start; idle samples are limited.";
+"Prediction benchmark complete. Share the result for analysis." = "Prediction benchmark complete. Share the result for analysis.";
+"Benchmark interrupted. Keep the app in the foreground and run again." = "Benchmark interrupted. Keep the app in the foreground and run again.";
+"Unable to save the prediction benchmark." = "Unable to save the prediction benchmark.";

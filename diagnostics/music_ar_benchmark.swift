@@ -1,51 +1,4 @@
 import Foundation
-import Accelerate
-
-func predictAR(_ stereo: [Float], frames: Int, order: Int = 256) -> [Float] {
-    var output = [Float](repeating: 0, count: frames * 2)
-    for channel in 0..<2 {
-        var history = stride(from: channel, to: stereo.count, by: 2).map { Double(stereo[$0]) }
-        if history.count < order + 1 {
-            history.insert(contentsOf: repeatElement(0, count: order + 1 - history.count), at: 0)
-        }
-        var correlation = [Double](repeating: 0, count: order + 1)
-        history.withUnsafeBufferPointer { source in
-            for lag in 0...order {
-                vDSP_dotprD(source.baseAddress!, 1, source.baseAddress! + lag, 1,
-                            &correlation[lag], vDSP_Length(history.count - lag))
-            }
-        }
-        correlation[0] += 0.001
-        var coefficients = [Double](repeating: 0, count: order + 1)
-        var error = correlation[0]
-        for degree in 1...order {
-            var residual = correlation[degree]
-            if degree > 1 {
-                for j in 1..<degree { residual -= coefficients[j] * correlation[degree - j] }
-            }
-            let reflection = residual / error
-            let previous = coefficients
-            if degree > 1 {
-                for j in 1..<degree { coefficients[j] = previous[j] - reflection * previous[degree - j] }
-            }
-            coefficients[degree] = reflection
-            error *= 1 - reflection * reflection
-        }
-        var past = Array(history.suffix(order))
-        var cursor = 0
-        for frame in 0..<frames {
-            var value = 0.0
-            for j in 1...order { value += coefficients[j] * past[(cursor + order - j) % order] }
-            past[cursor] = value
-            cursor = (cursor + 1) % order
-            output[frame * 2 + channel] = Float(value)
-        }
-        if (0..<frames).contains(where: { !output[$0 * 2 + channel].isFinite || abs(output[$0 * 2 + channel]) > 1.5 }) {
-            for frame in 0..<frames { output[frame * 2 + channel] = 0 }
-        }
-    }
-    return output
-}
 
 @main
 struct MusicARBenchmark {
@@ -68,6 +21,14 @@ struct MusicARBenchmark {
             }
         }
         var timings: [[String: Any]] = []
+        var bidirectionalFixtures: [[String: Any]] = []
+        for length in [0, 96, 256, 960] {
+            for frames in [120, 480] {
+                let future = Array(input.suffix(length * 2))
+                bidirectionalFixtures.append(["input": input, "future": future, "frames": frames,
+                    "output": predictAvailableFutureAR(input, future: future, frames: frames)])
+            }
+        }
         for frames in [120, 480] {
             var elapsed: [Double] = []
             var checksum = 0.0
@@ -84,7 +45,8 @@ struct MusicARBenchmark {
                             "warmMaximumMilliseconds": warm.last!, "checksum": checksum])
         }
         let result: [String: Any] = ["scope": "macOS native AR CPU only, not iPad end-to-end",
-                                      "fixtures": fixtures, "timing": timings]
+                                      "fixtures": fixtures, "bidirectionalFixtures": bidirectionalFixtures,
+                                      "timing": timings]
         try JSONSerialization.data(withJSONObject: result, options: [.sortedKeys])
             .write(to: URL(fileURLWithPath: CommandLine.arguments[1]))
     }
