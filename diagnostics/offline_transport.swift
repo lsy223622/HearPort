@@ -166,6 +166,7 @@ private struct Result: Codable, Equatable {
     let seed: UInt64
     let targetMilliseconds, maximumMilliseconds: Double
     let feedbackIntervalMilliseconds, restartDelayMilliseconds: Int
+    let recoveryLeadMilliseconds: Int
     let lostPackets, playedFrames, concealedFrames, unfinishedFrames: Int
     let skippedFrames: UInt64
     let unavailableSourcePercent: Double
@@ -189,7 +190,7 @@ private func require(_ condition: Bool, _ message: String) throws {
 private func simulate(trace: NetworkTrace, scenario: Scenario, seed: UInt64,
                       transport: Transport, policy: Policy, budget: PlayoutBudget,
                       experiment: Experiment = .baseline, feedbackIntervalMilliseconds: Int = 50,
-                      restartDelayMilliseconds: Int = 0) throws -> Result {
+                      restartDelayMilliseconds: Int = 0, recoveryLeadMilliseconds: Int = 0) throws -> Result {
     offlineDeadlineGuardMilliseconds = policy == .guarded ? 10 : 0
     offlineKeepController = experiment.keepsController
     offlineKeepBuffer = experiment.keepsBuffer
@@ -265,6 +266,7 @@ private func simulate(trace: NetworkTrace, scenario: Scenario, seed: UInt64,
                 let count = offline_recovery_feedback(recovery, report.generation, report.received,
                     report.played, report.generated, now, transport == .corrected ? 1 : 0,
                     experiment.replays ? 1 : 0,
+                    Int32(recoveryLeadMilliseconds),
                     &sequences, 256)
                 try require(count != -2, "replay capacity exceeded")
                 if count < 0 { continue }
@@ -333,6 +335,7 @@ private func simulate(trace: NetworkTrace, scenario: Scenario, seed: UInt64,
         policy: policy.rawValue, inputFingerprint: trace.fingerprint, experiment: experiment.rawValue, seed: seed,
         targetMilliseconds: budget.targetMilliseconds, maximumMilliseconds: budget.maximumMilliseconds,
         feedbackIntervalMilliseconds: feedbackIntervalMilliseconds, restartDelayMilliseconds: restartDelayMilliseconds,
+        recoveryLeadMilliseconds: recoveryLeadMilliseconds,
         lostPackets: trace.packets.filter { $0.lost }.count, playedFrames: played,
         concealedFrames: concealed, unfinishedFrames: unfinished, skippedFrames: skipped,
         unavailableSourcePercent: Double(concealed + Int(skipped) + unfinished) / Double(totalFrames) * 100,
@@ -357,13 +360,15 @@ private func simulate(trace: NetworkTrace, scenario: Scenario, seed: UInt64,
 private struct OfflineTransport {
     static func main() throws {
         guard (2...3).contains(CommandLine.arguments.count) else {
-            throw NSError(domain: "Usage: offline-transport report.json [ablation|sensitivity|components]", code: 2)
+            throw NSError(domain: "Usage: offline-transport report.json [ablation|sensitivity|components|timing]", code: 2)
         }
         let mode = CommandLine.arguments.count == 3 ? CommandLine.arguments[2] : "baseline"
         let ablation = mode != "baseline"
         let sensitivity = mode == "sensitivity"
         let components = mode == "components"
-        let experiments: [Experiment] = sensitivity ? [.baseline, .keepController, .keepBoth, .noReplay, .fixedConsumer]
+        let timing = mode == "timing"
+        let experiments: [Experiment] = timing ? [.keepController]
+            : sensitivity ? [.baseline, .keepController, .keepBoth, .noReplay, .fixedConsumer]
             : components ? [.baseline, .keepController, .keepTarget, .keepHistory, .keepRate, .keepAnchor, .keepTargetHistory]
             : ablation ? [.baseline, .keepController, .keepBuffer, .noReplay, .keepBoth, .controllerNoReplay, .keepAll, .fixedConsumer]
             : [.baseline]
@@ -395,20 +400,23 @@ private struct OfflineTransport {
         try require(noPackets.playedFrames == 0 && noPackets.unavailableSourcePercent == 100 &&
                     noPackets.maxPresentationMilliseconds == nil, "no-input control reported playback")
         var results: [Result] = []
-        for scenario in (ablation ? [.isolatedLoss, .weakWifi] : Scenario.allCases) {
-            for seed in (sensitivity ? UInt64(9)...16 : UInt64(1)...8) {
+        for scenario in (ablation && !timing ? [.isolatedLoss, .weakWifi] : Scenario.allCases) {
+            for seed in (timing ? UInt64(17)...24 : sensitivity ? UInt64(9)...16 : UInt64(1)...8) {
                 let trace = NetworkTrace.make(scenario, seed: seed)
                 for (target, maximum) in [(50.0, 100.0), (80.0, 160.0), (120.0, 240.0)] {
                     let budget = try PlayoutBudget(targetMilliseconds: target, maximumMilliseconds: maximum,
                                                    outputReserveMilliseconds: 11)
-                    for transport in (sensitivity || components ? [.corrected] : ablation ? [.legacy, .corrected] : Transport.allCases) {
+                    for transport in (timing || sensitivity || components ? [.corrected] : ablation ? [.legacy, .corrected] : Transport.allCases) {
                         for experiment in experiments {
                           for policy in (ablation ? [experiment == .fixedConsumer ? .fixed : .adaptive] : Policy.allCases) {
-                            for interval in (sensitivity ? [25, 50] : [50]) {
-                              for delay in (sensitivity ? [0, 10, 25] : [0]) {
+                            for interval in (timing ? [25] : sensitivity ? [25, 50] : [50]) {
+                              for delay in (sensitivity || timing ? [0, 10, 25] : [0]) {
+                               for lead in (timing ? [0, 15, 30, 45] : [0]) {
                                 results.append(try simulate(trace: trace, scenario: scenario, seed: seed,
                                     transport: transport, policy: policy, budget: budget, experiment: experiment,
-                                    feedbackIntervalMilliseconds: interval, restartDelayMilliseconds: delay))
+                                    feedbackIntervalMilliseconds: interval, restartDelayMilliseconds: delay,
+                                    recoveryLeadMilliseconds: lead))
+                               }
                               }
                             }
                           }
