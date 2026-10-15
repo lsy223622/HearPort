@@ -33,6 +33,8 @@ def prepare(source, destination):
 def prepare_probe(source, destination):
     text = source.read_text(encoding='utf-8')
     changes = [(
+        '        endSourceFrame = sourceFrame + 30 * 48_000',
+        '        endSourceFrame = sourceFrame + offlineSourceFrameCount'), (
         '    mutating func updateUncertainty(_ uncertainty: UInt64) { clockUncertainty = uncertainty }',
         '    var offlineSourceFrame: UInt64 { sourceFrame }\n\n'
         '    mutating func updateUncertainty(_ uncertainty: UInt64) { clockUncertainty = uncertainty }'), (
