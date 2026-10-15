@@ -594,8 +594,8 @@ public final class HearPortReceiver {
     public func renderFrames(_ frameCount: Int) -> [Float] {
         guard frameCount > 0 else { return [] }
         let startedAt = DispatchTime.now().uptimeNanoseconds
-        renderRequestFramesAtomic.store(UInt64(frameCount))
         let output = renderRing.pop(frames: frameCount)
+        renderRequestFramesAtomic.store(UInt64(frameCount))
         renderStartedAtAtomic.storeReleasing(startedAt)
         realtimeMetrics.recordRenderBuffer(
             fillFrames: renderRing.fillFrames,
@@ -649,9 +649,9 @@ public final class HearPortReceiver {
 
     private func pumpCoordinatedLocked() {
         let now = DispatchTime.now().uptimeNanoseconds
+        let startedAt = renderStartedAtAtomic.loadAcquiring()
         let request = max(1, renderRequestFramesAtomic.load())
         let period = request * 1_000_000_000 / 48_000
-        let startedAt = renderStartedAtAtomic.loadAcquiring()
         let elapsed = now >= startedAt ? now - startedAt : 0
         let untilNext = period > elapsed ? period - elapsed : 0
         // Cover callbacks due before the 5 ms preparation timer and its 1 ms leeway.
