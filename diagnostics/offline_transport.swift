@@ -162,6 +162,8 @@ private struct Result: Codable, Equatable {
     let restarts, replayedPackets, canceledPackets: Int
     let networkMissingFrames, expiredQueuedFrames, discardedMissingFrames, lateArrivalFrames: Int
     let rejectedExpiredPackets, droppedBufferedFrames, rebufferWaitFrames: Int
+    let concealedOutputMilliseconds, waitingOutputMilliseconds: Double
+    let outputGapPercent: Double?
 }
 
 private func require(_ condition: Bool, _ message: String) throws {
@@ -206,6 +208,7 @@ private func simulate(trace: NetworkTrace, scenario: Scenario, seed: UInt64,
     var correctionMinimum = 0.0, correctionMaximum = 0.0
     var concealRun = 0, longestConcealRun = 0
     var rebufferWait = 0
+    var concealedOutput = 0.0, playedOutput = 0.0
     for now in stride(from: captureStart, through: captureStart + 32_000_000_000, by: 2_500_000) {
         var incoming: [Delivery] = []
         if let recovery {
@@ -257,9 +260,13 @@ private func simulate(trace: NetworkTrace, scenario: Scenario, seed: UInt64,
         }
         if (now - captureStart) % 5_000_000 != 0 { continue }
         let consumed = consumer.tick(now: now)
-        if firstConsumption != nil && (consumer.playedSourceFrame ?? 0) < UInt64(totalFrames) {
+        if firstConsumption != nil && consumer.offlineSourceFrame < UInt64(totalFrames) &&
+            now <= captureStart + 30_000_000_000 + UInt64(budget.maximumMilliseconds -
+                budget.outputReserveMilliseconds) * 1_000_000 {
             rebufferWait += consumed.waitingFrames
         }
+        concealedOutput += Double(consumed.concealedFrames) / (48 * (1 + consumed.correction))
+        playedOutput += Double(consumed.playedFrames) / (48 * (1 + consumed.correction))
         if recovery != nil && (now - captureStart) % 50_000_000 == 0 {
             lastFeedbackArrival = max(lastFeedbackArrival, trace.returnArrival(generated: now))
             feedback.append(Feedback(generation: consumer.generation,
@@ -286,13 +293,16 @@ private func simulate(trace: NetworkTrace, scenario: Scenario, seed: UInt64,
         if consumed.concealedFrames > 0 { concealRun += 5 } else { concealRun = 0 }
         longestConcealRun = max(longestConcealRun, concealRun)
     }
-    let unfinished = totalFrames - Int(consumer.playedSourceFrame ?? 0)
+    let unfinished = totalFrames - Int(consumer.offlineSourceFrame)
     try require(unfinished >= 0 && played + concealed + Int(skipped) + unfinished == totalFrames,
-                "source frame accounting is not conserved")
+                "source accounting: \(scenario) seed=\(seed) \(transport) \(policy) \(experiment) " +
+                "played=\(played) concealed=\(concealed) skipped=\(skipped) unfinished=\(unfinished)")
     try require(concealed == offlineProbeAudit.networkMissingFrames + offlineProbeAudit.expiredQueuedFrames +
         offlineProbeAudit.discardedMissingFrames + offlineProbeAudit.lateArrivalFrames,
         "concealment attribution is not conserved")
     latencies.sort()
+    let waitingOutput = Double(rebufferWait) / 48
+    let totalOutput = playedOutput + concealedOutput + waitingOutput
     func percentile(_ fraction: Double) -> Double? {
         latencies.isEmpty ? nil : latencies[Int(Double(latencies.count - 1) * fraction)]
     }
@@ -313,7 +323,9 @@ private func simulate(trace: NetworkTrace, scenario: Scenario, seed: UInt64,
         discardedMissingFrames: offlineProbeAudit.discardedMissingFrames,
         lateArrivalFrames: offlineProbeAudit.lateArrivalFrames,
         rejectedExpiredPackets: offlineProbeAudit.rejectedExpiredPackets,
-        droppedBufferedFrames: offlineProbeAudit.droppedBufferedFrames, rebufferWaitFrames: rebufferWait)
+        droppedBufferedFrames: offlineProbeAudit.droppedBufferedFrames, rebufferWaitFrames: rebufferWait,
+        concealedOutputMilliseconds: concealedOutput, waitingOutputMilliseconds: waitingOutput,
+        outputGapPercent: totalOutput > 0 ? (concealedOutput + waitingOutput) / totalOutput * 100 : nil)
 }
 
 @main

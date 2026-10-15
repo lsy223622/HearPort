@@ -43,6 +43,7 @@ jobs:
           python3 -m unittest tests.test_offline_transport_analysis -v
           python3 diagnostics/analyze_offline_transport.py "$RUNNER_TEMP/offline-results"
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: HearPort-offline-transport
           path: ${{ runner.temp }}/offline-results/
