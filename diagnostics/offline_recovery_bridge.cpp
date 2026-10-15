@@ -34,7 +34,7 @@ void offline_recovery_produced(void* context, uint32_t sequence, uint64_t captur
   state.lag.Retain(record, now);
 }
 int offline_recovery_feedback(void* context, uint32_t generation, uint32_t received,
-    uint64_t played, uint64_t generated, uint64_t now, int corrected,
+    uint64_t played, uint64_t generated, uint64_t now, int corrected, int replay,
     uint32_t* replay_sequences, int capacity) {
   auto& state = *static_cast<Context*>(context);
   const auto age = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -45,7 +45,8 @@ int offline_recovery_feedback(void* context, uint32_t generation, uint32_t recei
   if (!state.lag.ConfirmReceived(7, generation, received_value, played_value) ||
       !state.lag.Observe(7, generation, received_value, time_at(now),
           corrected ? age : std::chrono::milliseconds(0), played_value)) return -1;
-  const auto replays = state.lag.ReplayFresh(state.generation + 1, now, received_value, played_value);
+  const auto replays = replay ? state.lag.ReplayFresh(state.generation + 1, now, received_value, played_value)
+                             : std::vector<hearport::wire::TimedAudioRecord>{};
   if (replays.size() > static_cast<size_t>(capacity)) return -2;
   ++state.generation;
   state.lag.Begin(7, state.generation, time_at(now), std::chrono::milliseconds(state.budget));

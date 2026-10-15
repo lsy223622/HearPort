@@ -14,7 +14,8 @@ jobs:
           set -euo pipefail
           source_dir=ios/HearPortReceiver/Sources/HearPortReceiver
           python3 diagnostics/prepare_offline_controller.py \
-            "$source_dir/PlayoutController.swift" "$RUNNER_TEMP/PlayoutController.swift"
+            "$source_dir/PlayoutController.swift" "$RUNNER_TEMP/PlayoutController.swift" \
+            "$source_dir/CoordinatedProbe.swift" "$RUNNER_TEMP/CoordinatedProbe.swift"
           clang++ -std=c++20 -O2 -I windows/include -I core/include -c \
             diagnostics/offline_recovery_bridge.cpp -o "$RUNNER_TEMP/recovery-bridge.o"
           swiftc -O \
@@ -24,7 +25,7 @@ jobs:
             "$source_dir/ControlMessages.swift" \
             "$RUNNER_TEMP/PlayoutController.swift" \
             "$source_dir/RepairWindow.swift" \
-            "$source_dir/CoordinatedProbe.swift" \
+            "$RUNNER_TEMP/CoordinatedProbe.swift" \
             diagnostics/offline_transport.swift \
             -import-objc-header diagnostics/offline_recovery_bridge.h \
             "$RUNNER_TEMP/recovery-bridge.o" -lc++ \
@@ -37,6 +38,7 @@ jobs:
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/offline-results"
           "$RUNNER_TEMP/offline-transport" "$RUNNER_TEMP/offline-results/playout.json"
+          "$RUNNER_TEMP/offline-transport" "$RUNNER_TEMP/offline-results/ablation.json" ablation
           "$RUNNER_TEMP/offline-recovery" "$RUNNER_TEMP/offline-results/recovery.json"
           python3 -m unittest tests.test_offline_transport_analysis -v
           python3 diagnostics/analyze_offline_transport.py "$RUNNER_TEMP/offline-results"

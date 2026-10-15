@@ -5,6 +5,24 @@ private let packetInterval: UInt64 = 2_500_000
 private let packetCount = 12_000
 private let totalFrames = packetCount * 120
 var offlineDeadlineGuardMilliseconds = 0.0
+var offlineKeepController = false
+var offlineKeepBuffer = false
+struct OfflineProbeAudit {
+    var discardedSequences: Set<UInt32> = []
+    var expiredSequences: Set<UInt32> = []
+    var networkMissingFrames = 0, expiredQueuedFrames = 0, discardedMissingFrames = 0
+    var lateArrivalFrames = 0, rejectedExpiredPackets = 0, droppedBufferedFrames = 0
+}
+var offlineProbeAudit = OfflineProbeAudit()
+
+private enum Experiment: String, CaseIterable {
+    case baseline, keepController = "keep_controller", keepBuffer = "keep_buffer"
+    case noReplay = "no_replay", keepBoth = "keep_both", controllerNoReplay = "controller_no_replay"
+    case keepAll = "keep_all", fixedConsumer = "fixed_consumer"
+    var keepsController: Bool { [.keepController, .keepBoth, .controllerNoReplay, .keepAll].contains(self) }
+    var keepsBuffer: Bool { [.keepBuffer, .keepBoth, .keepAll].contains(self) }
+    var replays: Bool { ![.noReplay, .controllerNoReplay, .keepAll].contains(self) }
+}
 
 private struct RandomSource {
     var state: UInt64
@@ -131,7 +149,7 @@ private struct Feedback {
 }
 
 private struct Result: Codable, Equatable {
-    let scenario, transport, policy, inputFingerprint: String
+    let scenario, transport, policy, inputFingerprint, experiment: String
     let seed: UInt64
     let targetMilliseconds, maximumMilliseconds: Double
     let lostPackets, playedFrames, concealedFrames, unfinishedFrames: Int
@@ -142,6 +160,8 @@ private struct Result: Codable, Equatable {
     let slowTicks, fastTicks, resyncTicks, maxConcealTickRunMilliseconds: Int
     let minimumCorrection, maximumCorrection: Double
     let restarts, replayedPackets, canceledPackets: Int
+    let networkMissingFrames, expiredQueuedFrames, discardedMissingFrames, lateArrivalFrames: Int
+    let rejectedExpiredPackets, droppedBufferedFrames, rebufferWaitFrames: Int
 }
 
 private func require(_ condition: Bool, _ message: String) throws {
@@ -150,8 +170,12 @@ private func require(_ condition: Bool, _ message: String) throws {
 }
 
 private func simulate(trace: NetworkTrace, scenario: Scenario, seed: UInt64,
-                      transport: Transport, policy: Policy, budget: PlayoutBudget) throws -> Result {
+                      transport: Transport, policy: Policy, budget: PlayoutBudget,
+                      experiment: Experiment = .baseline) throws -> Result {
     offlineDeadlineGuardMilliseconds = policy == .guarded ? 10 : 0
+    offlineKeepController = experiment.keepsController
+    offlineKeepBuffer = experiment.keepsBuffer
+    offlineProbeAudit = OfflineProbeAudit()
     let round = CoordinatedProbePlan.Round(payloadBytes: 992, packetsPerSecond: 400,
         burstPackets: 1, variant: 1, reliable: transport.reliable, repeatIndex: 1,
         controller: policy.controller, repair: 0, correctionPercent: policy.correctionPercent)
@@ -181,6 +205,7 @@ private func simulate(trace: NetworkTrace, scenario: Scenario, seed: UInt64,
     var latencies: [Double] = []
     var correctionMinimum = 0.0, correctionMaximum = 0.0
     var concealRun = 0, longestConcealRun = 0
+    var rebufferWait = 0
     for now in stride(from: captureStart, through: captureStart + 32_000_000_000, by: 2_500_000) {
         var incoming: [Delivery] = []
         if let recovery {
@@ -214,12 +239,14 @@ private func simulate(trace: NetworkTrace, scenario: Scenario, seed: UInt64,
                 var sequences = [UInt32](repeating: 0, count: 256)
                 let count = offline_recovery_feedback(recovery, report.generation, report.received,
                     report.played, report.generated, now, transport == .corrected ? 1 : 0,
+                    experiment.replays ? 1 : 0,
                     &sequences, 256)
                 try require(count != -2, "replay capacity exceeded")
                 if count < 0 { continue }
-                restarts += 1; replayed += Int(count); canceled += pending.count
+                restarts += 1; canceled += pending.count
                 pending.removeAll(); lastArrival = 0
                 generation = offline_recovery_generation(recovery)
+                replayed += Int(count)
                 for sequence in sequences.prefix(Int(count)) {
                     let packet = trace.packets[Int(sequence)]
                     try require(now - packet.captured < UInt64(budget.maximumMilliseconds -
@@ -230,6 +257,9 @@ private func simulate(trace: NetworkTrace, scenario: Scenario, seed: UInt64,
         }
         if (now - captureStart) % 5_000_000 != 0 { continue }
         let consumed = consumer.tick(now: now)
+        if firstConsumption != nil && (consumer.playedSourceFrame ?? 0) < UInt64(totalFrames) {
+            rebufferWait += consumed.waitingFrames
+        }
         if recovery != nil && (now - captureStart) % 50_000_000 == 0 {
             lastFeedbackArrival = max(lastFeedbackArrival, trace.returnArrival(generated: now))
             feedback.append(Feedback(generation: consumer.generation,
@@ -259,12 +289,15 @@ private func simulate(trace: NetworkTrace, scenario: Scenario, seed: UInt64,
     let unfinished = totalFrames - Int(consumer.playedSourceFrame ?? 0)
     try require(unfinished >= 0 && played + concealed + Int(skipped) + unfinished == totalFrames,
                 "source frame accounting is not conserved")
+    try require(concealed == offlineProbeAudit.networkMissingFrames + offlineProbeAudit.expiredQueuedFrames +
+        offlineProbeAudit.discardedMissingFrames + offlineProbeAudit.lateArrivalFrames,
+        "concealment attribution is not conserved")
     latencies.sort()
     func percentile(_ fraction: Double) -> Double? {
         latencies.isEmpty ? nil : latencies[Int(Double(latencies.count - 1) * fraction)]
     }
     return Result(scenario: scenario.rawValue, transport: transport.rawValue,
-        policy: policy.rawValue, inputFingerprint: trace.fingerprint, seed: seed,
+        policy: policy.rawValue, inputFingerprint: trace.fingerprint, experiment: experiment.rawValue, seed: seed,
         targetMilliseconds: budget.targetMilliseconds, maximumMilliseconds: budget.maximumMilliseconds,
         lostPackets: trace.packets.filter { $0.lost }.count, playedFrames: played,
         concealedFrames: concealed, unfinishedFrames: unfinished, skippedFrames: skipped,
@@ -274,13 +307,22 @@ private func simulate(trace: NetworkTrace, scenario: Scenario, seed: UInt64,
         maxPresentationMilliseconds: latencies.last, slowTicks: slow, fastTicks: fast, resyncTicks: resync,
         maxConcealTickRunMilliseconds: longestConcealRun,
         minimumCorrection: correctionMinimum, maximumCorrection: correctionMaximum,
-        restarts: restarts, replayedPackets: replayed, canceledPackets: canceled)
+        restarts: restarts, replayedPackets: replayed, canceledPackets: canceled,
+        networkMissingFrames: offlineProbeAudit.networkMissingFrames,
+        expiredQueuedFrames: offlineProbeAudit.expiredQueuedFrames,
+        discardedMissingFrames: offlineProbeAudit.discardedMissingFrames,
+        lateArrivalFrames: offlineProbeAudit.lateArrivalFrames,
+        rejectedExpiredPackets: offlineProbeAudit.rejectedExpiredPackets,
+        droppedBufferedFrames: offlineProbeAudit.droppedBufferedFrames, rebufferWaitFrames: rebufferWait)
 }
 
 @main
 private struct OfflineTransport {
     static func main() throws {
-        guard CommandLine.arguments.count == 2 else { throw NSError(domain: "Usage: offline-transport report.json", code: 2) }
+        guard (2...3).contains(CommandLine.arguments.count) else {
+            throw NSError(domain: "Usage: offline-transport report.json [ablation]", code: 2)
+        }
+        let ablation = CommandLine.arguments.count == 3
         let healthy = NetworkTrace.make(.healthy, seed: 1)
         try require(healthy.fingerprint == NetworkTrace.make(.healthy, seed: 1).fingerprint,
                     "network generation is not reproducible")
@@ -309,16 +351,18 @@ private struct OfflineTransport {
         try require(noPackets.playedFrames == 0 && noPackets.unavailableSourcePercent == 100 &&
                     noPackets.maxPresentationMilliseconds == nil, "no-input control reported playback")
         var results: [Result] = []
-        for scenario in Scenario.allCases {
+        for scenario in (ablation ? [.isolatedLoss, .weakWifi] : Scenario.allCases) {
             for seed in UInt64(1)...8 {
                 let trace = NetworkTrace.make(scenario, seed: seed)
                 for (target, maximum) in [(50.0, 100.0), (80.0, 160.0), (120.0, 240.0)] {
                     let budget = try PlayoutBudget(targetMilliseconds: target, maximumMilliseconds: maximum,
                                                    outputReserveMilliseconds: 11)
-                    for transport in Transport.allCases {
-                        for policy in Policy.allCases {
+                    for transport in (ablation ? [.legacy, .corrected] : Transport.allCases) {
+                        for experiment in (ablation ? Experiment.allCases : [.baseline]) {
+                          for policy in (ablation ? [experiment == .fixedConsumer ? .fixed : .adaptive] : Policy.allCases) {
                             results.append(try simulate(trace: trace, scenario: scenario, seed: seed,
-                                transport: transport, policy: policy, budget: budget))
+                                transport: transport, policy: policy, budget: budget, experiment: experiment))
+                          }
                         }
                     }
                 }
