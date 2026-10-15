@@ -4,7 +4,7 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-void* offline_recovery_create(int budget_ms);
+void* offline_recovery_create(int budget_ms, int replay_mode, int startup_ms, double send_mbps);
 void offline_recovery_destroy(void* context);
 void offline_recovery_produced(void* context, uint32_t sequence, uint64_t captured,
                                uint64_t now);

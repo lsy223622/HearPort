@@ -1,4 +1,5 @@
 #include "offline_recovery_bridge.h"
+#include <algorithm>
 static int offlineRecoveryLeadMilliseconds = 0;
 #include "hearport/windows/reliable_audio_lag.h"
 
@@ -11,13 +12,19 @@ struct Context {
   Lag lag;
   uint32_t generation = 1;
   int budget;
-  explicit Context(int value) : budget(value) {
+  int replay_mode;
+  int startup;
+  double capacity;
+  Context(int value, int mode, int delay, double rate)
+      : budget(value), replay_mode(mode), startup(delay), capacity(rate) {
     lag.Begin(7, generation, time_at(0), std::chrono::milliseconds(budget));
   }
 };
 }
 
-void* offline_recovery_create(int budget_ms) { return new Context(budget_ms); }
+void* offline_recovery_create(int budget_ms, int replay_mode, int startup_ms, double send_mbps) {
+  return new Context(budget_ms, replay_mode, startup_ms, send_mbps);
+}
 void offline_recovery_destroy(void* context) { delete static_cast<Context*>(context); }
 uint32_t offline_recovery_generation(void* context) {
   return static_cast<Context*>(context)->generation;
@@ -47,8 +54,25 @@ int offline_recovery_feedback(void* context, uint32_t generation, uint32_t recei
   if (!state.lag.ConfirmReceived(7, generation, received_value, played_value) ||
       !state.lag.Observe(7, generation, received_value, time_at(now),
           corrected ? age : std::chrono::milliseconds(0), played_value)) return -1;
-  const auto replays = replay ? state.lag.ReplayFresh(state.generation + 1, now, received_value, played_value)
-                             : std::vector<hearport::wire::TimedAudioRecord>{};
+  auto replays = replay ? state.lag.ReplayFresh(state.generation + 1, now, received_value, played_value)
+                       : std::vector<hearport::wire::TimedAudioRecord>{};
+  if (state.replay_mode == 2 && state.capacity > 0) {
+    const double spare = std::max(0.0, state.capacity * 1'000'000 - 992.0 * 8 * 400);
+    const double horizon = std::max(0, state.budget - state.startup - 12) / 1000.0;
+    const size_t limit = static_cast<size_t>(spare * horizon / (992 * 8));
+    if (replays.size() > limit) replays.erase(replays.begin(), replays.end() - limit);
+  }
+  if (state.replay_mode > 0) {
+    const auto service = state.capacity > 0 ? static_cast<uint64_t>(992 * 8 * 1000 / state.capacity) : 0;
+    uint64_t arrival = now + (state.startup + 12) * 1'000'000ull + service;
+    std::vector<hearport::wire::TimedAudioRecord> eligible;
+    for (const auto& record : replays) {
+      if (arrival >= record.captured_at_ns + state.budget * 1'000'000ull) continue;
+      eligible.push_back(record);
+      arrival += service;
+    }
+    replays = std::move(eligible);
+  }
   if (replays.size() > static_cast<size_t>(capacity)) return -2;
   ++state.generation;
   state.lag.Begin(7, state.generation, time_at(now), std::chrono::milliseconds(state.budget));

@@ -82,7 +82,8 @@ def experiment_pairs(rows):
             for metric in ('unavailableSourcePercent', 'outputGapPercent',
                            'p99PresentationMilliseconds', 'restarts', 'replayedPackets',
                            'skippedFrames', 'waitingOutputMilliseconds'):
-                pair[metric + 'Difference'] = row[metric] - baseline[metric]
+                value, control = row.get(metric), baseline.get(metric)
+                pair[metric + 'Difference'] = value - control if value is not None and control is not None else None
             pairs.append(pair)
     return pairs
 
@@ -213,7 +214,7 @@ if __name__ == '__main__':
     directory = parser.parse_args().directory
     if (directory / 'playout.json').exists():
         write_report(directory)
-    for name in ('ablation', 'components', 'sensitivity', 'capacity'):
+    for name in ('ablation', 'components', 'sensitivity', 'capacity', 'replay'):
         source = directory / f'{name}.json'
         if source.exists():
             write_experiment_pairs(source)
