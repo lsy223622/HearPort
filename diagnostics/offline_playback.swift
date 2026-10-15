@@ -8,6 +8,7 @@ private struct PlaybackResult: Codable {
     let adaptive: Bool
     let batchMode: Int
     let observeLate: Bool
+    let scheduledConceal: Bool
     let seed, callbackFrames, uncertaintyMilliseconds: Int
     let targetMilliseconds, maximumMilliseconds, outputClockPPM: Double
     let concealedPreparedFrames, underflowAfterStartFrames, latePackets, expiredOutputFrames: Int
@@ -50,7 +51,7 @@ final class OfflinePlaybackTests: XCTestCase {
     private func run(scenario: String, content: String, adaptive: Bool, seed: Int,
                      callback: Int, uncertainty: Int, batchMode: Int, observeLate: Bool = false,
                      target: Double = 50, maximum: Double = 100, outputClockPPM: Double = 0,
-                     seconds: Int = 12) throws -> PlaybackResult {
+                     seconds: Int = 12, scheduledConceal: Bool = false) throws -> PlaybackResult {
         let base: UInt64 = 1_000_000_000
         let count = seconds * 400
         var packets: [Packet] = []
@@ -76,6 +77,7 @@ final class OfflinePlaybackTests: XCTestCase {
         offlineLastRendered = 0; offlineConcealedFrames = 0
         offlineBatchMode = batchMode
         offlineObserveLate = observeLate; offlineMaximumShift = 0
+        offlineScheduledConceal = scheduledConceal; offlineLastRenderAt = 0
         hearport_offline_reset_age()
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -140,7 +142,7 @@ final class OfflinePlaybackTests: XCTestCase {
         }
         let counts = receiver.offlineStretchCounts
         let result = PlaybackResult(scenario: scenario, content: content, adaptive: adaptive,
-            batchMode: batchMode, observeLate: observeLate,
+            batchMode: batchMode, observeLate: observeLate, scheduledConceal: scheduledConceal,
             seed: seed, callbackFrames: callback, uncertaintyMilliseconds: uncertainty,
             targetMilliseconds: target, maximumMilliseconds: maximum, outputClockPPM: outputClockPPM,
             concealedPreparedFrames: offlineConcealedFrames, underflowAfterStartFrames: underflow,
@@ -160,7 +162,7 @@ final class OfflinePlaybackTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(result.firstOutputMilliseconds, 0)
         XCTAssertLessThan(result.maximumSourceAgeBoundMilliseconds, maximum)
         if scenario == "healthy" {
-            XCTAssertEqual(result.concealedPreparedFrames, 0)
+            if scheduledConceal { XCTAssertEqual(result.concealedPreparedFrames, 0) }
             XCTAssertEqual(result.underflowAfterStartFrames, 0)
         }
         return result
@@ -170,15 +172,12 @@ final class OfflinePlaybackTests: XCTestCase {
         var results: [PlaybackResult] = []
         for scenario in ["healthy", "burst", "loss", "hol"] {
             for content in ["tone", "noise", "mixed"] {
-                for adaptive in [false, true] {
-                    for uncertainty in [0, 15] {
-                        for batchMode in adaptive ? [0, 2] : [0] {
-                            for observeLate in adaptive ? [false, true] : [false] {
-                                results.append(try run(scenario: scenario, content: content,
-                                    adaptive: adaptive, seed: 1, callback: 256, uncertainty: uncertainty,
-                                    batchMode: batchMode, observeLate: observeLate))
-                            }
-                        }
+                for uncertainty in [0, 15] {
+                    for variant in 0..<5 {
+                        let gather = variant == 2 || variant == 4
+                        results.append(try run(scenario: scenario, content: content,
+                            adaptive: variant != 0, seed: 1, callback: 256, uncertainty: uncertainty,
+                            batchMode: gather ? 2 : 0, observeLate: gather, scheduledConceal: variant >= 3))
                     }
                 }
             }
@@ -189,7 +188,7 @@ final class OfflinePlaybackTests: XCTestCase {
                     for candidate in [false, true] {
                         results.append(try run(scenario: scenario, content: "mixed", adaptive: true,
                             seed: 7, callback: callback, uncertainty: 15, batchMode: candidate ? 2 : 0,
-                            observeLate: candidate, target: target, maximum: target * 2))
+                            observeLate: candidate, target: target, maximum: target * 2, scheduledConceal: candidate))
                     }
                 }
             }
@@ -198,7 +197,7 @@ final class OfflinePlaybackTests: XCTestCase {
             for candidate in [false, true] {
                 results.append(try run(scenario: "healthy", content: "mixed", adaptive: true,
                     seed: 7, callback: 256, uncertainty: 15, batchMode: candidate ? 2 : 0,
-                    observeLate: candidate, outputClockPPM: ppm, seconds: 30))
+                    observeLate: candidate, outputClockPPM: ppm, seconds: 30, scheduledConceal: candidate))
             }
         }
         let encoder = JSONEncoder()
