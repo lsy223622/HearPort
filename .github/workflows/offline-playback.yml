@@ -32,3 +32,25 @@ jobs:
         with:
           name: HearPort-offline-playback-${{ matrix.reference }}
           path: ${{ runner.temp }}/playback.json
+
+  comparison:
+    needs: playback
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: HearPort-offline-playback-*
+          path: ${{ runner.temp }}/results
+      - name: Verify identical inputs and output continuity
+        run: |
+          unchanged=""
+          if git diff --quiet 49b8ee5 HEAD -- ios/HearPortReceiver/Sources; then unchanged=--unchanged; fi
+          python3 diagnostics/compare_offline_playback.py "$RUNNER_TEMP/results" $unchanged
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: HearPort-playback-comparison
+          path: ${{ runner.temp }}/results/comparison.json
