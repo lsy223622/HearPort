@@ -15,6 +15,19 @@ def prepare(source, destination):
         }
 '''
     destination.write_text(text.replace(anchor, rule + anchor), encoding='utf-8')
+    text = destination.read_text(encoding='utf-8')
+    anchor = '    public func captureTime(sourceFrame: UInt64) -> UInt64? {'
+    method = '''    mutating func offlineRestore(_ previous: PlayoutController) {
+        if offlineKeepTarget { targetMilliseconds = previous.targetMilliseconds }
+        if offlineKeepHistory { delays = previous.delays }
+        if offlineKeepRate { correction = previous.correction; lastDecisionAt = previous.lastDecisionAt }
+        if offlineKeepAnchor { anchor = previous.anchor }
+    }
+
+'''
+    if text.count(anchor) != 1:
+        raise ValueError('production controller state experiment insertion point changed')
+    destination.write_text(text.replace(anchor, method + anchor), encoding='utf-8')
 
 
 def prepare_probe(source, destination):
@@ -39,10 +52,17 @@ def prepare_probe(source, destination):
                     maximumCorrection: round.controller == 0 ? 0 : Double(round.correctionPercent) / 100,
                     adaptive: round.controller >= 2)''',
         '''                if !offlineKeepController {
+                    let previousControl = control
                     control = PlayoutController(budget: budget,
                         maximumCorrection: round.controller == 0 ? 0 : Double(round.correctionPercent) / 100,
                         adaptive: round.controller >= 2)
+                    control.offlineRestore(previousControl)
                 }'''), (
+        '        guard !SequenceNumber.isBefore(record.sequence, nextSequence) ||',
+        '''        if record.kind != .fec && SequenceNumber.isBefore(record.sequence, nextSequence) {
+            offlineProbeAudit.receivedAfterConsumptionPackets += 1
+        }
+        guard !SequenceNumber.isBefore(record.sequence, nextSequence) ||'''), (
         '        guard deadline > now else { return }',
         '''        guard deadline > now else {
             offlineProbeAudit.rejectedExpiredPackets += 1

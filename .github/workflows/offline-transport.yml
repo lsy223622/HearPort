@@ -2,6 +2,11 @@ name: Offline transport simulation
 
 on:
   workflow_dispatch:
+    inputs:
+      phase:
+        type: choice
+        default: decomposition
+        options: [decomposition, sensitivity, components]
 
 jobs:
   simulate:
@@ -37,11 +42,17 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/offline-results"
-          "$RUNNER_TEMP/offline-transport" "$RUNNER_TEMP/offline-results/playout.json"
-          "$RUNNER_TEMP/offline-transport" "$RUNNER_TEMP/offline-results/ablation.json" ablation
-          "$RUNNER_TEMP/offline-recovery" "$RUNNER_TEMP/offline-results/recovery.json"
-          python3 -m unittest tests.test_offline_transport_analysis -v
-          python3 diagnostics/analyze_offline_transport.py "$RUNNER_TEMP/offline-results"
+          if [ "${{ inputs.phase }}" = sensitivity ]; then
+            "$RUNNER_TEMP/offline-transport" "$RUNNER_TEMP/offline-results/sensitivity.json" sensitivity
+          elif [ "${{ inputs.phase }}" = components ]; then
+            "$RUNNER_TEMP/offline-transport" "$RUNNER_TEMP/offline-results/components.json" components
+          else
+            "$RUNNER_TEMP/offline-transport" "$RUNNER_TEMP/offline-results/playout.json"
+            "$RUNNER_TEMP/offline-transport" "$RUNNER_TEMP/offline-results/ablation.json" ablation
+            "$RUNNER_TEMP/offline-recovery" "$RUNNER_TEMP/offline-results/recovery.json"
+            python3 -m unittest tests.test_offline_transport_analysis -v
+            python3 diagnostics/analyze_offline_transport.py "$RUNNER_TEMP/offline-results"
+          fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:
