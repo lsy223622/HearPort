@@ -1,0 +1,20 @@
+name: Offline clock validation
+
+on:
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v5
+      - name: Compile and exercise production clock mapping
+        run: |
+          swiftc -O ios/HearPortReceiver/Sources/HearPortReceiver/ClockMapping.swift \
+            diagnostics/offline_clock.swift -o "$RUNNER_TEMP/offline-clock"
+          "$RUNNER_TEMP/offline-clock" "$RUNNER_TEMP/offline-clock.json"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: HearPort-offline-clock
+          path: ${{ runner.temp }}/offline-clock.json
