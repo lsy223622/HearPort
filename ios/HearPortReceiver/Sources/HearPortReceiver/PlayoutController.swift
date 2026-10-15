@@ -46,6 +46,7 @@ public struct PlayoutController: Sendable {
     public let maximumCorrection: Double
     private let adaptive: Bool
     public private(set) var targetMilliseconds: Double
+    private var networkTargetMilliseconds: Double
     private var anchor: (sourceFrame: UInt64, capturedAt: UInt64)?
     private var delays: [(sourceFrame: UInt64, milliseconds: Double)] = []
     private var lastDecisionAt: UInt64?
@@ -56,6 +57,7 @@ public struct PlayoutController: Sendable {
         self.adaptive = adaptive
         self.maximumCorrection = min(0.2, max(0, maximumCorrection))
         targetMilliseconds = budget.targetMilliseconds
+        networkTargetMilliseconds = budget.targetMilliseconds
     }
 
     public mutating func observeArrival(sourceFrame: UInt64, capturedAt: UInt64,
@@ -94,12 +96,13 @@ public struct PlayoutController: Sendable {
         if adaptive, delays.count >= 8 {
             let sorted = delays.map(\.milliseconds).sorted()
             let tail = sorted[min(sorted.count - 1, Int(Double(sorted.count - 1) * 0.98))]
-            let desired = min(ceiling, max(floor,
+            let desired = min(ceiling, max(budget.targetMilliseconds,
                 tail + budget.outputReserveMilliseconds + processingMilliseconds + 5))
-            let step = desired > targetMilliseconds ? elapsed * 0.2 : elapsed * 0.005
-            targetMilliseconds += min(step, max(-step, desired - targetMilliseconds))
+            let step = desired > networkTargetMilliseconds ? elapsed * 0.2 : elapsed * 0.005
+            networkTargetMilliseconds += min(step, max(-step, desired - networkTargetMilliseconds))
         }
-        targetMilliseconds = min(adaptive ? max(floor, targetMilliseconds) : budget.targetMilliseconds, ceiling)
+        networkTargetMilliseconds = min(adaptive ? networkTargetMilliseconds : budget.targetMilliseconds, ceiling)
+        targetMilliseconds = min(adaptive ? max(floor, networkTargetMilliseconds) : budget.targetMilliseconds, ceiling)
         let deadline = captureTime(sourceFrame: nextSourceFrame).map {
             budget.prepareDeadline(capturedAt: $0, processingMilliseconds: processingMilliseconds,
                                    uncertaintyNanoseconds: uncertaintyNanoseconds)
