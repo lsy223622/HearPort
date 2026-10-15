@@ -20,6 +20,7 @@ public struct ClockMapping: Sendable {
         guard elapsed >= remoteProcessing else { return false }
         let roundTrip = elapsed - remoteProcessing
         guard roundTrip <= 500_000_000 else { return false }
+        // Relearn a changed path before the mapping's 30-second holdover expires.
         recentRoundTrips.removeAll { localReceived >= $0.at && localReceived - $0.at > 10_000_000_000 }
         // Rejected valid exchanges still describe the current path's RTT floor.
         recentRoundTrips.append((localReceived, roundTrip))
@@ -37,14 +38,21 @@ public struct ClockMapping: Sendable {
         remoteOrigin = remote
         localOrigin = local
         updatedAt = localReceived
-        uncertaintyNanoseconds = (roundTrip + 1) / 2
+        // Remote processing duration also carries the permitted clock-rate error.
+        uncertaintyNanoseconds = (roundTrip + 1) / 2 + UInt64(ceil(Double(remoteProcessing) * 0.001))
         return true
     }
 
-    public func uncertainty(at now: UInt64) -> UInt64 {
+    public func uncertainty(at now: UInt64, remoteNanoseconds: UInt64? = nil) -> UInt64 {
         guard let age = ageNanoseconds(at: now), age <= 30_000_000_000 else { return .max }
-        // Charge both the permitted physical drift and the fitted slope's deviation from nominal.
-        return uncertaintyNanoseconds + UInt64(ceil(Double(age) * (0.002 + abs(localPerRemote - 1))))
+        let rateError = max(abs(localPerRemote / 0.998 - 1), abs(localPerRemote / 1.002 - 1))
+        let distance = now >= localOrigin ? now - localOrigin : localOrigin - now
+        var growth = rateError * (Double(distance) + Double(uncertaintyNanoseconds))
+        if let timestamp = remoteNanoseconds, let origin = remoteOrigin {
+            let sourceDistance = timestamp >= origin ? timestamp - origin : origin - timestamp
+            growth = max(growth, max(abs(localPerRemote - 0.998), abs(localPerRemote - 1.002)) * Double(sourceDistance))
+        }
+        return uncertaintyNanoseconds + UInt64(ceil(growth))
     }
 
     func ageNanoseconds(at now: UInt64) -> UInt64? {

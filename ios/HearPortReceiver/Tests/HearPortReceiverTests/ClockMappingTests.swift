@@ -2,6 +2,40 @@ import XCTest
 @testable import HearPortReceiver
 
 final class ClockMappingTests: XCTestCase {
+    func testAsymmetricExchangeAndEarlierCapturesStayWithinUncertainty() throws {
+        var clock = ClockMapping()
+        XCTAssertTrue(clock.observe(localSent: 1_000_000_000, remoteReceived: 12_000_000_000,
+            remoteSent: 12_000_000_000, localReceived: 1_020_000_000))
+        for local in [UInt64(900_000_000), 1_014_000_000] {
+            let timestamp = UInt64((12e9 + (Double(local) - 1e9) / 0.998).rounded())
+            let mapped = try XCTUnwrap(clock.map(remoteNanoseconds: timestamp, at: 1_020_000_000))
+            let error = abs(Double(mapped) - Double(local))
+            XCTAssertLessThanOrEqual(error,
+                Double(clock.uncertainty(at: 1_020_000_000, remoteNanoseconds: timestamp)))
+        }
+    }
+
+    func testFittedRateReversalStaysWithinHoldoverUncertainty() throws {
+        var clock = ClockMapping()
+        var lastReceived: UInt64 = 0
+        var lastMidpoint: UInt64 = 0
+        var lastRemote: UInt64 = 0
+        for index in 0...200 {
+            let sent = 1_000_000_000 + UInt64(index) * 2_000_000_000
+            lastMidpoint = sent + 50_000
+            lastReceived = sent + 100_000
+            lastRemote = UInt64((12e9 + Double(lastMidpoint - 1_000_000_000) / 1.002).rounded())
+            XCTAssertTrue(clock.observe(localSent: sent, remoteReceived: lastRemote,
+                remoteSent: lastRemote, localReceived: lastReceived))
+        }
+        let now = lastReceived + 30_000_000_000
+        let capture = now - 6_000_000
+        let timestamp = lastRemote + UInt64((Double(capture - lastMidpoint) / 0.998).rounded())
+        let mapped = try XCTUnwrap(clock.map(remoteNanoseconds: timestamp, at: now))
+        XCTAssertLessThanOrEqual(abs(Double(mapped) - Double(capture)),
+            Double(clock.uncertainty(at: now, remoteNanoseconds: timestamp)))
+    }
+
     func testSustainedRttIncreaseDoesNotExpireMapping() {
         var clock = ClockMapping()
         XCTAssertTrue(clock.observe(localSent: 1_000_000_000, remoteReceived: 1_001_000_000,

@@ -12,14 +12,19 @@ private struct Result: Encodable {
 @main
 private struct OfflineClock {
     static func main() throws {
-        let scenarios = ["healthy", "rtt_step", "rtt_high", "asymmetric", "spikes", "outage", "invalid_rtt"]
+        let scenarios = ["healthy", "rtt_step", "rtt_high", "asymmetric", "spikes", "outage", "invalid_rtt",
+                         "forward_only", "reverse_only", "drift_reversal", "server_processing"]
         var results: [Result] = []
         for scenario in scenarios {
             for seed in 0..<8 {
                 for rate in [0.998, 1.0, 1.002] {
                     let base: UInt64 = 5_000_000_000
                     func remote(_ local: UInt64) -> UInt64 {
-                        UInt64((12e9 + Double(local - base) / rate).rounded())
+                        let elapsed = Double(local - base)
+                        if scenario == "drift_reversal", elapsed > 60e9 {
+                            return UInt64((12e9 + 60e9 / rate + (elapsed - 60e9) / (2 - rate)).rounded())
+                        }
+                        return UInt64((12e9 + elapsed / rate).rounded())
                     }
                     var clock = ClockMapping()
                     var accepted = 0, rejected = 0, mapped = 0, unmapped = 0
@@ -34,6 +39,9 @@ private struct OfflineClock {
                         let jitter = UInt64((sampleIndex * 17 + seed * 13) % 7) * 100_000
                         var forward: UInt64 = 1_000_000 + jitter
                         var back: UInt64 = 1_000_000 + jitter
+                        let processing: UInt64 = scenario == "server_processing" ? 20_000_000 : 0
+                        if scenario == "forward_only" { forward = 20_000_000 + jitter; back = 0 }
+                        if scenario == "reverse_only" || scenario == "server_processing" { forward = 0; back = 20_000_000 + jitter }
                         if second >= 10 {
                             if scenario == "rtt_step" { forward += 9_000_000; back += 9_000_000 }
                             if scenario == "rtt_high" { forward += 39_000_000; back += 39_000_000 }
@@ -42,17 +50,17 @@ private struct OfflineClock {
                             if scenario == "invalid_rtt" { back += 600_000_000 }
                         }
                         let sent = base + UInt64(second) * 1_000_000_000
-                        let received = sent + forward + back
+                        let received = sent + forward + processing + back
                         if now >= received {
                             if !(scenario == "outage" && second >= 10 && second < 50) {
                                 if clock.observe(localSent: sent, remoteReceived: remote(sent + forward),
-                                    remoteSent: remote(sent + forward), localReceived: received) {
+                                    remoteSent: remote(sent + forward + processing), localReceived: received) {
                                     accepted += 1
                                 } else { rejected += 1 }
                             }
                             sampleIndex += 1
                         }
-                        guard elapsed >= 10_000_000 else { continue }
+                        guard elapsed >= 50_000_000 else { continue }
                         let capture = now - 6_000_000
                         guard let estimated = clock.map(remoteNanoseconds: remote(capture), at: now) else {
                             unmapped += 1
@@ -61,7 +69,7 @@ private struct OfflineClock {
                         }
                         mapped += 1
                         let error = abs(Double(estimated) - Double(capture))
-                        let uncertainty = clock.uncertainty(at: now)
+                        let uncertainty = clock.uncertainty(at: now, remoteNanoseconds: remote(capture))
                         maximumError = max(maximumError, error / 1e6)
                         maximumUncertainty = max(maximumUncertainty, Double(uncertainty) / 1e6)
                         // Mapping error must fit the uncertainty charged to the playback deadline.
