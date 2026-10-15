@@ -30,6 +30,7 @@ public final class HearPortReceiver {
     private let concealingAtomic = AtomicUInt64()
     private let dynamicCorrectionAtomic = AtomicUInt64(Double(0).bitPattern)
     private let renderRequestFramesAtomic = AtomicUInt64(120)
+    private let renderStartedAtAtomic = AtomicUInt64()
     public private(set) var playoutBudget: PlayoutBudget?
     private var outputRoute = "unknown"
     private var outputSampleRate = 48_000.0
@@ -449,6 +450,8 @@ public final class HearPortReceiver {
                     timedPackets[packet.sequence] = (timedRecord, captured,
                         clockMapping.uncertainty(at: receivedAt, remoteNanoseconds: timedRecord.capturedAt))
                     if sourceAnchor == nil { sourceAnchor = (packet.sequence, timedRecord.sourceFrame) }
+                }
+                if insertResult == .inserted || insertResult == .late, let timedRecord, let captured {
                     playoutController?.observeArrival(sourceFrame: timedRecord.sourceFrame,
                         capturedAt: captured, receivedAt: receivedAt, original: timedRecord.kind == .audio)
                 }
@@ -591,6 +594,7 @@ public final class HearPortReceiver {
     public func renderFrames(_ frameCount: Int) -> [Float] {
         guard frameCount > 0 else { return [] }
         renderRequestFramesAtomic.store(UInt64(frameCount))
+        renderStartedAtAtomic.store(DispatchTime.now().uptimeNanoseconds)
         let output = renderRing.pop(frames: frameCount)
         realtimeMetrics.recordRenderBuffer(
             fillFrames: renderRing.fillFrames,
@@ -644,13 +648,22 @@ public final class HearPortReceiver {
 
     private func pumpCoordinatedLocked() {
         let now = DispatchTime.now().uptimeNanoseconds
+        let request = max(1, renderRequestFramesAtomic.load())
+        let period = request * 1_000_000_000 / 48_000
+        let startedAt = renderStartedAtAtomic.load()
+        let elapsed = now >= startedAt ? now - startedAt : 0
+        let untilNext = period > elapsed ? period - elapsed : 0
+        // Cover callbacks due before the 5 ms preparation timer and its 1 ms leeway.
+        let horizon: UInt64 = 6_000_000
+        let demand = untilNext > horizon ? 0 : Int((horizon - untilNext) / period + 1) * Int(request)
         renderRing.setClockUncertainty(nanoseconds: clockMapping.uncertainty(at: now))
         guard let expected = jitter?.expectedSequence, let source = sourcePosition(for: expected) else { return }
         guard let decision = playoutController?.decision(now: now, nextSourceFrame: source,
             playableFrames: (jitter?.contiguousPackets ?? 0) * 120,
             stagedSourceFrames: renderRing.sourceFillFrames,
             uncertaintyNanoseconds: clockMapping.uncertainty(at: now),
-            hasFuturePacket: jitter?.hasFuturePacket == true) else { return }
+            hasFuturePacket: jitter?.hasFuturePacket == true,
+            minimumBufferMilliseconds: Double(request) / 48 + 6) else { return }
         let target = max(1, Int(ceil(decision.bufferTargetMilliseconds / 2.5)))
         let recovery = max(target, Int(((playoutBudget?.maximumMilliseconds ?? 100) -
                                         (playoutBudget?.outputReserveMilliseconds ?? 10)) / 2.5))
@@ -690,13 +703,18 @@ public final class HearPortReceiver {
                 timedPackets.removeValue(forKey: sequence)
                 continue
             }
+            if abs(decision.correction) > 0.001,
+               (jitter?.contiguousPackets ?? 0) > 0, (jitter?.contiguousPackets ?? 0) < 6,
+               renderRing.fillFrames > max(demand, Int(request) + 240) {
+                break
+            }
             if let packet = jitter?.consumeNext() {
                 timedPackets.removeValue(forKey: sequence)
                 var samples = Self.decodePCM(packet.pcm)
                 var sourceEnd = position + 120
                 var renderDeadline = deadline
                 if abs(decision.correction) > 0.001,
-                   renderRing.fillFrames + 840 <= ringReserveFrames,
+                   renderRing.fillFrames + 840 <= renderRing.capacityFrames,
                    (jitter?.contiguousPackets ?? 0) >= 5 {
                     let following = (1...5).map { sequence &+ UInt32($0) }
                     let valid = following.allSatisfy { key in
@@ -720,11 +738,14 @@ public final class HearPortReceiver {
                     }
                 }
                 samples = timeStretch.process(samples, correction: decision.correction)
+                // Uniform source labels can be newer than a splice's oldest contributing sample.
+                let spliceMargin = UInt64(abs(Int(sourceEnd - position) - samples.count / 2)) * 1_000_000_000 / 48_000
+                renderDeadline = renderDeadline > spliceMargin ? renderDeadline - spliceMargin : 0
                 concealingAtomic.store(0)
                 renderRing.pushTimed(concealment.accept(samples), sourceBegin: position,
                                       sourceEnd: sourceEnd, capturedAt: captured, deadline: renderDeadline)
             } else if jitter?.mode == .running,
-                      (deadline <= now || renderRing.fillFrames <= Int(renderRequestFramesAtomic.load()) + 240),
+                      (deadline <= now || renderRing.fillFrames < demand),
                       jitter?.concealMissing() != nil {
                 realtimeMetrics.recordConcealment()
                 debugSessionDiagnostics.recordJitterDecision(streamID: jitter!.streamID,

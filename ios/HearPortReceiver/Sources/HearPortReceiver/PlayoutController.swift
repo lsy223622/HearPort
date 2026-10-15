@@ -47,7 +47,7 @@ public struct PlayoutController: Sendable {
     private let adaptive: Bool
     public private(set) var targetMilliseconds: Double
     private var anchor: (sourceFrame: UInt64, capturedAt: UInt64)?
-    private var delays: [Double] = []
+    private var delays: [(sourceFrame: UInt64, milliseconds: Double)] = []
     private var lastDecisionAt: UInt64?
     private var correction = 0.0
 
@@ -63,8 +63,9 @@ public struct PlayoutController: Sendable {
         if anchor == nil || (original && sourceFrame >= anchor!.sourceFrame) {
             anchor = (sourceFrame, capturedAt)
         }
-        guard original, receivedAt >= capturedAt else { return }
-        delays.append(Double(receivedAt - capturedAt) / 1_000_000)
+        guard original, receivedAt >= capturedAt,
+              !delays.contains(where: { $0.sourceFrame == sourceFrame }) else { return }
+        delays.append((sourceFrame, Double(receivedAt - capturedAt) / 1_000_000))
         if delays.count > 256 { delays.removeFirst(delays.count - 256) }
     }
 
@@ -82,19 +83,23 @@ public struct PlayoutController: Sendable {
                                   playableFrames: Int, stagedSourceFrames: Int,
                                   processingMilliseconds: Double = 0,
                                   uncertaintyNanoseconds: UInt64 = 0,
-                                  hasFuturePacket: Bool = false) -> PlayoutDecision {
+                                  hasFuturePacket: Bool = false,
+                                  minimumBufferMilliseconds: Double = 0) -> PlayoutDecision {
         let elapsed = lastDecisionAt.map { now >= $0 ? Double(now - $0) / 1_000_000 : 0 } ?? 5
         lastDecisionAt = now
         let ceiling = max(0, budget.maximumMilliseconds - Double(uncertaintyNanoseconds) / 1_000_000 - 5)
+        let minimumDelay = delays.map(\.milliseconds).min() ?? 0
+        let floor = max(budget.targetMilliseconds, minimumBufferMilliseconds +
+            budget.outputReserveMilliseconds + processingMilliseconds + minimumDelay)
         if adaptive, delays.count >= 8 {
-            let sorted = delays.sorted()
+            let sorted = delays.map(\.milliseconds).sorted()
             let tail = sorted[min(sorted.count - 1, Int(Double(sorted.count - 1) * 0.98))]
-            let desired = min(ceiling, max(budget.targetMilliseconds,
+            let desired = min(ceiling, max(floor,
                 tail + budget.outputReserveMilliseconds + processingMilliseconds + 5))
             let step = desired > targetMilliseconds ? elapsed * 0.2 : elapsed * 0.005
             targetMilliseconds += min(step, max(-step, desired - targetMilliseconds))
         }
-        targetMilliseconds = min(adaptive ? targetMilliseconds : budget.targetMilliseconds, ceiling)
+        targetMilliseconds = min(adaptive ? max(floor, targetMilliseconds) : budget.targetMilliseconds, ceiling)
         let deadline = captureTime(sourceFrame: nextSourceFrame).map {
             budget.prepareDeadline(capturedAt: $0, processingMilliseconds: processingMilliseconds,
                                    uncertaintyNanoseconds: uncertaintyNanoseconds)
@@ -102,7 +107,7 @@ public struct PlayoutController: Sendable {
         let totalFrames = max(0, playableFrames) + max(0, stagedSourceFrames)
         let fill = Double(totalFrames) / 48
         let bufferTarget = max(0, targetMilliseconds - budget.outputReserveMilliseconds -
-                               processingMilliseconds - (delays.min() ?? 0))
+                               processingMilliseconds - minimumDelay)
         let error = fill - bufferTarget
         let adjusted = error > 2.5 ? error - 2.5 : (error < -2.5 ? error + 2.5 : 0)
         var desired = min(maximumCorrection, max(-maximumCorrection, adjusted / 250))

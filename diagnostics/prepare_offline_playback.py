@@ -49,31 +49,16 @@ def prepare(source, destination):
         raise ValueError('concealment insertion points changed')
     text = text.replace('                realtimeMetrics.recordConcealment()',
         '                offlineConcealedFrames += 120\n                realtimeMetrics.recordConcealment()')
-    text = replace_once(text, '                let started = playoutController == nil ?', '''                if offlineObserveLate, insertResult == .late, let timedRecord, let captured {
-                    playoutController?.observeArrival(sourceFrame: timedRecord.sourceFrame,
-                        capturedAt: captured, receivedAt: receivedAt, original: timedRecord.kind == .audio)
-                }
-                let started = playoutController == nil ?''')
-    text = replace_once(text, '            if let packet = jitter?.consumeNext() {\n                timedPackets.removeValue(forKey: sequence)', '''            if offlineBatchMode == 2, abs(decision.correction) > 0.001,
-               (jitter?.contiguousPackets ?? 0) > 0, (jitter?.contiguousPackets ?? 0) < 6,
-               renderRing.fillFrames > Int(renderRequestFramesAtomic.load()) + 240 {
-                break
-            }
-            if let packet = jitter?.consumeNext() {
-                timedPackets.removeValue(forKey: sequence)''')
-    text = replace_once(text, 'renderRing.fillFrames + 840 <= ringReserveFrames,',
+    text = replace_once(text, 'insertResult == .inserted || insertResult == .late,',
+        'insertResult == .inserted || (offlineObserveLate && insertResult == .late),')
+    text = replace_once(text, '\n            if abs(decision.correction) > 0.001,',
+        '\n            if offlineBatchMode == 2, abs(decision.correction) > 0.001,')
+    text = replace_once(text, 'renderRing.fillFrames + 840 <= renderRing.capacityFrames,',
         'renderRing.fillFrames + 840 <= (offlineBatchMode > 0 ? renderRing.capacityFrames : ringReserveFrames),')
-    text = replace_once(text, '        var prepared = 0\n        while renderRing.fillFrames + 120', '''        let request = max(1, renderRequestFramesAtomic.load())
-        let period = request * 1_000_000_000 / 48_000
-        let elapsed = now >= offlineLastRenderAt ? now - offlineLastRenderAt : 0
-        let untilNext = period > elapsed ? period - elapsed : 0
-        let demand = untilNext > 6_000_000 ? 0 : Int((6_000_000 - untilNext) / period + 1) * Int(request)
-        var prepared = 0
-        while renderRing.fillFrames + 120''')
-    text = replace_once(text, '(deadline <= now || renderRing.fillFrames <= Int(renderRequestFramesAtomic.load()) + 240)',
+    text = replace_once(text, 'minimumBufferMilliseconds: Double(request) / 48 + 6)',
+        'minimumBufferMilliseconds: offlineScheduledConceal ? Double(request) / 48 + 6 : 0)')
+    text = replace_once(text, '(deadline <= now || renderRing.fillFrames < demand)',
         '(deadline <= now || (offlineScheduledConceal ? renderRing.fillFrames < demand : renderRing.fillFrames <= Int(renderRequestFramesAtomic.load()) + 240))')
-    text = replace_once(text, '        renderRequestFramesAtomic.store(UInt64(frameCount))',
-        '        renderRequestFramesAtomic.store(UInt64(frameCount))\n        offlineLastRenderAt = offlineNow')
     text = replace_once(text, '                samples = timeStretch.process(samples, correction: decision.correction)', '''                let inputFrames = samples.count / 2
                 samples = timeStretch.process(samples, correction: decision.correction)
                 offlineMaximumShift = max(offlineMaximumShift, abs(inputFrames - samples.count / 2))''')
@@ -91,7 +76,6 @@ var offlineBatchMode = 0
 var offlineObserveLate = false
 var offlineMaximumShift = 0
 var offlineScheduledConceal = false
-var offlineLastRenderAt: UInt64 = 0
 ''', encoding='utf-8')
     c = destination / 'Sources/HearPortAtomics/AudioRing.c'
     text = c.read_text(encoding='utf-8')
