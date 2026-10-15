@@ -6,15 +6,29 @@ on:
 jobs:
   playback:
     runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        reference: [943523a, 49b8ee5, working]
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
       - name: Prepare virtual clock copy and exercise production playback
+        env:
+          HEARPORT_PLAYBACK_REFERENCE: ${{ matrix.reference }}
         run: |
-          python3 diagnostics/prepare_offline_playback.py ios/HearPortReceiver "$RUNNER_TEMP/playback"
+          source=ios/HearPortReceiver
+          if [ "$HEARPORT_PLAYBACK_REFERENCE" != working ]; then
+            mkdir "$RUNNER_TEMP/reference"
+            git archive "$HEARPORT_PLAYBACK_REFERENCE" ios/HearPortReceiver | tar -x -C "$RUNNER_TEMP/reference"
+            source="$RUNNER_TEMP/reference/ios/HearPortReceiver"
+          fi
+          python3 diagnostics/prepare_offline_playback.py "$source" "$RUNNER_TEMP/playback"
           HEARPORT_PLAYBACK_RESULTS="$RUNNER_TEMP/playback.json" \
-            swift test --package-path "$RUNNER_TEMP/playback" -c release --filter 'OfflinePlaybackTests|ReceiverCoreTests.testStreamingResampler|PlayoutControllerTests'
+            swift test --package-path "$RUNNER_TEMP/playback" -c release --filter OfflinePlaybackTests
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: HearPort-offline-playback
+          name: HearPort-offline-playback-${{ matrix.reference }}
           path: ${{ runner.temp }}/playback.json

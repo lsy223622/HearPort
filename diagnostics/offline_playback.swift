@@ -4,11 +4,9 @@ import HearPortAtomics
 @testable import HearPortReceiver
 
 private struct PlaybackResult: Codable {
+    let implementation, inputFingerprint: String
     let scenario, content: String
     let adaptive: Bool
-    let batchMode: Int
-    let observeLate: Bool
-    let scheduledConceal: Bool
     let seed, callbackFrames, uncertaintyMilliseconds: Int
     let targetMilliseconds, maximumMilliseconds, outputClockPPM: Double
     let pumpJitterMilliseconds, callbackPhaseMicroseconds: Int
@@ -18,7 +16,17 @@ private struct PlaybackResult: Codable {
     let firstOutputMilliseconds, maximumPresentationMilliseconds: Double
     let maximumSourceAgeBoundMilliseconds, maximumTargetMilliseconds: Double
     let sourceCursor, renderedFrames: UInt64
+    let originalSourceSpan, concealedSourceSpan, expiredSourceSpan: UInt64
+    let longestUnderflowMilliseconds, longestNearSilenceMilliseconds: Double
+    let recovery: [RecoveryResult]
     let maximumStereoError, outputPeak: Float
+}
+
+private struct RecoveryResult: Codable {
+    let releaseMilliseconds: Double
+    var eligibleAt: UInt64?
+    var eligibleSource: UInt64?
+    var originalRecoveryDelayMilliseconds: Double?
 }
 
 private struct Packet {
@@ -51,14 +59,18 @@ final class OfflinePlaybackTests: XCTestCase {
     }
 
     private func run(scenario: String, content: String, adaptive: Bool, seed: Int,
-                     callback: Int, uncertainty: Int, batchMode: Int, observeLate: Bool = false,
+                     callback: Int, uncertainty: Int,
                      target: Double = 50, maximum: Double = 100, outputClockPPM: Double = 0,
-                     seconds: Int = 12, scheduledConceal: Bool = false,
+                     seconds: Int = 12,
                      pumpJitterMilliseconds: Int = 0, callbackPhaseMicroseconds: Int = 0) throws -> PlaybackResult {
         let base: UInt64 = 1_000_000_000
         let count = seconds * 400
         var packets: [Packet] = []
         var lastArrival: UInt64 = 0
+        let stallMilliseconds = Int(scenario.suffix(3)) ?? 0
+        let stallPackets = stallMilliseconds * 2 / 5
+        let stalledRanges = stallPackets > 0 ? [1_600..<(1_600 + stallPackets), 3_200..<(3_200 + stallPackets)] : []
+        let releases = stalledRanges.map { base + UInt64($0.upperBound) * 2_500_000 + 5_000_000 }
         for sequence in 0..<count {
             let captured = base + UInt64(sequence) * 2_500_000
             var arrived = captured + 5_000_000 + UInt64((sequence * 17 + seed * 13) % 7) * 500_000
@@ -73,14 +85,22 @@ final class OfflinePlaybackTests: XCTestCase {
                 if sequence % 997 == 500 { arrived += 100_000_000 }
                 arrived = max(lastArrival, arrived); lastArrival = arrived
             }
+            if let range = stalledRanges.first(where: { $0.contains(sequence) }) {
+                if scenario.hasPrefix("drop") || scenario.hasPrefix("restart") { continue }
+                arrived = base + UInt64(range.upperBound) * 2_500_000 + 5_000_000
+            }
             packets.append(Packet(sequence: UInt32(sequence), captured: captured, arrived: arrived))
         }
         packets.sort { $0.arrived == $1.arrived ? $0.sequence < $1.sequence : $0.arrived < $1.arrived }
+        var fingerprint: UInt64 = 14_695_981_039_346_656_037
+        for p in packets {
+            for value in [UInt64(p.sequence), p.captured, p.arrived] {
+                fingerprint = (fingerprint ^ value) &* 1_099_511_628_211
+            }
+        }
         offlineNow = base
         offlineLastRendered = 0; offlineConcealedFrames = 0; offlineSkippedFrames = 0
-        offlineBatchMode = batchMode
-        offlineObserveLate = observeLate; offlineMaximumShift = 0
-        offlineScheduledConceal = scheduledConceal
+        offlineMaximumShift = 0
         hearport_offline_reset_age()
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -100,13 +120,22 @@ final class OfflinePlaybackTests: XCTestCase {
         var renderedFrames: UInt64 = 0
         var stereoError: Float = 0, peak: Float = 0
         var nonfiniteSamples = 0, maximumTarget = target
+        var silenceRun = 0, longestSilence = 0, underflowRun = 0, longestUnderflow = 0
+        var recovery = releases.map { RecoveryResult(releaseMilliseconds: Double($0 - base) / 1e6) }
+        var generation: UInt32 = 1
+        var restartIndex = 0
         var drift = DriftController(nominalRatio: 1)
         var resampler = StreamingStereoResampler()
         let finish = base + UInt64(seconds) * 1_000_000_000
         while true {
-            let next = min(index < packets.count ? packets[index].arrived : .max, pump, render, clock)
+            let restart = scenario.hasPrefix("restart") && restartIndex < releases.count ? releases[restartIndex] : UInt64.max
+            let next = min(index < packets.count ? packets[index].arrived : .max, pump, render, clock, restart)
             if next >= finish { break }
             offlineNow = next
+            if next == restart {
+                generation += 1; restartIndex += 1
+                XCTAssertTrue(receiver.beginReliableGeneration(7, generation: generation))
+            }
             if next == clock {
                 let rtt = UInt64(uncertainty) * 2_000_000
                 XCTAssertTrue(receiver.observeClock(localSent: next - rtt,
@@ -115,7 +144,14 @@ final class OfflinePlaybackTests: XCTestCase {
             }
             while index < packets.count && packets[index].arrived == next {
                 let p = packets[index]
-                _ = receiver.receiveTimedRecord(try TimedAudioRecord(streamID: 7, generation: 1,
+                for i in recovery.indices where next >= releases[i] && recovery[i].eligibleAt == nil {
+                    let allowance = maximum - 11 - Double(receiver.clockUncertainty) / 1e6 - Double(callback) / 48 - 6
+                    if Double(next - p.captured) / 1e6 < allowance {
+                        recovery[i].eligibleAt = next
+                        recovery[i].eligibleSource = UInt64(p.sequence) * 120
+                    }
+                }
+                _ = receiver.receiveTimedRecord(try TimedAudioRecord(streamID: 7, generation: generation,
                     sequence: p.sequence, frameCount: 120, kind: .audio, capturedAt: p.captured,
                     sourceFrame: UInt64(p.sequence) * 120, payload: payload(Int(p.sequence) * 120, content: content)))
                 index += 1
@@ -141,14 +177,33 @@ final class OfflinePlaybackTests: XCTestCase {
                 }
                 renderedFrames += UInt64(offlineLastRendered)
                 if first == nil && offlineLastRendered > 0 { first = next }
-                if first != nil { underflow += required - offlineLastRendered }
+                if first != nil {
+                    let missing = required - offlineLastRendered
+                    underflow += missing
+                    underflowRun = offlineLastRendered == 0 ? underflowRun + missing : missing
+                    longestUnderflow = max(longestUnderflow, underflowRun)
+                    for frame in 0..<callback {
+                        silenceRun = max(abs(output[frame * 2]), abs(output[frame * 2 + 1])) < 0.0001 ? silenceRun + 1 : 0
+                        longestSilence = max(longestSilence, silenceRun)
+                    }
+                }
+                let originalSource = hearport_offline_original_source()
+                if originalSource != UInt64.max {
+                    for i in recovery.indices where recovery[i].originalRecoveryDelayMilliseconds == nil {
+                        if let eligible = recovery[i].eligibleAt, let source = recovery[i].eligibleSource,
+                           originalSource > source {
+                            recovery[i].originalRecoveryDelayMilliseconds = Double(next - eligible) / 1e6
+                        }
+                    }
+                }
                 callbacks += 1
                 render = renderBase + UInt64(Double(callbacks * callback) * 1e9 / (48_000 * (1 + outputClockPPM / 1e6)))
             }
         }
         let counts = receiver.offlineStretchCounts
-        let result = PlaybackResult(scenario: scenario, content: content, adaptive: adaptive,
-            batchMode: batchMode, observeLate: observeLate, scheduledConceal: scheduledConceal,
+        let implementation = ProcessInfo.processInfo.environment["HEARPORT_PLAYBACK_REFERENCE"] ?? "working"
+        let result = PlaybackResult(implementation: implementation, inputFingerprint: String(fingerprint, radix: 16),
+            scenario: scenario, content: content, adaptive: adaptive,
             seed: seed, callbackFrames: callback, uncertaintyMilliseconds: uncertainty,
             targetMilliseconds: target, maximumMilliseconds: maximum, outputClockPPM: outputClockPPM,
             pumpJitterMilliseconds: pumpJitterMilliseconds, callbackPhaseMicroseconds: callbackPhaseMicroseconds,
@@ -162,31 +217,33 @@ final class OfflinePlaybackTests: XCTestCase {
             maximumSourceAgeBoundMilliseconds: Double(hearport_offline_maximum_age()) / 1e6 + 11 + Double(offlineMaximumShift + 1) / 48,
             maximumTargetMilliseconds: maximumTarget,
             sourceCursor: receiver.offlineSourceCursor ?? 0, renderedFrames: renderedFrames,
+            originalSourceSpan: hearport_offline_original_span(),
+            concealedSourceSpan: hearport_offline_concealed_span(), expiredSourceSpan: hearport_offline_expired_span(),
+            longestUnderflowMilliseconds: Double(longestUnderflow) / 48,
+            longestNearSilenceMilliseconds: Double(longestSilence) / 48, recovery: recovery,
             maximumStereoError: stereoError, outputPeak: peak)
         XCTAssertTrue(peak.isFinite)
         XCTAssertEqual(nonfiniteSamples, 0)
         XCTAssertLessThanOrEqual(peak, 0.5)
-        XCTAssertLessThan(stereoError, 0.00001)
+        if implementation == "working" { XCTAssertLessThan(stereoError, 0.00001) }
         XCTAssertGreaterThanOrEqual(result.firstOutputMilliseconds, 0)
-        XCTAssertLessThan(result.maximumSourceAgeBoundMilliseconds, maximum)
+        if implementation == "working" { XCTAssertLessThan(result.maximumSourceAgeBoundMilliseconds, maximum) }
         if scenario == "healthy" {
-            if scheduledConceal { XCTAssertEqual(result.concealedPreparedFrames, 0) }
+            if implementation == "working", adaptive { XCTAssertEqual(result.concealedPreparedFrames, 0) }
             XCTAssertEqual(result.underflowAfterStartFrames, 0)
-            if scheduledConceal { XCTAssertLessThanOrEqual(result.skippedSourceFrames, 120) }
+            if implementation == "working" { XCTAssertLessThanOrEqual(result.skippedSourceFrames, 120) }
         }
         return result
     }
 
     func testProductionPlaybackMatrix() throws {
         var results: [PlaybackResult] = []
-        for scenario in ["healthy", "burst", "loss", "hol"] {
+        for scenario in ["healthy", "burst", "loss", "hol", "stall200", "stall300", "drop200", "drop300", "restart200", "restart300"] {
             for content in ["tone", "noise", "mixed"] {
                 for uncertainty in [0, 15] {
-                    for variant in 0..<5 {
-                        let gather = variant == 2 || variant == 4
+                    for adaptive in [false, true] {
                         results.append(try run(scenario: scenario, content: content,
-                            adaptive: variant != 0, seed: 1, callback: 256, uncertainty: uncertainty,
-                            batchMode: gather ? 2 : 0, observeLate: gather, scheduledConceal: variant >= 3))
+                            adaptive: adaptive, seed: 1, callback: 256, uncertainty: uncertainty))
                     }
                 }
             }
@@ -194,28 +251,28 @@ final class OfflinePlaybackTests: XCTestCase {
         for target in [30.0, 80.0] {
             for callback in [120, 480] {
                 for scenario in ["healthy", "burst", "hol"] {
-                    for candidate in [false, true] {
-                        results.append(try run(scenario: scenario, content: "mixed", adaptive: true,
-                            seed: 7, callback: callback, uncertainty: 15, batchMode: candidate ? 2 : 0,
-                            observeLate: candidate, target: target, maximum: target * 2, scheduledConceal: candidate))
+                    for adaptive in [false, true] {
+                        results.append(try run(scenario: scenario, content: "mixed", adaptive: adaptive,
+                            seed: 7, callback: callback, uncertainty: 15,
+                            target: target, maximum: target * 2))
                     }
                 }
             }
         }
         for ppm in [-500.0, 500.0] {
-            for candidate in [false, true] {
-                results.append(try run(scenario: "healthy", content: "mixed", adaptive: true,
-                    seed: 7, callback: 256, uncertainty: 15, batchMode: candidate ? 2 : 0,
-                    observeLate: candidate, outputClockPPM: ppm, seconds: 30, scheduledConceal: candidate))
+            for adaptive in [false, true] {
+                results.append(try run(scenario: "healthy", content: "mixed", adaptive: adaptive,
+                    seed: 7, callback: 256, uncertainty: 15,
+                    outputClockPPM: ppm, seconds: 30))
             }
         }
         for callback in [256, 480] {
             for scenario in ["healthy", "hol"] {
-                for candidate in [false, true] {
-                    results.append(try run(scenario: scenario, content: "mixed", adaptive: true,
-                        seed: 7, callback: callback, uncertainty: 15, batchMode: candidate ? 2 : 0,
-                        observeLate: candidate, target: callback == 480 ? 30 : 50,
-                        maximum: callback == 480 ? 60 : 100, scheduledConceal: candidate,
+                for adaptive in [false, true] {
+                    results.append(try run(scenario: scenario, content: "mixed", adaptive: adaptive,
+                        seed: 7, callback: callback, uncertainty: 15,
+                        target: callback == 480 ? 30 : 50,
+                        maximum: callback == 480 ? 60 : 100,
                         pumpJitterMilliseconds: 1, callbackPhaseMicroseconds: 2_100))
                 }
             }

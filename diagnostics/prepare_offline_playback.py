@@ -49,23 +49,16 @@ def prepare(source, destination):
         raise ValueError('concealment insertion points changed')
     text = text.replace('                realtimeMetrics.recordConcealment()',
         '                offlineConcealedFrames += 120\n                realtimeMetrics.recordConcealment()')
-    text = replace_once(text, 'insertResult == .inserted || insertResult == .late,',
-        'insertResult == .inserted || (offlineObserveLate && insertResult == .late),')
-    text = replace_once(text, '\n            if abs(decision.correction) > 0.001,',
-        '\n            if offlineBatchMode == 2, abs(decision.correction) > 0.001,')
-    text = replace_once(text, 'renderRing.fillFrames + 840 <= renderRing.capacityFrames,',
-        'renderRing.fillFrames + 840 <= (offlineBatchMode > 0 ? renderRing.capacityFrames : ringReserveFrames),')
-    text = replace_once(text, 'minimumBufferMilliseconds: Double(request) / 48 + 6)',
-        'minimumBufferMilliseconds: offlineScheduledConceal ? Double(request) / 48 + 6 : 0)')
-    text = replace_once(text, '            if deadline <= presentation {',
-        '            if offlineScheduledConceal ? deadline <= presentation : (stored != nil && deadline <= now) {')
     text = replace_once(text, '                jitter?.skip(to: SequenceNumber.next(sequence))',
         '                offlineSkippedFrames += 120\n                jitter?.skip(to: SequenceNumber.next(sequence))')
-    text = replace_once(text, '(deadline <= now || renderRing.fillFrames < demand)',
-        '(deadline <= now || (offlineScheduledConceal ? renderRing.fillFrames < demand : renderRing.fillFrames <= Int(renderRequestFramesAtomic.load()) + 240))')
     text = replace_once(text, '                samples = timeStretch.process(samples, correction: decision.correction)', '''                let inputFrames = samples.count / 2
                 samples = timeStretch.process(samples, correction: decision.correction)
                 offlineMaximumShift = max(offlineMaximumShift, abs(inputFrames - samples.count / 2))''')
+    text = replace_once(text, '                renderRing.pushTimed(concealment.conceal(frames: 120),',
+        '                hearport_offline_set_concealing(1)\n                renderRing.pushTimed(concealment.conceal(frames: 120),')
+    text = replace_once(text, 'sourceEnd: position + 120, capturedAt: captured, deadline: .max)',
+        'sourceEnd: position + 120, capturedAt: captured, deadline: .max)\n                hearport_offline_set_concealing(0)')
+    text = replace_once(text, 'import Foundation', 'import Foundation\nimport HearPortAtomics')
     path.write_text(text, encoding='utf-8')
     path = directory / 'RenderRingBuffer.swift'
     text = path.read_text(encoding='utf-8').replace('DispatchTime.now().uptimeNanoseconds', 'offlineNow')
@@ -77,27 +70,58 @@ var offlineNow: UInt64 = 1_000_000_000
 var offlineLastRendered = 0
 var offlineConcealedFrames = 0
 var offlineSkippedFrames = 0
-var offlineBatchMode = 0
-var offlineObserveLate = false
 var offlineMaximumShift = 0
-var offlineScheduledConceal = false
 ''', encoding='utf-8')
     c = destination / 'Sources/HearPortAtomics/AudioRing.c'
     text = c.read_text(encoding='utf-8')
     text = replace_once(text, 'struct HearPortAudioRing {', '''static uint64_t offline_maximum_age;
-void hearport_offline_reset_age(void) { offline_maximum_age = 0; }
+static uint64_t offline_original_source = UINT64_MAX;
+static uint64_t offline_original_span, offline_concealed_span, offline_expired_span;
+static uint8_t offline_concealing;
+void hearport_offline_set_concealing(uint8_t value) { offline_concealing = value; }
+void hearport_offline_reset_age(void) {
+    offline_maximum_age = offline_original_span = offline_concealed_span = offline_expired_span = 0;
+    offline_original_source = UINT64_MAX;
+    offline_concealing = 0;
+}
 uint64_t hearport_offline_maximum_age(void) { return offline_maximum_age; }
+uint64_t hearport_offline_original_source(void) { return offline_original_source; }
+uint64_t hearport_offline_original_span(void) { return offline_original_span; }
+uint64_t hearport_offline_concealed_span(void) { return offline_concealed_span; }
+uint64_t hearport_offline_expired_span(void) { return offline_expired_span; }
 
-struct HearPortAudioRing {''')
+struct HearPortAudioRing {
+    uint8_t *offline_kind;''')
+    text = replace_once(text, '    ring->samples = calloc(capacity_frames * 2, sizeof(float));',
+        '    ring->offline_kind = calloc(capacity_frames, 1);\n    ring->samples = calloc(capacity_frames * 2, sizeof(float));')
+    text = text.replace('free(ring->samples);', 'free(ring->offline_kind);\n    free(ring->samples);')
+    text = replace_once(text, '        const size_t slot = offset / 2;',
+        '        const size_t slot = offset / 2;\n        ring->offline_kind[slot] = offline_concealing;')
+    text = replace_once(text, '    size_t count = 0;\n    uint64_t cursor = read;',
+        '    offline_original_source = UINT64_MAX;\n    size_t count = 0;\n    uint64_t cursor = read;')
+    text = replace_once(text, '            atomic_fetch_add_explicit(&ring->expired_frames, 1, memory_order_relaxed);',
+        '            offline_expired_span += atomic_load(&ring->source_end[slot]) - atomic_load(&ring->source_begin[slot]);\n            atomic_fetch_add_explicit(&ring->expired_frames, 1, memory_order_relaxed);')
     text = replace_once(text, '        stereo[count * 2] = ring->samples[slot * 2];', '''        if (captured != UINT64_MAX && presentation >= captured && presentation - captured > offline_maximum_age) {
             offline_maximum_age = presentation - captured;
         }
+        uint64_t source_end = atomic_load(&ring->source_end[slot]);
+        uint64_t span = source_end - atomic_load(&ring->source_begin[slot]);
+        if (ring->offline_kind[slot]) offline_concealed_span += span;
+        else { offline_original_span += span; offline_original_source = source_end; }
         stereo[count * 2] = ring->samples[slot * 2];''')
     c.write_text(text, encoding='utf-8')
     header = destination / 'Sources/HearPortAtomics/include/HearPortAtomics.h'
     text = header.read_text(encoding='utf-8')
     text = replace_once(text, 'uint64_t hearport_audio_ring_expired_frames',
-        'void hearport_offline_reset_age(void);\nuint64_t hearport_offline_maximum_age(void);\n\nuint64_t hearport_audio_ring_expired_frames')
+        '''void hearport_offline_reset_age(void);
+void hearport_offline_set_concealing(uint8_t value);
+uint64_t hearport_offline_maximum_age(void);
+uint64_t hearport_offline_original_source(void);
+uint64_t hearport_offline_original_span(void);
+uint64_t hearport_offline_concealed_span(void);
+uint64_t hearport_offline_expired_span(void);
+
+uint64_t hearport_audio_ring_expired_frames''')
     header.write_text(text, encoding='utf-8')
     shutil.copyfile(Path(__file__).with_name('offline_playback.swift'),
         destination / 'Tests/HearPortReceiverTests/OfflinePlaybackTests.swift')
