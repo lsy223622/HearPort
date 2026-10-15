@@ -6,7 +6,7 @@ on:
       phase:
         type: choice
         default: decomposition
-        options: [decomposition, sensitivity, components, timing]
+        options: [decomposition, sensitivity, components, timing, capacity]
 
 jobs:
   simulate:
@@ -50,13 +50,15 @@ jobs:
             "$RUNNER_TEMP/offline-transport" "$RUNNER_TEMP/offline-results/components.json" components
           elif [ "${{ inputs.phase }}" = timing ]; then
             "$RUNNER_TEMP/offline-transport" "$RUNNER_TEMP/offline-results/timing.json" timing
+          elif [ "${{ inputs.phase }}" = capacity ]; then
+            "$RUNNER_TEMP/offline-transport" "$RUNNER_TEMP/offline-results/capacity.json" capacity
           else
             "$RUNNER_TEMP/offline-transport" "$RUNNER_TEMP/offline-results/playout.json"
             "$RUNNER_TEMP/offline-transport" "$RUNNER_TEMP/offline-results/ablation.json" ablation
             "$RUNNER_TEMP/offline-recovery" "$RUNNER_TEMP/offline-results/recovery.json"
-            python3 -m unittest tests.test_offline_transport_analysis -v
-            python3 diagnostics/analyze_offline_transport.py "$RUNNER_TEMP/offline-results"
           fi
+          python3 -m unittest tests.test_offline_transport_analysis -v
+          python3 diagnostics/analyze_offline_transport.py "$RUNNER_TEMP/offline-results"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
