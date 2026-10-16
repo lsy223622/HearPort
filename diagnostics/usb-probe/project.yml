@@ -19,6 +19,8 @@ targets:
       path: App/Info.plist
       properties:
         CFBundleDisplayName: HearPort USB Probe
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CFBundleShortVersionString: $(MARKETING_VERSION)
         UILaunchScreen: {}
         ProbeBuildID: $(PROBE_BUILD_ID)
         UISupportedInterfaceOrientations:
