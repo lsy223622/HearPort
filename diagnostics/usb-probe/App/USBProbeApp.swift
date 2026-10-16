@@ -50,7 +50,9 @@ final class ProbeModel: ObservableObject {
     @Published var status = "等待开始监听"
     @Published var running = false
     @Published var keepAwake = true
-    @Published var received: UInt64 = 0, gaps: UInt64 = 0, errors: UInt64 = 0
+    @Published var received: UInt64 = 0
+    @Published var gaps: UInt64 = 0
+    @Published var errors: UInt64 = 0
     @Published var megabits = 0.0
     @Published var logURL: URL?
     let build = Bundle.main.object(forInfoDictionaryKey: "ProbeBuildID") as? String ?? "local"
