@@ -147,3 +147,25 @@
 "Unavailable (%)" = "源不可用（%）";
 "Selection rules" = "选择规则";
 "Low latency: gaps ≤0.5%, longest ≤40 ms; Balanced: gaps ≤0.1%, longest ≤20 ms. Both choose the lowest qualifying source age P95. Stability first minimizes gap ratio, then longest gap, then source age within the selected ceiling." = "低延迟：缺口≤0.5%，最长≤40 毫秒；平衡：缺口≤0.1%，最长≤20 毫秒。两者均选择达标候选中最低的源年龄 P95。稳定优先在所选上限内依次减少缺口占比、最长缺口和源年龄。";
+
+"Available connections" = "可用连接";
+
+"Network" = "网络";
+
+"Searching network and USB…" = "正在寻找网络和 USB 连接…";
+
+"Connecting via USB…" = "正在通过 USB 连接…";
+
+"Connecting via network…" = "正在通过网络连接…";
+
+"PC stopped the connection" = "电脑已停止连接";
+
+"USB available" = "USB 已就绪";
+
+"Waiting for USB iPad" = "等待 USB 连接的 iPad";
+
+"USB disconnected" = "USB 已断开";
+
+"USB listener unavailable" = "USB 监听不可用";
+
+"USB queue deadline exceeded" = "USB 队列等待超时";

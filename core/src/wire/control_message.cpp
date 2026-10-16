@@ -172,6 +172,14 @@ bool ValidateEnvelope(const ControlEnvelope& envelope) noexcept {
     return false;
   }
   switch (envelope.type) {
+    case ControlMessageType::session_end: {
+      auto empty=envelope; empty.type=ControlMessageType::receiver_ready; empty.reason=0;
+      return (envelope.reason==1 || envelope.reason==2) && ValidateEnvelope(empty);
+    }
+    case ControlMessageType::session_end_ack: {
+      auto empty=envelope; empty.type=ControlMessageType::receiver_ready;
+      return ValidateEnvelope(empty);
+    }
     case ControlMessageType::probe_manifest:
       return NoControlHeaderFields(envelope) && NoDiagnosticFields(envelope) &&
              envelope.stream_id != 0 && !envelope.bytes1.empty() && envelope.bytes1.size() <= 2048;
@@ -689,6 +697,9 @@ std::vector<std::byte> EncodeControlEnvelope(const ControlEnvelope& envelope) {
       AppendTag(1, 0, submessage);
       AppendVarint(envelope.stream_id, submessage);
       break;
+    case ControlMessageType::session_end:
+      AppendTag(1,0,submessage); AppendVarint(envelope.reason,submessage); break;
+    case ControlMessageType::session_end_ack:
     case ControlMessageType::receiver_ready:
       break;
     case ControlMessageType::diagnostics_start:
@@ -751,6 +762,8 @@ std::vector<std::byte> EncodeControlEnvelope(const ControlEnvelope& envelope) {
       case ControlMessageType::auth_response: return 21u;
       case ControlMessageType::start_stream: return 30u;
       case ControlMessageType::start_stream_ack: return 31u;
+      case ControlMessageType::session_end: return 45u;
+      case ControlMessageType::session_end_ack: return 46u;
       case ControlMessageType::receiver_ready: return 32u;
       case ControlMessageType::diagnostics_start: return 33u;
       case ControlMessageType::diagnostics_end: return 34u;
@@ -791,7 +804,7 @@ std::optional<ControlEnvelope> DecodeControlEnvelope(
         field == 1 || field == 2 || field == 3 || field == 10 ||
         field == 11 || field == 12 || field == 13 || field == 14 ||
         field == 20 || field == 21 || field == 30 || field == 31 ||
-        (field >= 32 && field <= 44);
+        (field >= 32 && field <= 46);
     if (!known_field || wire_type != 2) {
       if (!reader.Skip(wire_type)) return std::nullopt;
       continue;
@@ -805,6 +818,14 @@ std::optional<ControlEnvelope> DecodeControlEnvelope(
   ControlEnvelope envelope;
   bool parsed = false;
   switch (selected_field) {
+    case 45:
+      envelope.type=ControlMessageType::session_end;
+      parsed=ParseStream(selected_submessage,envelope);
+      envelope.reason=envelope.stream_id; envelope.stream_id=0;
+      break;
+    case 46:
+      envelope.type=ControlMessageType::session_end_ack;
+      parsed=ParseEmpty(selected_submessage); break;
     case 44:
     case 40:
     case 41:

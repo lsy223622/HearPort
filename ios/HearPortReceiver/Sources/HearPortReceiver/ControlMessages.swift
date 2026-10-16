@@ -27,6 +27,7 @@ public enum ControlFeature {
     public static let networkProbeRepeat: UInt32 = 8
     public static let coordinatedAudio: UInt32 = 16
     public static let musicTest: UInt32 = 32
+    public static let timedDiagnostics: UInt32 = 128
     public static let environmentCalibration: UInt32 = 64
 }
 
@@ -39,6 +40,8 @@ public struct AudioProgressTiming: Equatable, Sendable {
 let diagnosticReportChunkMaxBytes = 60 * 1024
 
 public enum ControlMessage: Equatable, Sendable {
+    case sessionEnd(reason: UInt32)
+    case sessionEndAck
     case connectRequest(authMode: AuthMode, peerID: Data, features: UInt32)
     case sessionReady(features: UInt32)
     case error(code: ErrorCode, message: String)
@@ -83,6 +86,8 @@ public enum ControlMessage: Equatable, Sendable {
         case .authResponse: return "auth_response"
         case .startStream: return "start_stream"
         case .startStreamAck: return "start_stream_ack"
+        case .sessionEnd: return "session_end"
+        case .sessionEndAck: return "session_end_ack"
         case .receiverReady: return "receiver_ready"
         case .diagnosticsStart: return "diagnostics_start"
         case .diagnosticsEnd: return "diagnostics_end"
@@ -183,6 +188,12 @@ public struct ControlEnvelope: Equatable, Sendable {
             writer.writeVarintField(1, value: streamID)
             body = writer.data
             field = 31
+        case let .sessionEnd(reason):
+            guard reason == 1 || reason == 2 else { throw ControlMessageError.invalidMessage }
+            var writer = ProtoWriter(); writer.writeVarintField(1, value: reason)
+            body = writer.data; field = 45
+        case .sessionEndAck:
+            body = Data(); field = 46
         case .receiverReady:
             body = Data()
             field = 32
@@ -325,7 +336,7 @@ public struct ControlEnvelope: Equatable, Sendable {
                 continue
             }
             switch outer.field {
-            case 1, 2, 3, 10, 11, 12, 13, 14, 20, 21, 30, 31, 32...44:
+            case 1, 2, 3, 10, 11, 12, 13, 14, 20, 21, 30, 31, 32...46:
                 selected = (outer.field, body)
             default:
                 lastUnknownField = outer.field
@@ -348,6 +359,11 @@ public struct ControlEnvelope: Equatable, Sendable {
         case 21: message = try parseCredential(selected.body, make: ControlMessage.authResponse)
         case 30: message = try parseStream(selected.body, make: ControlMessage.startStream)
         case 31: message = try parseStream(selected.body, make: ControlMessage.startStreamAck)
+        case 45:
+            let fields = try parseFields(selected.body)
+            guard case let .varint(reason)? = fields[1], reason == 1 || reason == 2 else { throw ControlMessageError.invalidMessage }
+            message = .sessionEnd(reason: reason)
+        case 46: message = try parseEmpty(selected.body, .sessionEndAck)
         case 32: message = try parseEmpty(selected.body, .receiverReady)
         case 33: message = try parseDiagnosticsStart(selected.body)
         case 34: message = try parseDiagnosticsEnd(selected.body)

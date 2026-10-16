@@ -20,6 +20,7 @@ struct QuicServerOptions {
   std::array<std::byte, 32> certificate_spki_sha256{};
   bool has_certificate_spki_sha256 = false;
   bool network_probe = false;
+  bool loopback_only = false;
   std::function<void(std::string_view)> diagnostic_log;
 };
 
@@ -59,6 +60,7 @@ class QuicServer {
   virtual ReliableAudioCapacity AudioCapacity() = 0;
   virtual void StopReliableAudio() = 0;
   virtual void CloseConnection() = 0;
+  virtual std::uint16_t LocalPort() const = 0;
   virtual void Stop() = 0;
 };
 

@@ -151,7 +151,8 @@ class MsQuicServer final : public QuicServer {
     }
 
     QUIC_ADDR address{};
-    QuicAddrSetFamily(&address, QUIC_ADDRESS_FAMILY_UNSPEC);
+    QuicAddrSetFamily(&address, options_.loopback_only ? QUIC_ADDRESS_FAMILY_INET : QUIC_ADDRESS_FAMILY_UNSPEC);
+    if (options_.loopback_only) address.Ipv4.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     QuicAddrSetPort(&address, options_.port);
     const auto listener_start_status =
         api_->ListenerStart(listener_, &alpn, 1, &address);
@@ -160,6 +161,10 @@ class MsQuicServer final : public QuicServer {
           std::to_string(static_cast<unsigned long>(listener_start_status)));
       StopLocked(lock);
       return false;
+    }
+    std::uint32_t address_size = sizeof(address);
+    if (QUIC_SUCCEEDED(api_->GetParam(listener_, QUIC_PARAM_LISTENER_LOCAL_ADDRESS, &address_size, &address))) {
+      local_port_ = QuicAddrGetPort(&address);
     }
     started_ = true;
     return true;
@@ -442,6 +447,8 @@ class MsQuicServer final : public QuicServer {
     }
   }
 
+  std::uint16_t LocalPort() const override { return local_port_; }
+
   void Stop() override {
     std::unique_lock lock(mutex_);
     StopLocked(lock);
@@ -491,7 +498,7 @@ class MsQuicServer final : public QuicServer {
         {
           std::lock_guard lock(server->mutex_);
           api = server->api_;
-          if (server->started_ && server->connection_ == nullptr) {
+          if (server->started_ && !server->closing_ && server->connection_ == nullptr) {
             server->connection_ = connection;
             on_connected = server->callbacks_.on_connected;
             accepted = true;
@@ -617,6 +624,7 @@ class MsQuicServer final : public QuicServer {
             api = server->api_;
             if (server->connection_ == connection) {
               tracked = true;
+              server->closing_ = true;
               server->connection_ = nullptr;
               server->control_stream_ = nullptr;
               server->audio_stream_ = nullptr;
@@ -638,6 +646,7 @@ class MsQuicServer final : public QuicServer {
             on_closed();
           }
           if (tracked) {
+            { std::lock_guard lock(server->mutex_); server->closing_ = false; }
             server->shutdown_condition_.notify_all();
           }
         }
@@ -830,7 +839,7 @@ class MsQuicServer final : public QuicServer {
       api_->ConnectionShutdown(connection, QUIC_CONNECTION_SHUTDOWN_FLAG_NONE,
                                0);
       shutdown_condition_.wait(lock, [this, connection] {
-        return connection_ != connection;
+        return connection_ != connection && !closing_;
       });
       control_stream_ = nullptr;
       audio_stream_ = nullptr;
@@ -862,6 +871,8 @@ class MsQuicServer final : public QuicServer {
   HQUIC configuration_ = nullptr;
   HQUIC listener_ = nullptr;
   HQUIC connection_ = nullptr;
+  std::uint16_t local_port_ = 0;
+  bool closing_ = false;
   HQUIC control_stream_ = nullptr;
   HQUIC audio_stream_ = nullptr;
   QuicServerOptions options_{};
@@ -921,6 +932,7 @@ class UnavailableQuicServer final : public QuicServer {
   void StopReliableAudio() override {}
   bool StartReliableAudio(std::uint32_t, std::uint32_t) override { return false; }
   void CloseConnection() override {}
+  std::uint16_t LocalPort() const override { return 0; }
   void Stop() override {}
 };
 

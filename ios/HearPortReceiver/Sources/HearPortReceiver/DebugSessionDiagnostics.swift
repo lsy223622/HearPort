@@ -20,6 +20,8 @@ private struct DebugSessionMetadata {
     let networkProbe: Bool
     let networkProbeRepeat: Bool
     let coordinatedPlan: CoordinatedProbePlan?
+    let physicalPath: String
+    let connectionID: String
 }
 
 enum NetworkProbePlan {
@@ -104,6 +106,12 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
     private let dropped = AtomicUInt64()
     private let clockUnavailablePackets = AtomicUInt64()
     private var clockExchanges: [String] = []
+    private var physicalPath = "network"
+    private var connectionID = ""
+    public func configureConnection(path: ConnectionPath, id: UUID) {
+        lock.lock(); defer { lock.unlock() }
+        physicalPath = path.rawValue; connectionID = id.uuidString
+    }
     private var session: DebugSessionMetadata?
     private var records: [DebugPacketTraceRecord] = []
     private var jitterDecisions: [DebugJitterDecisionRecord] = []
@@ -167,7 +175,8 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
             startedAt: DispatchTime.now().uptimeNanoseconds,
             networkProbe: networkProbe,
             networkProbeRepeat: networkProbeRepeat,
-            coordinatedPlan: coordinatedPlan
+            coordinatedPlan: coordinatedPlan,
+            physicalPath: physicalPath, connectionID: connectionID
         )
         recording.store(1)
         lock.unlock()
@@ -529,6 +538,8 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
         var lines = [
             "HearPort receiver diagnostic report",
             "format_version=1",
+            "physical_path=\(metadata.physicalPath)",
+            "connection_id=\(metadata.connectionID)",
             "session_id=\(hex(metadata.sessionID))",
             "stream_id=\(metadata.streamID)",
             "duration_seconds=\(metadata.durationSeconds)",

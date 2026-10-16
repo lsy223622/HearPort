@@ -48,6 +48,15 @@ class SenderService {
 
   bool Start();
   void Stop();
+  void SetActivationHandler(std::function<bool()> handler) { activation_handler_ = std::move(handler); }
+  void SetBudgetHandler(std::function<void(std::uint32_t)> handler) { budget_handler_ = std::move(handler); }
+  void SuspendForHandover();
+  void NotifyUserStop();
+  void AcknowledgeEnd();
+  void CloseConnection() { quic_->CloseConnection(); }
+  std::uint16_t local_port() const { return quic_->LocalPort(); }
+  void SetAuthenticatedPeer(std::string peer) { authenticated_peer_ = std::move(peer); }
+  const std::string& authenticated_peer() const { return authenticated_peer_; }
 
   // Authentication/control code calls these after it has validated the
   // corresponding v1 messages. They deliberately do not invent wire fields.
@@ -130,6 +139,15 @@ class SenderService {
   static constexpr std::size_t kAudioQueueCapacity = 256;
 
   QuicServerOptions options_;
+  std::function<bool()> activation_handler_;
+  std::function<void(std::uint32_t)> budget_handler_;
+  std::string authenticated_peer_;
+  bool capture_started_ = false;
+  std::mutex capture_lifecycle_mutex_;
+  std::mutex end_mutex_;
+  std::condition_variable end_condition_;
+  bool end_acknowledged_ = false;
+  void StopCapture();
   std::unique_ptr<QuicServer> quic_;
   WasapiLoopbackCapture capture_;
   std::optional<PcmNormalizer> normalizer_;

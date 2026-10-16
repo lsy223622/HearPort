@@ -19,13 +19,23 @@
 
 namespace hearport::windows {
 
+struct SenderPairingState {
+  mutable std::mutex mutex;
+  security::PairingWindow window;
+  std::array<std::byte, security::kPairingPinBytes> pin{};
+  security::Bytes32 scalar{};
+  bool ready = false;
+  std::uint64_t epoch = 0;
+};
+
 class SenderAuthentication {
  public:
   SenderAuthentication(SenderService& service,
                        security::Bytes32 windows_spki_sha256,
                        ProtectedCredentialStore credential_store = {},
                        std::filesystem::path report_root =
-                           "HearPort-diagnostics");
+                           "HearPort-diagnostics",
+                       std::shared_ptr<SenderPairingState> pairing = {});
 
   SenderAuthentication(const SenderAuthentication&) = delete;
   SenderAuthentication& operator=(const SenderAuthentication&) = delete;
@@ -75,10 +85,9 @@ class SenderAuthentication {
   security::Bytes32 windows_spki_sha256_{};
   ProtectedCredentialStore credential_store_;
   DebugReportStore report_store_;
-  security::PairingWindow pairing_window_;
-  std::array<std::byte, security::kPairingPinBytes> pairing_pin_{};
-  security::Bytes32 pairing_scalar_{};
-  bool pairing_pin_ready_ = false;
+  std::shared_ptr<SenderPairingState> pairing_;
+  std::uint64_t pairing_epoch_ = 0;
+  std::string peer_identity_;
   bool authenticated_ = false;
   std::function<void(bool, bool)> connection_handler_;
   bool remember_pairing_ = false;

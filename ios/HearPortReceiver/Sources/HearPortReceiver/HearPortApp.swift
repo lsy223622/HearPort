@@ -3,10 +3,11 @@ import AVFAudio
 import Network
 import SwiftUI
 
-public struct HearPortApp: View {
+@MainActor public struct HearPortApp: View {
     private let diagnostics = HearPortDiagnostics.shared
     @AppStorage(ConnectionPreferences.lastHostKey) private var lastHost = ""
     @AppStorage("hearport.rememberedHost") private var rememberedHost = ""
+    @State private var selectedEndpoint: ConnectionEndpoint?
     @State private var host = ""
     @State private var currentHost = ""
     @State private var connectionID = UUID()
@@ -22,6 +23,9 @@ public struct HearPortApp: View {
     @State private var connectionEstablished = false
     @State private var completedTestStatus: String?
     @State private var receiver = HearPortReceiver()
+    @StateObject private var connectionManager = ReceiverConnectionCoordinator()
+    @State private var pendingControls: [UUID: ReceiverControlSession] = [:]
+    @State private var activePath: ConnectionPath = .network
     @State private var control: ReceiverControlSession?
     @State private var audioOutput: PlatformAudioOutputController?
     @AppStorage("hearport.detailedLogging") private var detailedLogging = false
@@ -72,6 +76,18 @@ public struct HearPortApp: View {
             .tint(Color.primary)
         }
         .onAppear {
+            connectionManager.onRequest = { id, route in beginConnection(id: id, route: route) }
+            connectionManager.onCancel = { id in
+                if let candidate = pendingControls.removeValue(forKey: id) { candidate.cancel() }
+                if id == connectionID {
+                    control?.end(reason: 2); control = nil
+                    try? audioOutput?.stop(); audioOutput = nil
+                }
+            }
+            connectionManager.onSearching = {
+                if completedTestStatus == nil { isConnecting = true; status = Self.localize("Searching network and USB…") }
+            }
+            connectionManager.start()
             if control == nil {
                 status = Self.localize("Disconnected")
             }
@@ -79,15 +95,16 @@ public struct HearPortApp: View {
                 didLoadRememberedCredential = true
                 host = lastHost
                 do {
-                    hasRememberedCredential = try KeychainRememberedCredentialStore().load() != nil
+                    let remembered = try KeychainRememberedCredentialStore().load()
+                    hasRememberedCredential = remembered != nil
+                    connectionManager.setRememberedIdentity(remembered?.windowsSPKISHA256)
                     if hasRememberedCredential && rememberedHost.isEmpty {
                         rememberedHost = lastHost
                     }
                     authMode = ConnectionPreferences.defaultAuthMode(
                         hasRememberedCredential: hasRememberedCredential
                     )
-                    if autoConnect && hasRememberedCredential &&
-                        !lastHost.isEmpty && lastHost == rememberedHost {
+                    if autoConnect && hasRememberedCredential {
                         connect()
                     }
                 } catch {
@@ -201,6 +218,24 @@ public struct HearPortApp: View {
                         }
                     }
 
+                    if !isConnecting && audioOutput == nil && control?.isNetworkProbe != true && !connectionManager.endpoints.isEmpty {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Available connections").font(.subheadline).foregroundStyle(.secondary)
+                            ForEach(connectionManager.endpoints) { endpoint in
+                                Button {
+                                    selectedEndpoint = endpoint
+                                    if hasRememberedCredential { authMode = .remembered; connect(selected: endpoint) }
+                                    else { showingConnectionSetup = true }
+                                } label: {
+                                    Label(endpoint.path == .usb ? "USB" : endpoint.host,
+                                          systemImage: endpoint.path == .usb ? "cable.connector" : "desktopcomputer")
+                                        .font(.headline).frame(maxWidth: .infinity, alignment: .leading).padding(20)
+                                        .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16))
+                                }.buttonStyle(.plain)
+                            }
+                        }
+                    }
+
                     if !isConnecting && audioOutput == nil &&
                         control?.isNetworkProbe != true {
                         VStack(alignment: .leading, spacing: 10) {
@@ -256,7 +291,7 @@ public struct HearPortApp: View {
                 .multilineTextAlignment(.center)
 
             if control != nil {
-                Text(currentHost)
+                Text((activePath == .usb ? "USB · " : Self.localize("Network") + " · ") + currentHost)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             } else {
@@ -315,7 +350,7 @@ public struct HearPortApp: View {
             }
             Section("Connection method") {
                 Picker("Authentication", selection: $authMode) {
-                    if hasRememberedCredential && host == rememberedHost {
+                    if hasRememberedCredential && (host == rememberedHost || connectionManager.hasUSB || !connectionManager.endpoints.isEmpty) {
                         Text("Remembered").tag(AuthMode.remembered)
                     }
                     Text("Pair and remember").tag(AuthMode.pair)
@@ -331,10 +366,10 @@ public struct HearPortApp: View {
             }
             Section {
                 Button("Connect") {
-                    connect()
+                    connect(selected: selectedEndpoint)
                     showingConnectionSetup = false
                 }
-                .disabled(host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                .disabled((host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && connectionManager.endpoints.isEmpty) ||
                           (authMode != .remembered && !PairingSecurity.validatePIN(pin)))
             }
         }
@@ -439,8 +474,18 @@ public struct HearPortApp: View {
         .onAppear { refreshDiagnostics() }
     }
 
-    private func connect() {
-        let endpoint = host.trimmingCharacters(in: .whitespacesAndNewlines)
+    private func connect(selected: ConnectionEndpoint? = nil) {
+        guard authMode == .remembered || PairingSecurity.validatePIN(pin) else {
+            status = Self.localize("Enter the 6-digit PIN shown on Windows"); return
+        }
+        completedTestStatus = nil; connectionError = nil
+        isConnecting = true; status = Self.localize("Searching network and USB…")
+        connectionManager.setMaximumLatency(maximumLatencyMs)
+        connectionManager.connect(manualHost: host.trimmingCharacters(in: .whitespacesAndNewlines), selected: selected)
+    }
+
+    private func beginConnection(id: UUID, route: ConnectionEndpoint) {
+        let endpoint = route.host
         let requestedAuthMode = authMode
         if requestedAuthMode != .remembered && !PairingSecurity.validatePIN(pin) {
             status = Self.localize("Enter the 6-digit PIN shown on Windows")
@@ -453,28 +498,17 @@ public struct HearPortApp: View {
             refreshDiagnostics()
             return
         }
-        control?.cancel()
-        try? audioOutput?.stop()
-        audioOutput = nil
-        connectionID = UUID()
-        let activeConnectionID = connectionID
-        isConnecting = true
-        connectionError = nil
-        connectionEstablished = false
-        completedTestStatus = nil
-        currentHost = endpoint
+        let activeConnectionID = id
+        if control == nil { isConnecting = true; connectionError = nil }
         let audioMode = AudioTransportMode(rawValue: audioTransportModeRaw) ?? .datagram
         let normalizedJitter = JitterBufferConfiguration(
             targetPackets: audioMode.bufferTargetPackets(selected: jitterBufferTargetPackets)
         )
         jitterBufferTargetPackets = normalizedJitter.targetPackets
-        activeAudioMode = audioMode
-        activeBufferTargetPackets = normalizedJitter.targetPackets
         let activeReceiver = HearPortReceiver(
             bufferTargetPackets: normalizedJitter.targetPackets,
             diagnostics: diagnostics
         )
-        receiver = activeReceiver
         diagnostics.log(
             .info,
             category: .app,
@@ -486,13 +520,12 @@ public struct HearPortApp: View {
                 "audio_mode": audioMode.rawValue
             ]
         )
+        activeReceiver.debugSessionDiagnostics.configureConnection(path: route.path, id: id)
         let session = ReceiverControlSession(
             receiver: activeReceiver,
             audioMode: audioMode,
             provider: PairingSecurity.defaultSpake2Provider()
         )
-        activeTargetLatencyMs = targetLatencyMs
-        activeMaximumLatencyMs = maximumLatencyMs
         let target = targetLatencyMs, maximum = maximumLatencyMs
         session.requestedBudget = try! PlayoutBudget(targetMilliseconds: Double(target),
             maximumMilliseconds: Double(maximum), outputReserveMilliseconds: 1)
@@ -515,7 +548,41 @@ public struct HearPortApp: View {
             try PlayoutBudget(targetMilliseconds: Double(target), maximumMilliseconds: Double(maximum),
                               outputReserveMilliseconds: prepareOutputReserve())
         }
-        sendingReport = false
+        session.onAuthenticated = { [weak session] identity, features in
+            DispatchQueue.main.async {
+                guard let session, connectionManager.authenticated(id, identity: identity, features: features) else { return }
+                connectionID = id; control = session; receiver = activeReceiver
+                pendingControls.removeValue(forKey: id)
+                currentHost = endpoint; activePath = route.path
+                connectionEstablished = false; connectionError = nil; completedTestStatus = nil
+                activeAudioMode = audioMode; activeBufferTargetPackets = normalizedJitter.targetPackets
+                activeTargetLatencyMs = target; activeMaximumLatencyMs = maximum
+                sendingReport = false; isConnecting = true
+                status = Self.localize(route.path == .usb ? "Connecting via USB…" : "Connecting via network…")
+                if requestedAuthMode == .pair {
+                    hasRememberedCredential = true; authMode = .remembered; pin = ""
+                    connectionManager.setRememberedIdentity(identity)
+                }
+                diagnostics.log(.info, category: .transport, message: "physical_path_selected",
+                    fields: ["physical_path": route.path.rawValue, "connection_id": id.uuidString])
+                session.activate()
+            }
+        }
+        session.onSessionEnded = { reason in
+            DispatchQueue.main.async {
+                guard connectionID == id else { return }
+                if reason == 1 {
+                    let completed = completedTestStatus
+                    control?.cancel(); control = nil
+                    connectionManager.stop(); connectionID = UUID()
+                    isConnecting = false; connectionError = nil
+                    status = completed ?? Self.localize("PC stopped the connection")
+                } else { connectionManager.ended(id) }
+            }
+        }
+        session.onDiagnosticSessionStarted = {
+            DispatchQueue.main.async { if connectionID == id { connectionManager.pinActive() } }
+        }
         session.onCalibrationProgress = { progress in
             DispatchQueue.main.async {
                 guard connectionID == activeConnectionID, completedTestStatus == nil, !sendingReport else { return }
@@ -533,6 +600,7 @@ public struct HearPortApp: View {
         }
         session.onTransportState = { newState in
             DispatchQueue.main.async {
+                if newState == .failed || newState == .closed { connectionManager.ended(id) }
                 guard connectionID == activeConnectionID else { return }
                 if newState == .failed || newState == .closed {
                     isConnecting = false
@@ -556,6 +624,12 @@ public struct HearPortApp: View {
                 fields: ["event": "ui_connection_error", "message_bytes": "\(message.utf8.count)"]
             )
             DispatchQueue.main.async {
+                if connectionManager.isWaiting && control == nil && requestedAuthMode != .remembered {
+                    connectionManager.stop(); isConnecting = false
+                    connectionError = Self.localize(message); status = connectionError ?? Self.localize("Connection failed")
+                    return
+                }
+                connectionManager.ended(id)
                 guard connectionID == activeConnectionID else { return }
                 guard completedTestStatus == nil else { return }
                 isConnecting = false
@@ -573,10 +647,12 @@ public struct HearPortApp: View {
                 if requestedAuthMode == .pair {
                     authMode = .remembered
                     hasRememberedCredential = true
-                    rememberedHost = endpoint
+                    if route.path == .network, case .hostPort = route.endpoint { rememberedHost = endpoint }
                     pin = ""
                 }
-                lastHost = endpoint
+                if route.path == .network, case .hostPort = route.endpoint {
+                    lastHost = endpoint; if hasRememberedCredential { rememberedHost = endpoint }
+                }
                 if session?.isNetworkProbe == true {
                     status = Self.localize("Network test running")
                     refreshDiagnostics()
@@ -619,6 +695,7 @@ public struct HearPortApp: View {
         session.onDiagnosticReportSending = {
             DispatchQueue.main.async {
                 guard connectionID == activeConnectionID else { return }
+                connectionManager.pinActive()
                 sendingReport = true
                 status = Self.localize("Test ended. Preparing and sending the report…")
                 refreshDiagnostics()
@@ -630,6 +707,7 @@ public struct HearPortApp: View {
                 let message = Self.localize(reason == 1
                     ? "Test complete. Report saved on the PC."
                     : "Test ended. Report saved on the PC.")
+                connectionManager.completed()
                 completedTestStatus = message
                 connectionError = nil
                 isConnecting = false
@@ -639,11 +717,13 @@ public struct HearPortApp: View {
                 refreshDiagnostics()
             }
         }
-        control = session
-        session.connect(host: endpoint, mode: requestedAuthMode, pin: pin)
+        pendingControls[id] = session
+        session.connect(host: endpoint, port: route.port, mode: requestedAuthMode, pin: pin, endpoint: route.endpoint, deferActivation: true)
     }
 
     private func disconnect() {
+        control?.end(reason: 1)
+        connectionManager.stop()
         let hadActiveSession = control != nil || audioOutput != nil
         connectionID = UUID()
         isConnecting = false

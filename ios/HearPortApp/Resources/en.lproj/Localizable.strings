@@ -147,3 +147,25 @@
 "Unavailable (%)" = "Unavailable (%)";
 "Selection rules" = "Selection rules";
 "Low latency: gaps ≤0.5%, longest ≤40 ms; Balanced: gaps ≤0.1%, longest ≤20 ms. Both choose the lowest qualifying source age P95. Stability first minimizes gap ratio, then longest gap, then source age within the selected ceiling." = "Low latency: gaps ≤0.5%, longest ≤40 ms; Balanced: gaps ≤0.1%, longest ≤20 ms. Both choose the lowest qualifying source age P95. Stability first minimizes gap ratio, then longest gap, then source age within the selected ceiling.";
+
+"Available connections" = "Available connections";
+
+"Network" = "Network";
+
+"Searching network and USB…" = "Searching network and USB…";
+
+"Connecting via USB…" = "Connecting via USB…";
+
+"Connecting via network…" = "Connecting via network…";
+
+"PC stopped the connection" = "PC stopped the connection";
+
+"USB available" = "USB available";
+
+"Waiting for USB iPad" = "Waiting for USB iPad";
+
+"USB disconnected" = "USB disconnected";
+
+"USB listener unavailable" = "USB listener unavailable";
+
+"USB queue deadline exceeded" = "USB queue deadline exceeded";

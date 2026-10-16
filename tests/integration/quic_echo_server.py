@@ -5,6 +5,7 @@ import datetime
 import logging
 import pathlib
 import tempfile
+from usb_packet_bridge import usb_packet_bridge
 
 from aioquic.asyncio import QuicConnectionProtocol, serve
 from aioquic.quic.configuration import QuicConfiguration
@@ -121,6 +122,7 @@ class EchoProtocol(QuicConnectionProtocol):
 
 
 async def main():
+    bridge = asyncio.create_task(usb_packet_bridge())
     with tempfile.TemporaryDirectory() as directory:
         root = pathlib.Path(directory)
         key = ec.generate_private_key(ec.SECP256R1())

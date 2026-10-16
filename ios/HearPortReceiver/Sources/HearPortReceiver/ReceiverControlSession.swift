@@ -8,6 +8,12 @@ public final class ReceiverControlSession {
     private let diagnostics: HearPortDiagnostics
     private let audioMode: AudioTransportMode
 
+    public var onSessionEnded: ((UInt32) -> Void)?
+    private var ending = false
+    public var onAuthenticated: ((Data, UInt32) -> Void)?
+    public var onDiagnosticSessionStarted: (() -> Void)?
+    private var deferActivation = false
+    private var activated = false
     public var onReady: (() -> Void)?
     public var onError: ((String) -> Void)?
     public var onTransportState: ((QuicReceiverState) -> Void)?
@@ -183,9 +189,14 @@ public final class ReceiverControlSession {
         port: UInt16 = HearPortQuicTransport.defaultPort,
         mode: AuthMode,
         pin: String? = nil,
-        rememberedCredential: RememberedCredential? = nil
+        rememberedCredential: RememberedCredential? = nil,
+        endpoint: NWEndpoint? = nil,
+        deferActivation: Bool = false
     ) {
         self.mode = mode
+        self.deferActivation = deferActivation
+        self.activated = false
+        self.ending = false
         self.pin = pin
         self.connectSent = false
         self.ready = false
@@ -257,7 +268,7 @@ public final class ReceiverControlSession {
             transport.connect(
                 host: host,
                 port: port,
-                tlsPolicy: .remembered(spkiSHA256: credential.windowsSPKISHA256)
+                tlsPolicy: .remembered(spkiSHA256: credential.windowsSPKISHA256), endpoint: endpoint
             )
         } else {
             credential = nil
@@ -272,12 +283,54 @@ public final class ReceiverControlSession {
                 port: port,
                 tlsPolicy: .pairing(onPeerSPKIHash: { [weak self] hash in
                     self?.windowsSPKIHash = hash
-                })
+                }), endpoint: endpoint
             )
         }
     }
 
+    public func activate() {
+        transport.perform { [weak self] in self?.beginActivatedSession() }
+    }
+
+    private func beginActivatedSession() {
+        guard ready, !activated else { return }
+        activated = true
+        let features = peerFeatures
+            if (features & ControlFeature.diagnosticsUpload) != 0 {
+                debugQueue.async { [weak self] in
+                    guard let self else { return }
+                    do {
+                        guard let report = try self.debugReportTransfer.pendingReport() else {
+                            self.sendReceiverReady()
+                            return
+                        }
+                        let chunks = try self.debugReportTransfer.makeChunks()
+                        self.beginReportUpload(report, chunks: chunks)
+                    } catch {
+                        self.logDebugReportFailure(error, event: "pending_report_prepare_failed")
+                        self.onError?("Unable to prepare the pending diagnostic report")
+                    }
+                }
+            } else {
+                receiverReadyNotified = true
+                onReady?()
+            }
+    }
+
+    public func end(reason: UInt32) {
+        transport.perform { [self] in
+            guard !ending else { return }
+            guard ready else { cancel(); return }
+            ending = true
+            send(.sessionEnd(reason: reason))
+            DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(500)) { [self] in
+                transport.perform { [self] in if ending { cancel() } }
+            }
+        }
+    }
+
     public func cancel() {
+        ending = false
         calibration?.cancel()
         stopClockUpdates()
         diagnostics.log(
@@ -490,6 +543,14 @@ public final class ReceiverControlSession {
             )
             rememberedResponseSent = true
             send(.authResponse(peerID: credential.peerID, mac: mac))
+        case let .sessionEnd(reason):
+            guard ready else { throw ControlMessageError.invalidMessage }
+            send(.sessionEndAck, completion: { [weak self] _ in
+                self?.onSessionEnded?(reason)
+            })
+        case .sessionEndAck:
+            guard ending else { throw ControlMessageError.invalidMessage }
+            cancel()
         case let .sessionReady(features):
             switch mode {
             case .remembered:
@@ -546,25 +607,9 @@ public final class ReceiverControlSession {
                     "features": "\(features)"
                 ]
             )
-            if (features & ControlFeature.diagnosticsUpload) != 0 {
-                debugQueue.async { [weak self] in
-                    guard let self else { return }
-                    do {
-                        guard let report = try self.debugReportTransfer.pendingReport() else {
-                            self.sendReceiverReady()
-                            return
-                        }
-                        let chunks = try self.debugReportTransfer.makeChunks()
-                        self.beginReportUpload(report, chunks: chunks)
-                    } catch {
-                        self.logDebugReportFailure(error, event: "pending_report_prepare_failed")
-                        self.onError?("Unable to prepare the pending diagnostic report")
-                    }
-                }
-            } else {
-                receiverReadyNotified = true
-                onReady?()
-            }
+            let identity = credential?.windowsSPKISHA256 ?? windowsSPKIHash ?? Data()
+            onAuthenticated?(identity, features)
+            if !deferActivation { beginActivatedSession() }
         case let .startStream(streamID):
             if activeDebugSessionID != nil, activeDebugStreamID != streamID {
                 throw PairingSecurityError.providerFailure(-12)
@@ -737,6 +782,7 @@ public final class ReceiverControlSession {
                   activeDebugSessionID == nil, streamID != 0 else { throw ControlMessageError.invalidMessage }
             debugSessionDiagnostics.configureProbePlan(try CoordinatedProbePlan(encoded: manifest))
         case let .diagnosticsStart(sessionID, streamID, durationSeconds):
+            onDiagnosticSessionStarted?()
             guard (peerFeatures & ControlFeature.diagnosticsUpload) != 0,
                   activeDebugSessionID == nil,
                   pendingReportSessionID == nil else {
