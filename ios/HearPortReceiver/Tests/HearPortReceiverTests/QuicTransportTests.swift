@@ -64,6 +64,7 @@ final class QuicTransportTests: XCTestCase {
             if state == .ready {
                 transport.enableNetworkProbe()
                 transport.expectReliableAudio(streamID: 1, latestReceivedSequence: { nil })
+                transport.noteProbeGeneration(1)
                 try? transport.sendControl(Data("NETWORK_PROBE".utf8))
             }
         }

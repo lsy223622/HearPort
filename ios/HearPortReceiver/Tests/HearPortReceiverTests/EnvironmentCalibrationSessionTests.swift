@@ -74,16 +74,20 @@ final class EnvironmentCalibrationSessionTests: XCTestCase {
         }
         let result = CalibrationResult(version: 1, planID: 7, testedAt: Date(), seconds: 30, maximum: 100,
             analysis: analysis, validation: [first,second], complete: true, warnings: [])
-        XCTAssertTrue(result.save(to: defaults))
+        XCTAssertFalse(result.save(to: defaults))
+        var confirmed = result
+        confirmed.reportConfirmed = true
+        XCTAssertTrue(confirmed.save(to: defaults))
         XCTAssertTrue(CalibrationResult.load(from: defaults)?.usable == true)
-        XCTAssertTrue(result.apply(profile: 2, to: defaults))
+        XCTAssertTrue(confirmed.apply(profile: 2, to: defaults))
         XCTAssertEqual(defaults.string(forKey: "hearport.audioTransportMode"), AudioTransportMode.reliable.rawValue)
         XCTAssertEqual(defaults.integer(forKey: "hearport.targetLatencyMs"), 50)
         XCTAssertEqual(defaults.integer(forKey: "hearport.maximumLatencyMs"), 100)
-        XCTAssertEqual(result.validationStatus(profile: 2), "observed")
+        XCTAssertEqual(confirmed.validationStatus(profile: 2), "observed")
         second.missingOutputSeconds = 0.002; second.longestOutputGapMilliseconds = 25
-        let worse = CalibrationResult(version: 1, planID: 7, testedAt: Date(), seconds: 30, maximum: 100,
+        var worse = CalibrationResult(version: 1, planID: 7, testedAt: Date(), seconds: 30, maximum: 100,
             analysis: analysis, validation: [first,second], complete: true, warnings: [])
+        worse.reportConfirmed = true
         XCTAssertEqual(worse.validationStatus(profile: 2), "not_met")
         XCTAssertEqual(worse.validationStatus(profile: 1), "provisional")
         let unknown = CalibrationResult(version: 2, planID: 7, testedAt: Date(), seconds: 30, maximum: 100,
@@ -91,6 +95,20 @@ final class EnvironmentCalibrationSessionTests: XCTestCase {
         XCTAssertFalse(unknown.save(to: defaults))
         XCTAssertFalse(unknown.apply(profile: 2, to: defaults))
         XCTAssertEqual(CalibrationResult.load(from: defaults)?.planID, 7)
+    }
+
+    func testFreshReliableReplayIsConsumedAndInterruptionPreventsPublication() throws {
+        let session = EnvironmentCalibrationSession(setup: setup())
+        _ = try session.beginRound(round(1), at: 1_000_000_000)
+        let record = try TimedAudioRecord(streamID: 7, generation: 2, sequence: 1, frameCount: 120,
+            kind: .retransmission, capturedAt: 1_002_500_000, sourceFrame: 120, payload: Data(repeating: 0, count: 960))
+        XCTAssertTrue(session.receive(record, capturedAt: record.capturedAt, uncertainty: 0,
+            receivedAt: 1_010_000_000, processedAt: 1_010_000_000))
+        XCTAssertEqual(session.feedback()?.sequence, 1)
+        let result = session.result(at: 1_100_000_000, completed: false)
+        XCTAssertNil(session.confirm(result, planID: 8))
+        session.cancel()
+        XCTAssertNil(session.confirm(result, planID: 7))
     }
 
 }
