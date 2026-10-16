@@ -1,0 +1,45 @@
+name: USB feasibility probe
+on:
+  workflow_dispatch:
+jobs:
+  probe:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v5
+      - name: Check shared framing
+        working-directory: diagnostics/usb-probe
+        run: |
+          python3 -m unittest test_usb_probe.py
+          swift test -c release
+      - name: Generate probe project
+        working-directory: diagnostics/usb-probe
+        run: |
+          brew install xcodegen
+          xcodegen generate
+      - name: Archive probe
+        run: >-
+          xcodebuild -project diagnostics/usb-probe/HearPortUSBProbe.xcodeproj
+          -scheme HearPortUSBProbe -configuration Release -destination 'generic/platform=iOS'
+          -archivePath "$RUNNER_TEMP/USBProbe.xcarchive"
+          -derivedDataPath "$RUNNER_TEMP/USBProbeDerivedData"
+          CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER"
+          PROBE_BUILD_ID="${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO archive
+      - name: Package probe
+        run: |
+          set -euo pipefail
+          app="$RUNNER_TEMP/USBProbe.xcarchive/Products/Applications/HearPortUSBProbe.app"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Info.plist")" = com.lsy223622.HearPortUSBProbe
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Info.plist")" = "$GITHUB_RUN_NUMBER"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :ProbeBuildID' "$app/Info.plist")" = "${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir -p "$RUNNER_TEMP/Payload"
+          cp -R "$app" "$RUNNER_TEMP/Payload/HearPortUSBProbe.app"
+          ditto -c -k --sequesterRsrc --keepParent "$RUNNER_TEMP/Payload" "$RUNNER_TEMP/HearPortUSBProbe-unsigned.ipa"
+          shasum -a 256 "$RUNNER_TEMP/HearPortUSBProbe-unsigned.ipa" > "$RUNNER_TEMP/USBProbe-sha256.txt"
+      - uses: actions/upload-artifact@v6
+        with:
+          name: HearPortUSBProbe-unsigned-ipa
+          path: |
+            ${{ runner.temp }}/HearPortUSBProbe-unsigned.ipa
+            ${{ runner.temp }}/USBProbe-sha256.txt
+          if-no-files-found: error
