@@ -1,6 +1,9 @@
 #include "hearport/windows/calibration.h"
 #include <algorithm>
 #include <array>
+#include <charconv>
+#include <cmath>
+#include <sstream>
 #include <stdexcept>
 
 namespace hearport::windows {
@@ -187,5 +190,83 @@ bool CalibrationExchange::Handle(const CalibrationMessage& m) {
 bool CalibrationExchange::CompleteRound() {
   if (!pending_ || !acked_) return false;
   ++completed_; pending_.reset(); acked_ = false; return true;
+}
+
+std::optional<CalibrationReport> ParseCalibrationReport(std::string_view text) {
+  const std::string summary_header = "version\tplan_id\tcomplete\tseconds\tceiling_ms\tprofile\treliable\ttarget_ms\tmaximum_ms\treserve_ms\tmet_goal\tstatus\tage_p95_ms\tgap_ratio\tlongest_gap_ms";
+  const std::string point_header = "round\treliable\ttarget_ms\tmaximum_ms\treserve_ms\tvalid\tsample_count\tage_p95_ms\tgap_ratio\tlongest_gap_ms\tsource_gap_ratio\toutput_gap_ratio\tstartup_ms\tinput_hash";
+  CalibrationReport report;
+  std::istringstream input{std::string(text)};
+  std::string line;
+  int section = 0; bool header = false, found = false;
+  unsigned masks = 0;
+  auto number = [](const std::string& value) {
+    double result = 0;
+    const auto parsed = std::from_chars(value.data(), value.data()+value.size(), result);
+    if (parsed.ec != std::errc{} || parsed.ptr != value.data()+value.size() || !std::isfinite(result) || result < 0)
+      throw std::invalid_argument("invalid report number");
+    return result;
+  };
+  try {
+    while (std::getline(input,line)) {
+      if (!line.empty() && line.back() == '\r') line.pop_back();
+      if (line.empty()) { section = 0; continue; }
+      if (line == "calibration_summary_v1" || line == "calibration_curve_v1" || line == "calibration_validation_v1") {
+        section = line == "calibration_summary_v1" ? 1 : line == "calibration_curve_v1" ? 2 : 3;
+        header = true; continue;
+      }
+      if (!section) continue;
+      if (header) {
+        if (line != (section == 1 ? summary_header : point_header)) return std::nullopt;
+        header = false; continue;
+      }
+      std::vector<std::string> fields;
+      std::istringstream row(line); std::string field;
+      while (std::getline(row,field,'\t')) fields.push_back(field);
+      if (fields.size() != (section == 1 ? 15 : 14)) return std::nullopt;
+      auto n = [&](unsigned at) { return number(fields.at(at)); };
+      auto integer = [&](unsigned at, unsigned maximum) {
+        const auto value = n(at);
+        if (value > maximum || std::floor(value) != value) throw std::invalid_argument("invalid integer");
+        return static_cast<unsigned>(value);
+      };
+      auto age = [&](unsigned at) -> std::optional<double> { return fields.at(at) == "-" ? std::nullopt : std::optional(n(at)); };
+      CalibrationReportPoint point;
+      if (section == 1) {
+        if (integer(0,1) != 1) return std::nullopt;
+        const auto id = integer(1,UINT32_MAX), complete = integer(2,1), seconds = integer(3,120), ceiling = integer(4,2000);
+        if (!Seconds(seconds) || ceiling < 20 || (found && (id != report.plan_id || bool(complete) != report.complete || seconds != report.seconds || ceiling != report.ceiling_ms))) return std::nullopt;
+        report.plan_id = id; report.complete = complete; report.seconds = seconds; report.ceiling_ms = ceiling; found = true;
+        point.profile = integer(5,4);
+        if ((point.profile != 1 && point.profile != 2 && point.profile != 4) || (masks & point.profile)) return std::nullopt;
+        masks |= point.profile;
+        point.reliable = integer(6,1); point.budget = {static_cast<std::uint16_t>(integer(7,2000)),static_cast<std::uint16_t>(integer(8,2000))};
+        point.reserve_ms = integer(9,2000); point.met_goal = integer(10,1); point.status = fields[11];
+        if (point.status != "observed" && point.status != "provisional" && point.status != "not_met" && point.status != "unavailable" && point.status != "incomplete") return std::nullopt;
+        point.age_p95_ms = age(12); point.gap_ratio = fields[13] == "-" ? 1 : n(13); point.longest_gap_ms = fields[14] == "-" ? 0 : n(14);
+        if (point.met_goal && (!Budget(point.budget,point.reserve_ms) || point.budget.maximum_ms > report.ceiling_ms || !point.age_p95_ms)) return std::nullopt;
+        report.profiles.push_back(point);
+      } else {
+        point.round = integer(0,10); point.reliable = integer(1,1);
+        point.budget = {static_cast<std::uint16_t>(integer(2,2000)),static_cast<std::uint16_t>(integer(3,2000))};
+        point.reserve_ms = integer(4,2000); point.valid = integer(5,1); point.sample_count = integer(6,10);
+        point.age_p95_ms = age(7); point.gap_ratio = n(8); point.longest_gap_ms = n(9);
+        point.source_gap_ratio = fields[10] == "-" ? 1 : n(10); point.output_gap_ratio = fields[11] == "-" ? 1 : n(11);
+        point.startup_ms = n(12);
+        if (!Budget(point.budget,point.reserve_ms) || point.source_gap_ratio > 1 || point.output_gap_ratio > 1 || (point.valid && !point.age_p95_ms)) return std::nullopt;
+        (section == 2 ? report.curve : report.validation).push_back(point);
+      }
+      if (point.gap_ratio > 1) return std::nullopt;
+    }
+    if (!found || masks != 7) return std::nullopt;
+    if (report.complete && report.curve.empty()) report.complete = false;
+    for (const auto& profile : report.profiles) if (profile.met_goal) {
+      const auto count = std::count_if(report.validation.begin(),report.validation.end(),[&](const auto& value) {
+        return value.valid && value.reliable == profile.reliable && value.budget == profile.budget && value.reserve_ms == profile.reserve_ms;
+      });
+      if (count != 2) report.complete = false;
+    }
+    return report;
+  } catch (const std::exception&) { return std::nullopt; }
 }
 }  // namespace hearport::windows

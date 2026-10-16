@@ -554,9 +554,10 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
         if let calibrationResult {
             lines.append("probe_mode=environment_calibration")
             if let data = try? JSONEncoder().encode(calibrationResult), let json = String(data: data, encoding: .utf8) {
-                lines.append("\ncalibration_summary_v1")
+                lines.append("\ncalibration_result_json_v1")
                 lines.append(json)
             }
+            lines.append("\n" + calibrationResult.reportSections)
             lines.append("\ncalibration_trace_v1")
             lines.append("received_at_ns\tstream_id\tsequence\tpayload_bytes\trecorded_at_ns\tcaptured_at_ns\tsource_frame\tgeneration\tmapped_captured_at_ns\tuncertainty_ns")
             for p in probePackets {

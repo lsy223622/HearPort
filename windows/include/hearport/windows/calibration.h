@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <string>
+#include <string_view>
 #include <vector>
 
 namespace hearport::windows {
@@ -34,6 +36,22 @@ std::vector<CalibrationBudget> MakeCalibrationBudgets(std::uint16_t maximum_ms,
                                                     std::uint16_t output_reserve_ms);
 std::vector<std::byte> EncodeCalibrationMessage(const CalibrationMessage& message);
 std::optional<CalibrationMessage> DecodeCalibrationMessage(std::span<const std::byte> bytes) noexcept;
+
+struct CalibrationReportPoint {
+  unsigned round = 0, profile = 0, sample_count = 0;
+  bool reliable = false, valid = false, met_goal = false;
+  CalibrationBudget budget;
+  unsigned reserve_ms = 0;
+  std::string status;
+  std::optional<double> age_p95_ms;
+  double gap_ratio = 1, longest_gap_ms = 0, source_gap_ratio = 1, output_gap_ratio = 1, startup_ms = 0;
+};
+struct CalibrationReport {
+  unsigned plan_id = 0, seconds = 0, ceiling_ms = 0;
+  bool complete = false;
+  std::vector<CalibrationReportPoint> profiles, curve, validation;
+};
+std::optional<CalibrationReport> ParseCalibrationReport(std::string_view text);
 
 class CalibrationExchange {
  public:

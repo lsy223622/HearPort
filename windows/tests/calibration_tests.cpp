@@ -60,5 +60,13 @@ int main() {
     if (!exchange.Handle(ack) || !exchange.CompleteRound()) return 18;
   }
   if (!exchange.finished()) return 19;
+  if (ParseCalibrationReport("calibration_summary_v1\nunknown\n1\n")) return 20;
+  const std::string summary = "calibration_summary_v1\nversion\tplan_id\tcomplete\tseconds\tceiling_ms\tprofile\treliable\ttarget_ms\tmaximum_ms\treserve_ms\tmet_goal\tstatus\tage_p95_ms\tgap_ratio\tlongest_gap_ms\n";
+  const auto result = ParseCalibrationReport(summary +
+      "1\t7\t1\t30\t100\t1\t0\t50\t100\t11\t1\tobserved\t60\t0\t0\n" +
+      "1\t7\t1\t30\t100\t2\t0\t50\t100\t11\t1\tobserved\t60\t0\t0\n" +
+      "1\t7\t1\t30\t100\t4\t0\t50\t100\t11\t1\tobserved\t60\t0\t0\n");
+  if (!result || result->complete || result->profiles.size() != 3) return 21;
+  if (ParseCalibrationReport(summary + "2\t7\t1\t30\t100\t1\t0\t50\t100\t11\t1\tobserved\t60\t0\t0\n")) return 22;
   std::cout << "calibration codec and budgets passed\n";
 }

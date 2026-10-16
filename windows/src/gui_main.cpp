@@ -16,6 +16,9 @@
 #include <cstdint>
 #include <cwchar>
 #include <filesystem>
+#include <fstream>
+#include <sstream>
+#include <iomanip>
 #include <memory>
 #include <optional>
 #include <span>
@@ -58,6 +61,7 @@ constexpr int kCloseWindow = 112;
 constexpr int kExitApplication = 113;
 constexpr int kMusicFile = 114;
 constexpr int kMusicTest = 115;
+constexpr int kCalibrationResults = 116;
 constexpr int kTrayOpen = 201;
 constexpr int kTrayExit = 202;
 
@@ -573,6 +577,7 @@ class Application {
     diagnostic_status_ = Control(1, L"STATIC", L"", SS_LEFT, 0);
     Control(1, L"BUTTON", Tr(L"Open sender log", L"打开运行日志"), WS_TABSTOP | BS_PUSHBUTTON, kLog);
     Control(1, L"BUTTON", Tr(L"Open report folder", L"打开报告文件夹"), WS_TABSTOP | BS_PUSHBUTTON, kReports);
+    Control(1, L"BUTTON", Tr(L"Calibration results", L"校准结果"), WS_TABSTOP | BS_PUSHBUTTON, kCalibrationResults);
 
     Control(2, L"STATIC", Tr(L"Connection settings", L"连接设置"), SS_LEFT, 0);
     certificate_ = Control(2, L"STATIC", L"", SS_LEFT, 0);
@@ -676,6 +681,7 @@ class Application {
     Place(diagnostics[6], 44, 263, group_width - 24, 64);
     Place(diagnostics[7], width - 288, 359, 118, 29);
     Place(diagnostics[8], width - 162, 359, 118, 29);
+    Place(diagnostics[9],44,359,118,29);
 
     auto& settings = pages_[2];
     Place(settings[0], 44, 82, group_width - 24, 28);
@@ -824,6 +830,21 @@ class Application {
       } else {
         detail = Tr(L"Connect once; all eight rounds run automatically.", L"连接 iPad 后自动运行全部八组。 ");
       }
+    } else if (running_ && network_probe_active_ && service_->environment_calibration()) {
+      const auto progress = service_->calibration_progress();
+      heading = !connected_ ? Tr(L"Calibration ready", L"环境校准待连接") :
+          progress.stage == 2 ? Tr(L"Analyzing calibration", L"正在分析校准") :
+          progress.stage >= 4 ? Tr(L"Calibration ended", L"校准已结束") :
+          progress.stage == 3 ? Tr(L"Validating recommendations", L"正在复核推荐") : Tr(L"Sampling network", L"正在采样网络");
+      if (progress.stage >= 4) detail = Tr(L"Preparing and receiving the iPad report.", L"正在准备并回收 iPad 报告。");
+      else if (progress.stage == 2) detail = std::to_wstring(progress.completed) + L" / " + std::to_wstring(progress.total);
+      else if (connected_ && progress.index) {
+        const unsigned seconds = service_->network_probe_packets_processed() / 400;
+        const auto elapsed = seconds % calibration_seconds_;
+        detail = std::to_wstring(progress.index) + L" / " + std::to_wstring(progress.count) +
+            Tr(L" rounds · ",L" 组 · ") + std::to_wstring(elapsed) + L" / " + std::to_wstring(calibration_seconds_) + Tr(L" s",L" 秒");
+      } else detail = Tr(L"Connect the iPad; sampling and validation run automatically.", L"连接 iPad 后自动完成采样与复核。");
+      audio_label = Tr(L"Random data · 992 B · 400 packets/s · no audio", L"随机数据 · 992 字节 · 400 包/秒 · 不播放音频");
     } else if (running_ && network_probe_active_ && connected_) {
       const std::uint32_t processed = service_->network_probe_packets_processed();
       const auto rounds = service_->network_probe_rounds();
@@ -939,7 +960,8 @@ class Application {
 
   void StartService(std::optional<std::chrono::seconds> diagnostics = std::nullopt,
                     bool network_probe = false,
-                    std::optional<hearport::windows::MusicExcerpt> music = std::nullopt) {
+                    std::optional<hearport::windows::MusicExcerpt> music = std::nullopt,
+                    bool calibration = false) {
     if (running_) return;
     error_.clear();
     if (data_dir_.empty()) {
@@ -978,6 +1000,7 @@ class Application {
     service_ = std::make_unique<SenderService>(*identity);
     service_->ConfigureNetworkProbe(network_probe);
     service_->ConfigureDebugDuration(diagnostics);
+    if (calibration) service_->ConfigureCalibration({static_cast<std::uint16_t>(calibration_seconds_), static_cast<std::uint16_t>(calibration_maximum_)});
     if (music) service_->ConfigureMusicTest(std::move(*music));
     diagnostics = service_->debug_duration();
     service_->SetDebugOutputDirectory(data_dir_ / L"diagnostics");
@@ -1087,7 +1110,7 @@ class Application {
   void StartNetworkProbe() {
     StopService();
     StartService(std::chrono::seconds(
-                     hearport::windows::kCoordinatedProbeDurationSeconds), true);
+                     hearport::windows::kCoordinatedProbeDurationSeconds), true, std::nullopt, calibration_selected_);
     if (!running_) {
       SetWindowTextW(diagnostic_status_,
                      Tr(L"Could not start the network test. Check the overview and log.",
@@ -1117,7 +1140,16 @@ class Application {
           const auto value = wcstoull(text.c_str(), &end, 10);
           return !text.empty() && *end == L'\0' && value <= ceiling;
         };
-        if (app->settings_kind_ != kNetworkProbe) {
+        if (app->settings_kind_ == kNetworkProbe) {
+          app->calibration_selected_ = SendMessageW(app->settings_purpose_, CB_GETCURSEL,0,0) == 0;
+          const auto maximum = read(app->settings_maximum_);
+          const auto seconds = SendMessageW(app->settings_duration_,CB_GETCURSEL,0,0);
+          if (!number(maximum,2000) || std::stoul(maximum) < 20 || seconds < 0 || seconds > 2) {
+            MessageBoxW(window,Tr(L"Enter a maximum from 20 to 2000 ms.",L"请输入 20 至 2000 毫秒的上限。").c_str(),L"HearPort",MB_OK | MB_ICONWARNING); return 0;
+          }
+          app->calibration_maximum_ = std::stoul(maximum);
+          app->calibration_seconds_ = seconds == 0 ? 30 : seconds == 1 ? 60 : 120;
+        } else {
           const auto seconds = read(app->settings_duration_);
           const unsigned limit = app->settings_kind_ == kMusicTest ? 300 : 3600;
           if (!number(seconds, limit) || std::stoul(seconds) < 60) {
@@ -1166,7 +1198,7 @@ class Application {
     RegisterClassExW(&type);
     const auto title = kind == kMusicTest ? Tr(L"Music test", L"音乐测试") :
         kind == kNetworkProbe ? Tr(L"Network test", L"网络测试") : Tr(L"Live diagnostics", L"实时诊断");
-    const int height = kind == kMusicTest ? 352 : 225;
+    const int height = kind == kMusicTest ? 352 : kind == kNetworkProbe ? 370 : 225;
     RECT owner{}; GetWindowRect(hwnd_, &owner);
     settings_window_ = CreateWindowExW(WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT,
         type.lpszClassName, title.c_str(), WS_POPUP | WS_CAPTION | WS_SYSMENU,
@@ -1197,8 +1229,8 @@ class Application {
     const auto explanation = kind == kMusicTest ?
         Tr(L"The same excerpt plays in 8 rounds: Datagram/Reliable × fixed/adaptive, repeated in reverse. Each round is 120 seconds by default, with 5 seconds between rounds.",
            L"同一片段自动运行 8 组：Datagram／Reliable × 固定／自适应，再反序重复。默认每组 120 秒，组间间隔 5 秒。") :
-        kind == kNetworkProbe ? Tr(L"12 rounds of random data, 30 seconds each. Compare Datagram/Reliable and buffering policies. No audio playback. About 7 minutes 5 seconds.",
-           L"随机数据自动运行 12 组，每组 30 秒，对比两种传输与缓冲策略。无音频播放，全程约 7 分 5 秒。") :
+        kind == kNetworkProbe ? Tr(L"Calibration samples both transports, replays identical input, then validates recommendations twice. Existing transport comparisons remain available. No audio playback.",
+           L"环境校准采样两种传输，以同一轨迹比较预算，再对推荐参数复核两次。也可选择原传输对比测试。全程不播放音频。") :
         Tr(L"Capture the PC's current audio output. The iPad report is returned automatically when the chosen duration ends.",
            L"采集电脑当前输出声音，指定时长结束后自动回传 iPad 诊断报告。");
     control(L"STATIC",explanation,SS_LEFT,0,20,18,430,64);
@@ -1211,6 +1243,20 @@ class Application {
       settings_duration_ = edit(music_seconds_,ES_NUMBER,180,186,100);
       control(L"STATIC",Tr(L"Connect once. Transport switches automatically. Reports include round boundaries.",
           L"只需连接一次，自动切换传输；报告会记录每组边界。"),SS_LEFT,0,20,233,430,40);
+    } else if (kind == kNetworkProbe) {
+      control(L"STATIC",Tr(L"Purpose",L"测试用途"),SS_LEFT | SS_CENTERIMAGE,0,20,94,150,29);
+      settings_purpose_ = control(WC_COMBOBOX,L"",CBS_DROPDOWNLIST | WS_TABSTOP,0,180,94,260,100);
+      SendMessageW(settings_purpose_,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(Tr(L"Environment calibration",L"当前环境校准").c_str()));
+      SendMessageW(settings_purpose_,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(Tr(L"Transport comparison (12 rounds)",L"传输组合对比（12 组）").c_str()));
+      SendMessageW(settings_purpose_,CB_SETCURSEL,calibration_selected_ ? 0 : 1,0);
+      control(L"STATIC",Tr(L"Calibration ceiling (ms)",L"校准总延迟上限（毫秒）"),SS_LEFT | SS_CENTERIMAGE,0,20,137,205,29);
+      settings_maximum_ = edit(std::to_wstring(calibration_maximum_),ES_NUMBER,240,137,100);
+      control(L"STATIC",Tr(L"Calibration round (seconds)",L"校准每组时长（秒）"),SS_LEFT | SS_CENTERIMAGE,0,20,180,205,29);
+      settings_duration_ = control(WC_COMBOBOX,L"",CBS_DROPDOWNLIST | WS_TABSTOP,0,240,180,100,120);
+      for (const auto* seconds : {L"30",L"60",L"120"}) SendMessageW(settings_duration_,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(seconds));
+      SendMessageW(settings_duration_,CB_SETCURSEL,calibration_seconds_ == 30 ? 0 : calibration_seconds_ == 60 ? 1 : 2,0);
+      control(L"STATIC",Tr(L"Calibration: 4 sampling + up to 6 validation rounds, with 5-second gaps. Default: up to 5 min 55 s, plus analysis and report transfer. Transport comparison: fixed 7 min 5 s.",
+          L"校准：4 组采样，最多 6 组复核，组间 5 秒。默认最多 5 分 55 秒，另加分析与回传；时长随组数变化。原传输对比固定 7 分 5 秒。"),SS_LEFT,0,20,223,430,62);
     } else if (kind == kDiagnostics) {
       control(L"STATIC",Tr(L"Duration (seconds)",L"时长（秒）"),SS_LEFT | SS_CENTERIMAGE,0,20,94,150,29);
       settings_duration_ = edit(live_seconds_,ES_NUMBER,180,94,100);
@@ -1226,13 +1272,116 @@ class Application {
       if (!IsDialogMessageW(settings_window_,&message)) { TranslateMessage(&message); DispatchMessageW(&message); }
     }
     if (settings_window_) DestroyWindow(settings_window_);
-    settings_file_ = settings_start_ = settings_duration_ = nullptr;
+    settings_file_ = settings_start_ = settings_duration_ = settings_maximum_ = settings_purpose_ = nullptr;
     EnableWindow(hwnd_,TRUE); SetForegroundWindow(hwnd_);
     if (quit) { PostQuitMessage(static_cast<int>(message.wParam)); return; }
     if (!settings_start_requested_) return;
     if (kind == kMusicTest) StartMusicTest();
     else if (kind == kNetworkProbe) StartNetworkProbe();
     else StartDiagnostics();
+  }
+
+  static LRESULT CALLBACK CalibrationResultsProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
+    auto* app = reinterpret_cast<Application*>(GetWindowLongPtrW(window,GWLP_USERDATA));
+    if (message == WM_NCCREATE) {
+      app = static_cast<Application*>(reinterpret_cast<CREATESTRUCTW*>(lparam)->lpCreateParams);
+      SetWindowLongPtrW(window,GWLP_USERDATA,reinterpret_cast<LONG_PTR>(app));
+    }
+    if (!app) return DefWindowProcW(window,message,wparam,lparam);
+    if (message == WM_SIZE) {
+      RECT area{}; GetClientRect(window,&area);
+      MoveWindow(GetDlgItem(window,1),16,260,std::max(1L,area.right-32),std::max(1L,area.bottom-276),TRUE);
+    }
+    if (message == WM_PAINT) {
+      PAINTSTRUCT paint{}; const auto dc = BeginPaint(window,&paint);
+      RECT area{}; GetClientRect(window,&area);
+      FillRect(dc,&area,app->dark_ ? app->page_brush_ : GetSysColorBrush(COLOR_WINDOW));
+      SelectObject(dc,app->font_); SetBkMode(dc,TRANSPARENT);
+      SetTextColor(dc,app->dark_ ? RGB(242,242,242) : RGB(30,30,30));
+      const auto label = [&](int x,int y,const std::wstring& text) { TextOutW(dc,x,y,text.c_str(),static_cast<int>(text.size())); };
+      label(20,12,Tr(L"Sampling replay: source age P95 (x, ms) / gaps (y, %)",L"采样回放：横轴为源年龄 P95（毫秒），纵轴为缺口占比（%）"));
+      const int left = 78, right = std::max(100L,area.right-35), top = 52, bottom = 213;
+      auto axes = CreatePen(PS_SOLID,1,app->dark_ ? RGB(190,190,190) : RGB(70,70,70));
+      const auto previous = SelectObject(dc,axes);
+      MoveToEx(dc,left,top,nullptr); LineTo(dc,left,bottom); LineTo(dc,right,bottom);
+      double maximum_age = 1, maximum_gap = .001;
+      if (app->calibration_report_) for (const auto& point : app->calibration_report_->curve) if (point.valid && point.age_p95_ms) {
+        maximum_age = std::max(maximum_age,*point.age_p95_ms); maximum_gap = std::max(maximum_gap,point.gap_ratio);
+      }
+      wchar_t gap[64]{}; swprintf_s(gap,L"%.2f%%",maximum_gap*100);
+      label(10,top,gap); label(35,bottom-10,L"0"); label(right-65,bottom+8,std::to_wstring(static_cast<unsigned>(maximum_age))+L" ms");
+      if (app->calibration_report_) for (const auto& point : app->calibration_report_->curve) if (point.valid && point.age_p95_ms) {
+        auto brush = CreateSolidBrush(point.reliable ? RGB(225,135,50) : RGB(55,145,230));
+        const auto old_brush = SelectObject(dc,brush);
+        const int x = left + static_cast<int>((right-left) * *point.age_p95_ms / maximum_age);
+        const int y = bottom - static_cast<int>((bottom-top) * point.gap_ratio / maximum_gap);
+        Ellipse(dc,x-3,y-3,x+4,y+4); SelectObject(dc,old_brush); DeleteObject(brush);
+      }
+      SelectObject(dc,previous); DeleteObject(axes);
+      label(85,235,Tr(L"Blue: Datagram · orange: Reliable. Each point is one target/maximum budget.",L"蓝色 Datagram · 橙色 Reliable；每个点对应一组目标／最大预算。"));
+      EndPaint(window,&paint); return 0;
+    }
+    if (message == WM_CLOSE) { DestroyWindow(window); return 0; }
+    if (message == WM_DESTROY) { app->calibration_window_ = nullptr; return 0; }
+    return DefWindowProcW(window,message,wparam,lparam);
+  }
+
+  void ShowCalibrationResults() {
+    if (calibration_window_) { SetForegroundWindow(calibration_window_); return; }
+    const auto read = [](const std::filesystem::path& path) {
+      std::ifstream file(path,std::ios::binary);
+      return hearport::windows::ParseCalibrationReport(std::string(std::istreambuf_iterator<char>(file),{}));
+    };
+    calibration_report_ = read(calibration_report_path_);
+    if (!calibration_report_) {
+      std::error_code error;
+      std::filesystem::file_time_type latest = std::filesystem::file_time_type::min();
+      for (const auto& entry : std::filesystem::directory_iterator(data_dir_ / L"diagnostics",error)) {
+        const auto path = entry.path() / L"ipad-report.txt";
+        const auto time = std::filesystem::last_write_time(path,error);
+        if (error || time <= latest) { error.clear(); continue; }
+        if (auto result = read(path)) { latest = time; calibration_report_ = std::move(result); calibration_report_path_ = path; }
+      }
+    }
+    if (!calibration_report_) {
+      MessageBoxW(hwnd_,Tr(L"No calibration report is available. Select Environment calibration in Network test settings.",
+          L"尚无校准报告，请在网络测试设置中选择当前环境校准。").c_str(),L"HearPort",MB_OK); return;
+    }
+    const auto& report = *calibration_report_;
+    std::wostringstream text; text << std::fixed << std::setprecision(3);
+    text << (report.complete ? Tr(L"Complete observation",L"完整观测") : Tr(L"Incomplete observation; no validated recommendation",L"观测不完整；不能视为完整推荐")) << L" · " << report.seconds << Tr(L" s/round · ceiling ",L" 秒／组 · 上限 ") << report.ceiling_ms << L" ms\r\n\r\n";
+    const auto measurement = [&](const auto& point) {
+      text << (point.reliable ? L"Reliable" : L"Datagram") << L" · " << point.budget.target_ms << L"/" << point.budget.maximum_ms << Tr(L" ms (target/max) · reserve ",L" 毫秒（目标／最大）· 输出预留 ") << point.reserve_ms << L" ms\r\n";
+      text << Tr(L"Source age P95: ",L"源年龄 P95：");
+      if (point.age_p95_ms) text << *point.age_p95_ms; else text << L"—";
+      text << L" ms · " << Tr(L"gap ",L"缺口 ") << point.gap_ratio*100 << L"% · " << Tr(L"longest ",L"最长 ") << point.longest_gap_ms << L" ms\r\n";
+      if (point.gap_ratio == 0) text << Tr(L"No gaps observed in this sample.\r\n",L"本次样本未观察到缺口。\r\n");
+    };
+    for (const auto& profile : report.profiles) {
+      text << (profile.profile == 1 ? Tr(L"Low latency",L"低延迟") : profile.profile == 2 ? Tr(L"Balanced",L"平衡") : Tr(L"Stability first",L"稳定优先")) << L" · ";
+      text << (profile.status == "observed" ? Tr(L"Observed in both repeats",L"两次复核已观测") : profile.status == "provisional" ? Tr(L"Provisional: live gaps worsened",L"暂定：复核缺口变差") : profile.status == "not_met" ? Tr(L"Live validation missed target",L"复核未达目标") : profile.status == "incomplete" ? Tr(L"Incomplete",L"不完整") : Tr(L"No qualifying recommendation",L"无达标推荐")) << L"\r\n";
+      if (profile.met_goal) {
+        measurement(profile);
+        for (const auto& point : report.validation) if (point.reliable == profile.reliable && point.budget == profile.budget) {
+          text << Tr(L"Live round ",L"实际复核第 ") << point.round << L"\r\n"; measurement(point);
+          text << Tr(L"Source unavailable / output interruption: ",L"源缺失／输出中断占比：") << point.source_gap_ratio*100 << L"% / " << point.output_gap_ratio*100 << L"% · " << Tr(L"startup ",L"启动等待 ") << point.startup_ms << L" ms\r\n";
+        }
+      }
+      text << L"\r\n";
+    }
+    text << Tr(L"Sampling curve details (each configuration uses identical input within its transport):\r\n",L"采样曲线详情（各传输模式内，各配置使用相同输入）：\r\n");
+    for (const auto& point : report.curve) { measurement(point); if (!point.valid) text << Tr(L"Insufficient valid data\r\n",L"有效数据不足\r\n"); }
+    text << Tr(L"\r\nApply profiles in the iPad's Settings > Environment calibration for the next connection.\r\nFinite observation only. Zero observed gaps do not guarantee future stability. Replay is conditional on sampling sender behavior; live validation uses new traffic, so differences may be network fluctuation. Source age includes estimated output reserve; audio DSP/render/acoustic latency was not measured. Source and output gaps are different axes and are not added.\r\n",
+        L"\r\n请在 iPad 设置→环境校准中选择档位，下次连接生效。\r\n仅为有限样本观测。零缺口不是未来保证。回放依赖采样时的发送行为；实际复核使用新流量，差异可能来自网络波动。源年龄含估计输出预留，未测音频 DSP、实际输出或声学延迟。源缺失与输出中断是两条时间轴，不能相加。\r\n");
+    WNDCLASSEXW type{sizeof(type)}; type.lpfnWndProc = CalibrationResultsProc; type.hInstance = instance_;
+    type.hCursor = LoadCursorW(nullptr,IDC_ARROW); type.lpszClassName = L"HearPortCalibrationResults"; RegisterClassExW(&type);
+    calibration_window_ = CreateWindowExW(0,type.lpszClassName,Tr(L"Environment calibration",L"环境校准结果").c_str(),
+        WS_OVERLAPPEDWINDOW, CW_USEDEFAULT,CW_USEDEFAULT,900,820,hwnd_,nullptr,instance_,this);
+    if (!calibration_window_) return;
+    const auto edit = CreateWindowExW(WS_EX_CLIENTEDGE,L"EDIT",text.str().c_str(),WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL,
+        16,260,852,500,calibration_window_,reinterpret_cast<HMENU>(1),instance_,nullptr);
+    SendMessageW(edit,WM_SETFONT,reinterpret_cast<WPARAM>(font_),TRUE);
+    ShowWindow(calibration_window_,SW_SHOW);
   }
 
   void ChooseMusicFile() {
@@ -1303,6 +1452,7 @@ class Application {
     if (service_->WaitForDebugCompletion(std::chrono::milliseconds(0))) {
       const int completed_test = music_test_active_ ? kMusicTest :
           network_probe_active_ ? kNetworkProbe : kDiagnostics;
+      if (service_->environment_calibration()) calibration_report_path_ = service_->debug_session_directory() / L"ipad-report.txt";
       completed_test_ = completed_test;
       music_test_active_ = false;
       network_probe_active_ = false;
@@ -1444,6 +1594,7 @@ class Application {
           case kMusicTest: ShowTestSettings(kMusicTest); break;
           case kLog: OpenPath(data_dir_ / L"HearPort-sender.log"); break;
           case kReports: OpenPath(data_dir_ / L"diagnostics"); break;
+          case kCalibrationResults: ShowCalibrationResults(); break;
           case kSavePort: SavePortFromControl(); break;
           case kAutoStart:
             if (!SetAutoStart(SendMessageW(auto_start_, BM_GETCHECK, 0, 0) ==
@@ -1554,6 +1705,12 @@ class Application {
   UINT taskbar_created_ = 0;
   std::array<std::vector<HWND>, 3> pages_;
   HWND settings_window_ = nullptr, settings_file_ = nullptr, settings_start_ = nullptr, settings_duration_ = nullptr;
+  HWND calibration_window_ = nullptr;
+  HWND settings_maximum_ = nullptr, settings_purpose_ = nullptr;
+  bool calibration_selected_ = true;
+  unsigned calibration_seconds_ = 30, calibration_maximum_ = 100;
+  std::filesystem::path calibration_report_path_;
+  std::optional<hearport::windows::CalibrationReport> calibration_report_;
   int settings_kind_ = 0;
   bool settings_start_requested_ = false;
   std::wstring music_path_, music_start_seconds_ = L"0", music_seconds_ = L"120", live_seconds_ = L"60";
