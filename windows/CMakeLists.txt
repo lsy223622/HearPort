@@ -26,6 +26,7 @@ add_library(hearport_windows_platform STATIC
   src/debug_report_store.cpp
   src/diagnostic_logger.cpp
   src/network_probe.cpp
+  src/calibration.cpp
   src/music_file.cpp
   src/quic_server_msquic.cpp
   src/sender_options.cpp
@@ -88,6 +89,9 @@ if(HEARPORT_MSQUIC_INCLUDE_DIR AND HEARPORT_MSQUIC_LIBRARY)
 endif()
 
 if(BUILD_TESTING)
+  add_executable(hearport_calibration_tests tests/calibration_tests.cpp)
+  target_link_libraries(hearport_calibration_tests PRIVATE hearport_windows_platform)
+  add_test(NAME hearport_calibration_tests COMMAND hearport_calibration_tests)
   add_executable(hearport_music_file_tests tests/music_file_tests.cpp)
   target_link_libraries(hearport_music_file_tests PRIVATE hearport_windows_platform)
   add_test(NAME hearport_music_file_tests COMMAND hearport_music_file_tests)

@@ -1,0 +1,13 @@
+name: Environment calibration checks
+on:
+  workflow_dispatch:
+jobs:
+  calibration:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v5
+      - name: Run calibration and existing consumer contracts
+        working-directory: ios/HearPortReceiver
+        run: |
+          swift test -c release --filter EnvironmentCalibration
+          swift test -c release --filter CoordinatedProbeTests
