@@ -17,10 +17,11 @@ struct CalibrationResult: Codable, Sendable {
     let complete: Bool
     let warnings: [String]
     var context = CalibrationContext()
+    var reportConfirmed = false
 
     static let storageKey = "hearport.environmentCalibration.v1"
     var usable: Bool {
-        version == 1 && complete && analysis != nil && !validation.isEmpty &&
+        version == 1 && complete && reportConfirmed && analysis != nil && !validation.isEmpty &&
         analysis!.recommendations.map(\.profile).sorted() == [1,2,4] &&
         !CalibrationSelector.choices(from: analysis!.recommendations).isEmpty &&
         analysis!.recommendations.allSatisfy { recommendation in
@@ -208,6 +209,12 @@ final class EnvironmentCalibrationSession: @unchecked Sendable {
 
     var hasStarted: Bool { lock.lock(); defer { lock.unlock() }; return current != nil || !traces.isEmpty || analyzing }
     func cancel() { cancelled.store(1) }
+    func confirm(_ result: CalibrationResult, planID: UInt32) -> CalibrationResult? {
+        guard cancelled.load() == 0, planID == setup.planID, result.planID == planID, result.complete else { return nil }
+        var confirmed = result
+        confirmed.reportConfirmed = true
+        return confirmed
+    }
 
     func result(at: UInt64, completed: Bool) -> CalibrationResult {
         lock.lock()
