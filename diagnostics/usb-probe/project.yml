@@ -1,0 +1,40 @@
+name: HearPortUSBProbe
+options:
+  deploymentTarget:
+    iOS: "16.0"
+packages:
+  USBProbeCore:
+    path: .
+targets:
+  HearPortUSBProbe:
+    type: application
+    platform: iOS
+    sources:
+      - App
+    dependencies:
+      - package: USBProbeCore
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: HearPort USB Probe
+        UILaunchScreen: {}
+        ProbeBuildID: $(PROBE_BUILD_ID)
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.lsy223622.HearPortUSBProbe
+        MARKETING_VERSION: 0.1.0
+        CURRENT_PROJECT_VERSION: 1
+        PROBE_BUILD_ID: local
+        SWIFT_VERSION: 5.9
+        TARGETED_DEVICE_FAMILY: "2"
+schemes:
+  HearPortUSBProbe:
+    build:
+      targets:
+        HearPortUSBProbe: all
+    archive:
+      config: Release
