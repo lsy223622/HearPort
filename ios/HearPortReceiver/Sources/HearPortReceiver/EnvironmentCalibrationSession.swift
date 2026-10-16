@@ -20,8 +20,9 @@ struct CalibrationResult: Codable, Sendable {
     var reportConfirmed = false
 
     static let storageKey = "hearport.environmentCalibration.v1"
-    var usable: Bool {
-        version == 1 && complete && reportConfirmed && analysis != nil && !validation.isEmpty &&
+    var usable: Bool { reportConfirmed && validObservation }
+    private var validObservation: Bool {
+        version == 1 && complete && analysis != nil && !validation.isEmpty &&
         analysis!.recommendations.map(\.profile).sorted() == [1,2,4] &&
         !CalibrationSelector.choices(from: analysis!.recommendations).isEmpty &&
         analysis!.recommendations.allSatisfy { recommendation in
@@ -34,7 +35,7 @@ struct CalibrationResult: Codable, Sendable {
     func validationStatus(profile: Int) -> String {
         guard let recommendation = analysis?.recommendations.first(where: { $0.profile == profile }),
               let choice = recommendation.choice, recommendation.metGoal else { return "unavailable" }
-        guard usable else { return "incomplete" }
+        guard validObservation else { return "incomplete" }
         let rounds = validation.filter { $0.reliable == choice.reliable && $0.budget == choice.budget }
         let ratio = profile == 1 ? 0.005 : 0.001, gap = profile == 1 ? 40.0 : 20.0
         if profile != 4 && rounds.contains(where: { $0.gapRatio > ratio || $0.longestGapMilliseconds > gap }) { return "not_met" }
@@ -145,7 +146,8 @@ final class EnvironmentCalibrationSession: @unchecked Sendable {
     func receive(_ record: TimedAudioRecord, capturedAt: UInt64?, uncertainty: UInt64,
                  receivedAt: UInt64, processedAt: UInt64) -> Bool {
         lock.lock(); defer { lock.unlock() }
-        guard let round = current?.round, cancelled.load() == 0, record.kind == .probe,
+        guard let round = current?.round, cancelled.load() == 0, record.streamID == setup.planID,
+              record.kind == .probe || record.kind == .retransmission,
               record.frameCount == 120, record.payload.count == 960,
               record.generation >= round.generation,
               record.sequence >= round.firstSequence,
@@ -158,7 +160,7 @@ final class EnvironmentCalibrationSession: @unchecked Sendable {
             current!.complete = false; return false
         }
         current!.packets.append(CalibrationPacket(receivedAt: receivedAt, capturedAt: capture, uncertainty: uncertainty,
-            sequence: record.sequence, generation: record.generation, sourceFrame: record.sourceFrame, processedAt: processedAt))
+            sequence: record.sequence, generation: record.generation, sourceFrame: record.sourceFrame, processedAt: processedAt, kind: record.kind))
         retainedPackets += 1
         consumer?.receive(record, capturedAt: capture, uncertainty: uncertainty, now: receivedAt)
         return true

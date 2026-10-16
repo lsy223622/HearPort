@@ -145,3 +145,5 @@
 "Gap (%)" = "缺口（%）";
 "Maximum budget (ms)" = "最大预算（毫秒）";
 "Unavailable (%)" = "源不可用（%）";
+"Selection rules" = "选择规则";
+"Low latency: gaps ≤0.5%, longest ≤40 ms; Balanced: gaps ≤0.1%, longest ≤20 ms. Both choose the lowest qualifying source age P95. Stability first minimizes gap ratio, then longest gap, then source age within the selected ceiling." = "低延迟：缺口≤0.5%，最长≤40 毫秒；平衡：缺口≤0.1%，最长≤20 毫秒。两者均选择达标候选中最低的源年龄 P95。稳定优先在所选上限内依次减少缺口占比、最长缺口和源年龄。";

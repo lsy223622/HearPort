@@ -15,7 +15,7 @@ struct CalibrationResultsView: View {
                     Text("\(result.seconds) s / round · ceiling \(result.maximum) ms")
                     Text(result.context.device + " · " + result.context.operatingSystem)
                     Text(result.context.output + " · \(Int(result.context.sampleRate)) Hz")
-                    Text(result.usable ? "Complete observation" : "Incomplete observation; parameters cannot be applied.")
+                    Text(result.usable ? LocalizedStringKey("Complete observation") : LocalizedStringKey("Incomplete observation; parameters cannot be applied."))
                 }
                 ForEach([1,2,4], id: \.self) { profile in
                     Section(Self.profileName(profile)) {
@@ -32,7 +32,7 @@ struct CalibrationResultsView: View {
                                 Text("Live validation \(item.offset + 1)").font(.headline)
                                 measurement(item.element)
                             }
-                            Button(applied == profile ? "Applied for the next connection" : "Apply for the next connection") {
+                            Button(applied == profile ? LocalizedStringKey("Applied for the next connection") : LocalizedStringKey("Apply for the next connection")) {
                                 apply(profile); applied = profile
                             }.disabled(!result.usable)
                         } else {
@@ -70,6 +70,9 @@ struct CalibrationResultsView: View {
                             Text("\(p.reliable ? "Reliable" : "Datagram") · \(p.budget.target)/\(p.budget.maximum) vs \(p.referenceBudget.target)/\(p.referenceBudget.maximum) ms · \(p.lowerDifference * 100, specifier: "%.3f")…\(p.upperDifference * 100, specifier: "%.3f") pp")
                         }
                     }
+                }
+                Section("Selection rules") {
+                    Text("Low latency: gaps ≤0.5%, longest ≤40 ms; Balanced: gaps ≤0.1%, longest ≤20 ms. Both choose the lowest qualifying source age P95. Stability first minimizes gap ratio, then longest gap, then source age within the selected ceiling.")
                 }
                 Section("Limits") {
                     Text("Zero gaps means none were observed in this test. It is not a guarantee for future network conditions.")

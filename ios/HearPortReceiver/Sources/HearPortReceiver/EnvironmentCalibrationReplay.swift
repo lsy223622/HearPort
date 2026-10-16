@@ -9,6 +9,7 @@ struct CalibrationPacket: Sendable {
     let generation: UInt32
     let sourceFrame: UInt64
     var processedAt: UInt64 = 0
+    var kind: AudioRecordKind = .probe
     var availableAt: UInt64 { max(receivedAt, processedAt) }
 }
 
@@ -49,7 +50,7 @@ struct CalibrationRoundTrace: Sendable {
             hash.update(data: Data(bytes))
         }
         add([UInt64(round.index), UInt64(round.seconds), endAt, complete ? 1 : 0, clockValid ? 1 : 0])
-        for p in packets { add([p.receivedAt,p.processedAt,p.capturedAt,p.uncertainty,UInt64(p.sequence),UInt64(p.generation),p.sourceFrame]) }
+        for p in packets { add([p.receivedAt,p.processedAt,p.capturedAt,p.uncertainty,UInt64(p.sequence),UInt64(p.generation),p.sourceFrame,UInt64(p.kind.rawValue)]) }
         for t in ticks { add([t.at,t.uncertainty]) }
         return hash.finalize().map { String(format: "%02x", $0) }.joined()
     }
@@ -190,7 +191,7 @@ enum CalibrationReplay {
                 let p = packets[next]; next += 1
                 guard p.sourceFrame >= firstSource, p.sourceFrame < sourceEnd,
                       let record = try? TimedAudioRecord(streamID: 1, generation: p.generation, sequence: p.sequence,
-                        frameCount: 120, kind: .probe, capturedAt: p.capturedAt, sourceFrame: p.sourceFrame, payload: payload) else { continue }
+                        frameCount: 120, kind: p.kind, capturedAt: p.capturedAt, sourceFrame: p.sourceFrame, payload: payload) else { continue }
                 consumer.receive(record, capturedAt: p.capturedAt, uncertainty: p.uncertainty, now: p.receivedAt)
             }
             consumer.updateUncertainty(tick.uncertainty)

@@ -145,3 +145,5 @@
 "Gap (%)" = "Gap (%)";
 "Maximum budget (ms)" = "Maximum budget (ms)";
 "Unavailable (%)" = "Unavailable (%)";
+"Selection rules" = "Selection rules";
+"Low latency: gaps ≤0.5%, longest ≤40 ms; Balanced: gaps ≤0.1%, longest ≤20 ms. Both choose the lowest qualifying source age P95. Stability first minimizes gap ratio, then longest gap, then source age within the selected ceiling." = "Low latency: gaps ≤0.5%, longest ≤40 ms; Balanced: gaps ≤0.1%, longest ≤20 ms. Both choose the lowest qualifying source age P95. Stability first minimizes gap ratio, then longest gap, then source age within the selected ceiling.";
