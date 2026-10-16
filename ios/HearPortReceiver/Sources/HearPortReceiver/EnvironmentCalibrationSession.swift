@@ -1,5 +1,12 @@
 import Foundation
 
+struct CalibrationContext: Codable, Sendable {
+    var device = "unknown"
+    var operatingSystem = ProcessInfo.processInfo.operatingSystemVersionString
+    var output = "unknown"
+    var sampleRate = 0.0
+}
+
 struct CalibrationResult: Codable, Sendable {
     let version: Int
     let planID: UInt32
@@ -9,6 +16,78 @@ struct CalibrationResult: Codable, Sendable {
     let validation: [CalibrationMeasurement]
     let complete: Bool
     let warnings: [String]
+    var context = CalibrationContext()
+
+    static let storageKey = "hearport.environmentCalibration.v1"
+    var usable: Bool {
+        version == 1 && complete && analysis != nil && !validation.isEmpty &&
+        analysis!.recommendations.map(\.profile).sorted() == [1,2,4] &&
+        !CalibrationSelector.choices(from: analysis!.recommendations).isEmpty &&
+        analysis!.recommendations.allSatisfy { recommendation in
+            guard let choice = recommendation.choice else { return !recommendation.metGoal }
+            return choice.budget.maximum <= maximum && calibrationBudgets(maximum: maximum,
+                outputReserve: choice.outputReserve).contains(choice.budget) &&
+                validation.filter { $0.reliable == choice.reliable && $0.budget == choice.budget && $0.valid }.count == 2
+        }
+    }
+    func validationStatus(profile: Int) -> String {
+        guard let recommendation = analysis?.recommendations.first(where: { $0.profile == profile }),
+              let choice = recommendation.choice, recommendation.metGoal else { return "unavailable" }
+        guard usable else { return "incomplete" }
+        let rounds = validation.filter { $0.reliable == choice.reliable && $0.budget == choice.budget }
+        let ratio = profile == 1 ? 0.005 : 0.001, gap = profile == 1 ? 40.0 : 20.0
+        if profile != 4 && rounds.contains(where: { $0.gapRatio > ratio || $0.longestGapMilliseconds > gap }) { return "not_met" }
+        if let baseline = recommendation.measurement,
+           rounds.contains(where: { $0.gapRatio > baseline.gapRatio || $0.longestGapMilliseconds > baseline.longestGapMilliseconds }) {
+            return "provisional"
+        }
+        return "observed"
+    }
+    @discardableResult func save(to defaults: UserDefaults = .standard) -> Bool {
+        guard usable, let data = try? JSONEncoder().encode(self) else { return false }
+        defaults.set(data, forKey: Self.storageKey)
+        return true
+    }
+    static func load(from defaults: UserDefaults = .standard) -> CalibrationResult? {
+        guard let data = defaults.data(forKey: storageKey),
+              let result = try? JSONDecoder().decode(Self.self, from: data), result.usable else { return nil }
+        return result
+    }
+    @discardableResult func apply(profile: Int, to defaults: UserDefaults = .standard) -> Bool {
+        guard usable, let choice = analysis?.recommendations.first(where: { $0.profile == profile })?.choice else { return false }
+        defaults.set(choice.reliable ? AudioTransportMode.reliable.rawValue : AudioTransportMode.datagram.rawValue,
+                     forKey: "hearport.audioTransportMode")
+        defaults.set(choice.budget.target, forKey: "hearport.targetLatencyMs")
+        defaults.set(choice.budget.maximum, forKey: "hearport.maximumLatencyMs")
+        return true
+    }
+    var reportSections: String {
+        func number(_ value: Double?) -> String {
+            guard let value, value.isFinite else { return "-" }
+            return String(format: "%.9f", locale: Locale(identifier: "en_US_POSIX"), value)
+        }
+        var rows = ["calibration_summary_v1",
+            "version\tplan_id\tcomplete\tseconds\tceiling_ms\tprofile\treliable\ttarget_ms\tmaximum_ms\treserve_ms\tmet_goal\tstatus\tage_p95_ms\tgap_ratio\tlongest_gap_ms"]
+        for profile in [1,2,4] {
+            let recommendation = analysis?.recommendations.first { $0.profile == profile }
+            let choice = recommendation?.choice, m = recommendation?.measurement
+            rows.append(["1", "\(planID)", complete ? "1" : "0", "\(seconds)", "\(maximum)", "\(profile)",
+                choice?.reliable == true ? "1" : "0", "\(choice?.budget.target ?? 0)", "\(choice?.budget.maximum ?? 0)",
+                "\(choice?.outputReserve ?? 0)", recommendation?.metGoal == true ? "1" : "0", validationStatus(profile: profile),
+                number(m?.ageP95Milliseconds), number(m?.gapRatio), number(m?.longestGapMilliseconds)].joined(separator: "\t"))
+        }
+        let header = "round\treliable\ttarget_ms\tmaximum_ms\treserve_ms\tvalid\tsample_count\tage_p95_ms\tgap_ratio\tlongest_gap_ms\tsource_gap_ratio\toutput_gap_ratio\tstartup_ms\tinput_hash"
+        for (name, measurements) in [("calibration_curve_v1", analysis?.candidates ?? []), ("calibration_validation_v1", validation)] {
+            rows.append(""); rows.append(name); rows.append(header)
+            for m in measurements {
+                rows.append(["\(m.round)",m.reliable ? "1" : "0","\(m.budget.target)","\(m.budget.maximum)","\(m.outputReserve)",
+                    m.valid ? "1" : "0","\(m.sampleCount)",number(m.ageP95Milliseconds),number(m.gapRatio),number(m.longestGapMilliseconds),
+                    number(m.sourceFrames > 0 ? Double(m.missingSourceFrames)/Double(m.sourceFrames) : nil),
+                    number(m.outputSeconds > 0 ? m.missingOutputSeconds/m.outputSeconds : nil),number(m.startupMilliseconds),m.inputFingerprint].joined(separator: "\t"))
+            }
+        }
+        return rows.joined(separator: "\n")
+    }
 }
 
 struct CalibrationProgressSnapshot: Sendable {
@@ -20,6 +99,8 @@ final class EnvironmentCalibrationSession: @unchecked Sendable {
     let setup: CalibrationMessage
     private let lock = NSLock()
     private let cancelled = AtomicUInt64()
+    private var context = CalibrationContext()
+    func setContext(_ value: CalibrationContext) { lock.lock(); context = value; lock.unlock() }
     private var traces: [CalibrationRoundTrace] = []
     private var current: CalibrationRoundTrace?
     private var consumer: ProbeConsumer?
@@ -125,17 +206,18 @@ final class EnvironmentCalibrationSession: @unchecked Sendable {
         return result
     }
 
+    var hasStarted: Bool { lock.lock(); defer { lock.unlock() }; return current != nil || !traces.isEmpty || analyzing }
     func cancel() { cancelled.store(1) }
 
     func result(at: UInt64, completed: Bool) -> CalibrationResult {
         lock.lock()
         finishCurrent(at: at); consumer = nil
-        let input = traces, captured = analysis
+        let input = traces, captured = analysis, capturedContext = context
         lock.unlock()
         let validation = input.filter { $0.round.phase == 1 }.map { CalibrationReplay.evaluate(trace: $0, budget: $0.round.budget) }
         let choices = captured.map { CalibrationSelector.choices(from: $0.recommendations) } ?? []
         let valid = completed && cancelled.load() == 0 && captured != nil && !choices.isEmpty && input.count == 4 + choices.count * 2 &&
-            input.allSatisfy { $0.complete && $0.clockValid && !$0.packets.isEmpty } && validation.allSatisfy(\.valid) &&
+            input.allSatisfy { $0.complete && $0.clockValid && !$0.packets.isEmpty && $0.observableFrames == UInt64($0.round.seconds) * 48_000 } && validation.allSatisfy(\.valid) &&
             choices.allSatisfy { choice in
                 input.filter { $0.round.phase == 1 && $0.round.profileMask == choice.profileMask &&
                     $0.round.reliable == choice.reliable && $0.round.budget == choice.budget }.count == 2
@@ -144,8 +226,10 @@ final class EnvironmentCalibrationSession: @unchecked Sendable {
             "Sampling replay is conditional on the recorded sender behavior. Validation uses new traffic.",
             "Source ages include output reserve estimates; audio DSP and acoustic latency were not measured."]
         if !valid { warnings.append("Calibration did not complete with sufficient valid data.") }
-        return CalibrationResult(version: 1, planID: setup.planID, testedAt: Date(), seconds: setup.seconds,
+        var result = CalibrationResult(version: 1, planID: setup.planID, testedAt: Date(), seconds: setup.seconds,
             maximum: setup.budget.maximum, analysis: captured, validation: validation, complete: valid, warnings: warnings)
+        result.context = capturedContext
+        return result
     }
 
     private func finishCurrent(at: UInt64) {

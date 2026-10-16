@@ -17,10 +17,13 @@ public final class ReceiverControlSession {
     private(set) var musicTestRound: MusicTestRound?
     var onCalibrationProgress: ((CalibrationProgressSnapshot) -> Void)?
     var onCalibrationResult: ((CalibrationResult) -> Void)?
+    var calibrationContext: (() -> CalibrationContext)?
     var prepareCalibrationOutputReserve: (() throws -> Double)?
     private var calibration: EnvironmentCalibrationSession?
     var isEnvironmentCalibration: Bool { (peerFeatures & ControlFeature.environmentCalibration) != 0 }
-    func interruptCalibration() { calibration?.cancel() }
+    func interruptCalibration(forOutputChange: Bool = false) {
+        if !forOutputChange || calibration?.hasStarted == true { calibration?.cancel() }
+    }
     var isMusicTest: Bool { (peerFeatures & ControlFeature.musicTest) != 0 }
 
     private let provider: any Spake2Provider
@@ -605,6 +608,7 @@ public final class ReceiverControlSession {
                 }
                 if let calibration {
                     let reserve = Int(ceil(try prepareCalibrationOutputReserve?() ?? requestedBudget.outputReserveMilliseconds))
+                    if let context = calibrationContext?() { calibration.setContext(context) }
                     guard let chosen = calibrationBudgets(maximum: calibration.setup.budget.maximum, outputReserve: reserve)
                         .first(where: { $0.maximum == calibration.setup.budget.maximum }) else {
                         onError?("Selected delay budget is too small for this audio output.")

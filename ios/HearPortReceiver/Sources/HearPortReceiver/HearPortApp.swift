@@ -37,6 +37,9 @@ public struct HearPortApp: View {
     @State private var diagnosticsStatus: String?
     @State private var showingClearConfirmation = false
     @State private var showingConnectionSetup = false
+    @State private var calibrationResult: CalibrationResult? = CalibrationResult.load()
+    @State private var sendingReport = false
+    @Environment(\.scenePhase) private var scenePhase
 
     public init() {}
 
@@ -115,6 +118,12 @@ public struct HearPortApp: View {
                 fields: ["event": "ui_logging_level_changed", "level": enabled ? "debug" : "info"]
             )
             refreshDiagnostics()
+        }
+        .onChange(of: scenePhase) { phase in
+            if phase == .background { control?.interruptCalibration() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.routeChangeNotification)) { _ in
+            control?.interruptCalibration(forOutputChange: true)
         }
         .onChange(of: host) { newHost in
             if authMode == .remembered && newHost != rememberedHost {
@@ -342,8 +351,8 @@ public struct HearPortApp: View {
         Form {
             Section {
                 Picker("Audio transport mode", selection: $audioTransportModeRaw) {
-                    Text("Low latency").tag(AudioTransportMode.datagram.rawValue)
-                    Text("Stability").tag(AudioTransportMode.reliable.rawValue)
+                    Text("Datagram").tag(AudioTransportMode.datagram.rawValue)
+                    Text("Reliable stream").tag(AudioTransportMode.reliable.rawValue)
                 }
                 Stepper("Normal target: \(targetLatencyMs) ms", value: $targetLatencyMs,
                         in: 10...max(10, maximumLatencyMs), step: 10)
@@ -363,6 +372,15 @@ public struct HearPortApp: View {
                 Text("Uses the last connected PC when its pairing is saved.")
             }
             Section("Support") {
+                NavigationLink("Environment calibration") {
+                    CalibrationResultsView(result: calibrationResult) { profile in
+                        if calibrationResult?.apply(profile: profile) == true {
+                            audioTransportModeRaw = UserDefaults.standard.string(forKey: "hearport.audioTransportMode") ?? AudioTransportMode.datagram.rawValue
+                            targetLatencyMs = UserDefaults.standard.integer(forKey: "hearport.targetLatencyMs")
+                            maximumLatencyMs = UserDefaults.standard.integer(forKey: "hearport.maximumLatencyMs")
+                        }
+                    }
+                }
                 NavigationLink {
                     diagnosticsView
                 } label: {
@@ -478,14 +496,40 @@ public struct HearPortApp: View {
         let target = targetLatencyMs, maximum = maximumLatencyMs
         session.requestedBudget = try! PlayoutBudget(targetMilliseconds: Double(target),
             maximumMilliseconds: Double(maximum), outputReserveMilliseconds: 1)
-        session.preparePlayoutBudget = {
+        let prepareOutputReserve: () throws -> Double = {
             let audioSession = AVAudioSession.sharedInstance()
             try audioSession.setCategory(.playback, mode: .default, options: [])
             try audioSession.setPreferredIOBufferDuration(0.005)
             try audioSession.setActive(true)
             let reserve = ceil((audioSession.outputLatency + audioSession.ioBufferDuration) * 1_000) + 1
-            return try PlayoutBudget(targetMilliseconds: Double(target),
-                maximumMilliseconds: Double(maximum), outputReserveMilliseconds: reserve)
+            return reserve
+        }
+        session.prepareCalibrationOutputReserve = prepareOutputReserve
+        session.calibrationContext = {
+            let output = AVAudioSession.sharedInstance()
+            return CalibrationContext(device: UIDevice.current.model,
+                operatingSystem: UIDevice.current.systemName + " " + UIDevice.current.systemVersion,
+                output: output.currentRoute.outputs.map { $0.portType.rawValue }.joined(separator: ","), sampleRate: output.sampleRate)
+        }
+        session.preparePlayoutBudget = {
+            try PlayoutBudget(targetMilliseconds: Double(target), maximumMilliseconds: Double(maximum),
+                              outputReserveMilliseconds: prepareOutputReserve())
+        }
+        sendingReport = false
+        session.onCalibrationProgress = { progress in
+            DispatchQueue.main.async {
+                guard connectionID == activeConnectionID, completedTestStatus == nil, !sendingReport else { return }
+                let stage = Self.localize(progress.stage == "analyzing" ? "Analyzing calibration" : progress.stage == "validation" ?
+                    "Validating recommendations" : progress.stage == "interrupted" ? "Calibration interrupted" : "Sampling network")
+                status = stage + (progress.stage == "analyzing" ? " · \(progress.completed)/\(progress.total)" : " · \(progress.index)/\(progress.count)")
+            }
+        }
+        session.onCalibrationResult = { result in
+            DispatchQueue.main.async {
+                guard connectionID == activeConnectionID else { return }
+                if result.save() { calibrationResult = result }
+                else if calibrationResult == nil { calibrationResult = result }
+            }
         }
         session.onTransportState = { newState in
             DispatchQueue.main.async {
@@ -575,6 +619,7 @@ public struct HearPortApp: View {
         session.onDiagnosticReportSending = {
             DispatchQueue.main.async {
                 guard connectionID == activeConnectionID else { return }
+                sendingReport = true
                 status = Self.localize("Test ended. Preparing and sending the report…")
                 refreshDiagnostics()
             }
