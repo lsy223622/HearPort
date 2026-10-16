@@ -17,6 +17,7 @@ struct CalibrationChoice {
   CalibrationBudget budget;
   std::uint16_t output_reserve_ms = 0;
 };
+struct CalibrationProgress { unsigned stage = 0, index = 0, count = 0, completed = 0, total = 0; };
 enum class CalibrationMessageKind : std::uint8_t { setup, round, ack, analyze, selection, progress };
 struct CalibrationMessage {
   CalibrationMessageKind kind = CalibrationMessageKind::setup;
@@ -33,4 +34,27 @@ std::vector<CalibrationBudget> MakeCalibrationBudgets(std::uint16_t maximum_ms,
                                                     std::uint16_t output_reserve_ms);
 std::vector<std::byte> EncodeCalibrationMessage(const CalibrationMessage& message);
 std::optional<CalibrationMessage> DecodeCalibrationMessage(std::span<const std::byte> bytes) noexcept;
+
+class CalibrationExchange {
+ public:
+  CalibrationExchange(std::uint32_t plan_id, CalibrationOptions options, std::uint16_t reserve);
+  std::optional<CalibrationMessage> NextRound(std::uint32_t generation);
+  bool Handle(const CalibrationMessage& message);
+  bool CompleteRound();
+  bool awaiting_ack() const { return pending_.has_value() && !acked_; }
+  bool awaiting_selection() const { return completed_ == 4 && !selected_; }
+  bool finished() const { return selected_ && completed_ == 4 + validation_.size(); }
+  unsigned completed() const { return completed_; }
+  unsigned total() const { return selected_ ? 4 + static_cast<unsigned>(validation_.size()) : 10; }
+  unsigned analysis_completed() const { return analysis_completed_; }
+  unsigned analysis_total() const { return analysis_total_; }
+ private:
+  std::uint32_t plan_id_;
+  CalibrationOptions options_;
+  std::uint16_t reserve_;
+  unsigned completed_ = 0, analysis_completed_ = 0, analysis_total_ = 0;
+  bool selected_ = false, acked_ = false;
+  std::optional<CalibrationMessage> pending_;
+  std::vector<CalibrationChoice> validation_;
+};
 }  // namespace hearport::windows

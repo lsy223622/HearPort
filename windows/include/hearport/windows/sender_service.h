@@ -23,6 +23,7 @@
 #include "hearport/windows/debug_session_trace.h"
 #include "hearport/windows/music_file.h"
 #include "hearport/windows/music_test.h"
+#include "hearport/windows/calibration.h"
 #include "hearport/windows/packetizer.h"
 #include "hearport/windows/quic_server.h"
 #include "hearport/windows/reliable_audio_lag.h"
@@ -62,6 +63,11 @@ class SenderService {
   bool ConfigurePlayoutBudget(std::uint32_t target_ms, std::uint32_t maximum_ms,
                               std::uint32_t output_reserve_ms);
   void ConfigureNetworkProbe(bool enabled);
+  void ConfigureCalibration(CalibrationOptions options);
+  bool environment_calibration() const noexcept { return calibration_options_.has_value(); }
+  CalibrationMessage calibration_setup(std::uint32_t plan_id) const;
+  CalibrationProgress calibration_progress() const;
+  bool HandleCalibrationMessage(const CalibrationMessage& message);
   void ConfigureMusicTest(MusicExcerpt clip);
   bool music_test() const noexcept { return music_clip_.has_value(); }
   bool AcknowledgeMusicRound();
@@ -109,6 +115,7 @@ class SenderService {
                     std::int64_t captured_at_ns, std::uint64_t source_frame);
   void AudioWorker();
   void ProbeWorker(std::uint32_t stream_id);
+  void CalibrationWorker(std::uint32_t stream_id);
   void MusicWorker();
   void HandleCapturePacket(std::span<const std::byte> bytes,
                            const PcmFormat& format, std::uint64_t captured_at_ns);
@@ -184,6 +191,12 @@ class SenderService {
   std::atomic<bool> probe_recovering_ = false;
   std::atomic<std::uint32_t> probe_stream_id_ = 0;
   bool network_probe_ = false;
+  std::optional<CalibrationOptions> calibration_options_;
+  mutable std::mutex calibration_mutex_;
+  std::condition_variable calibration_condition_;
+  std::unique_ptr<CalibrationExchange> calibration_exchange_;
+  std::atomic<bool> calibration_round_active_ = false;
+  std::atomic<unsigned> calibration_stage_ = 0;
   RepairWindow probe_repair_window_;
   std::atomic<std::uint8_t> probe_repair_mode_ = 0;
   std::atomic<std::uint64_t> probe_repair_sent_bytes_ = 0;

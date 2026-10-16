@@ -38,5 +38,27 @@ int main() {
   selection.kind = CalibrationMessageKind::selection; selection.plan_id = 7;
   selection.choices = {{7, true, {50, 100}, 11}};
   if (DecodeCalibrationMessage(EncodeCalibrationMessage(selection))->choices.size() != 1) return 9;
+  CalibrationExchange exchange(7, {30,100}, 11);
+  CalibrationMessage wrong;
+  wrong.kind = CalibrationMessageKind::ack; wrong.plan_id = 8; wrong.index = 1;
+  if (exchange.Handle(wrong)) return 10;
+  for (unsigned i = 1; i <= 4; ++i) {
+    const auto step = exchange.NextRound(i);
+    if (!step || step->index != i || step->budget.maximum_ms != 100) return 11;
+    if (exchange.CompleteRound()) return 12;
+    auto ack = wrong; ack.plan_id = 7; ack.index = static_cast<std::uint8_t>(i);
+    if (!exchange.Handle(ack) || !exchange.CompleteRound()) return 13;
+  }
+  if (!exchange.awaiting_selection()) return 14;
+  auto impossible = selection; impossible.choices[0].budget = {55,100};
+  if (exchange.Handle(impossible)) return 15;
+  if (!exchange.Handle(selection)) return 16;
+  for (unsigned i = 5; i <= 6; ++i) {
+    const auto step = exchange.NextRound(i);
+    if (!step || step->phase != 1 || step->profile_mask != 7 || step->budget != CalibrationBudget{50,100}) return 17;
+    auto ack = wrong; ack.plan_id = 7; ack.phase = 1; ack.index = static_cast<std::uint8_t>(i);
+    if (!exchange.Handle(ack) || !exchange.CompleteRound()) return 18;
+  }
+  if (!exchange.finished()) return 19;
   std::cout << "calibration codec and budgets passed\n";
 }

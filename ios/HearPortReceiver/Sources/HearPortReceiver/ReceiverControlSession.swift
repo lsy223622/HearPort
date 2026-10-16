@@ -15,6 +15,12 @@ public final class ReceiverControlSession {
     public var onDiagnosticReportSending: (() -> Void)?
     var onMusicTestRound: ((MusicTestRound) -> Void)?
     private(set) var musicTestRound: MusicTestRound?
+    var onCalibrationProgress: ((CalibrationProgressSnapshot) -> Void)?
+    var onCalibrationResult: ((CalibrationResult) -> Void)?
+    var prepareCalibrationOutputReserve: (() throws -> Double)?
+    private var calibration: EnvironmentCalibrationSession?
+    var isEnvironmentCalibration: Bool { (peerFeatures & ControlFeature.environmentCalibration) != 0 }
+    func interruptCalibration() { calibration?.cancel() }
     var isMusicTest: Bool { (peerFeatures & ControlFeature.musicTest) != 0 }
 
     private let provider: any Spake2Provider
@@ -138,6 +144,7 @@ public final class ReceiverControlSession {
             if state == .ready {
                 self.sendConnectIfPossible()
             } else if state == .failed || state == .closed {
+                self.calibration?.cancel()
                 self.stopClockUpdates()
                 if self.debugSessionDiagnostics.isRecording {
                     let reason = state == .closed ? "connection_closed" : "connection_failed"
@@ -184,6 +191,8 @@ public final class ReceiverControlSession {
         self.musicTestRound = nil
         stopClockUpdates()
         debugSessionDiagnostics.configureProbePlan(nil)
+        debugSessionDiagnostics.configureCalibration(nil)
+        calibration = nil
         setNetworkProbe(false)
         self.activeDebugSessionID = nil
         self.activeDebugStreamID = nil
@@ -266,6 +275,7 @@ public final class ReceiverControlSession {
     }
 
     public func cancel() {
+        calibration?.cancel()
         stopClockUpdates()
         diagnostics.log(
             .info,
@@ -287,7 +297,7 @@ public final class ReceiverControlSession {
         guard mode == .remembered || (mode == .pair || mode == .oneTime) else { return }
         let peerID = credential?.peerID ?? Data()
         let features = ControlFeature.diagnosticsUpload | ControlFeature.networkProbe |
-            ControlFeature.networkProbeRepeat | ControlFeature.coordinatedAudio | ControlFeature.musicTest |
+            ControlFeature.networkProbeRepeat | ControlFeature.coordinatedAudio | ControlFeature.musicTest | ControlFeature.environmentCalibration |
             (audioMode == .reliable ? ControlFeature.reliableAudio : 0)
         let envelope = ControlEnvelope(.connectRequest(authMode: mode,
                                                        peerID: peerID,
@@ -593,6 +603,16 @@ public final class ReceiverControlSession {
                         return
                     }
                 }
+                if let calibration {
+                    let reserve = Int(ceil(try prepareCalibrationOutputReserve?() ?? requestedBudget.outputReserveMilliseconds))
+                    guard let chosen = calibrationBudgets(maximum: calibration.setup.budget.maximum, outputReserve: reserve)
+                        .first(where: { $0.maximum == calibration.setup.budget.maximum }) else {
+                        onError?("Selected delay budget is too small for this audio output.")
+                        transport.cancel(); return
+                    }
+                    requestedBudget = try PlayoutBudget(targetMilliseconds: Double(chosen.target), maximumMilliseconds: Double(chosen.maximum),
+                        outputReserveMilliseconds: Double(reserve))
+                }
                 send(.audioSetup(streamID: streamID, budget: requestedBudget))
                 startClockUpdates()
                 requestClock()
@@ -647,6 +667,48 @@ public final class ReceiverControlSession {
             }
             onError?(displayMessage)
         case let .probeManifest(streamID, manifest):
+            if isEnvironmentCalibration {
+                let message = try CalibrationMessage(encoded: manifest)
+                guard message.planID == streamID, isNetworkProbe else { throw ControlMessageError.invalidMessage }
+                switch message.kind {
+                case .setup:
+                    guard calibration == nil, activeDebugSessionID == nil else { throw ControlMessageError.invalidMessage }
+                    debugSessionDiagnostics.configureCalibration(message)
+                    calibration = debugSessionDiagnostics.calibrationSession()
+                    if let progress = calibration?.progress() { onCalibrationProgress?(progress) }
+                case .round:
+                    guard activeDebugStreamID == streamID, let calibration else { throw ControlMessageError.invalidMessage }
+                    let ack = try calibration.beginRound(message, at: DispatchTime.now().uptimeNanoseconds)
+                    transport.noteProbeGeneration(message.generation)
+                    send(.probeManifest(streamID: streamID, manifest: try ack.encoded()))
+                    onCalibrationProgress?(calibration.progress())
+                case .analyze:
+                    guard activeDebugStreamID == streamID, let calibration else { throw ControlMessageError.invalidMessage }
+                    debugQueue.async { [weak self] in
+                        guard let self else { return }
+                        do {
+                            let result = try calibration.analyze(at: DispatchTime.now().uptimeNanoseconds, progress: { done,total in
+                                guard self.activeDebugStreamID == streamID else { return }
+                                var update = CalibrationMessage(kind: .progress, planID: streamID)
+                                update.completed = done; update.total = total
+                                if let data = try? update.encoded() { self.send(.probeManifest(streamID: streamID, manifest: data)) }
+                                self.onCalibrationProgress?(calibration.progress())
+                            })
+                            guard self.activeDebugStreamID == streamID else { return }
+                            var selection = CalibrationMessage(kind: .selection, planID: streamID)
+                            selection.choices = CalibrationSelector.choices(from: result.recommendations)
+                            self.send(.probeManifest(streamID: streamID, manifest: try selection.encoded()))
+                        } catch {
+                            if self.activeDebugStreamID == streamID {
+                                self.onError?("Environment calibration was interrupted.")
+                                self.transport.cancel()
+                            }
+                        }
+                    }
+                default: throw ControlMessageError.invalidMessage
+                }
+                return
+            }
             if (peerFeatures & ControlFeature.musicTest) != 0 {
                 guard !isNetworkProbe, activeDebugStreamID == streamID else {
                     throw ControlMessageError.invalidMessage
@@ -703,6 +765,7 @@ public final class ReceiverControlSession {
             }
             activeDebugStreamID = nil
             debugEndReason = reason
+            if reason != 1 { calibration?.cancel() }
             onDiagnosticReportSending?()
             let endReason = reason == 1 ? "duration_expired" : "sender_reason_\(reason)"
             debugQueue.async { [weak self] in
@@ -712,6 +775,7 @@ public final class ReceiverControlSession {
                         reason: endReason,
                         diagnostics: self.diagnostics
                     )
+                    if let result = self.debugSessionDiagnostics.completedCalibration() { self.onCalibrationResult?(result) }
                     guard let report = try self.debugReportTransfer.pendingReport(),
                           report.sessionID == sessionID else {
                         throw DebugReportTransferError.noPendingReport
