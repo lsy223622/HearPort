@@ -202,4 +202,26 @@ final class CoordinatedProbeTests: XCTestCase {
         XCTAssertThrowsError(try CoordinatedProbePlan(encoded: Data([2, 2, 30, 11] + round + round)))
     }
 
+    func testResyncWhileWaitingAdvancesSourceCursor() throws {
+        let plan = try CoordinatedProbePlan(encoded: Data([1,1,30,0,3,224,1,144,1,1,1,1,2,0,5,0]))
+        var consumer = ProbeConsumer(round: plan.rounds[0], budget: try PlayoutBudget(targetMilliseconds: 10,
+            maximumMilliseconds: 100, outputReserveMilliseconds: 1), firstSequence: 0, sourceFrame: 0)
+        for sequence in 0..<8 {
+            let at = UInt64(1_000_000_000 + sequence * 2_500_000)
+            let record = try TimedAudioRecord(streamID: 7, generation: 1, sequence: UInt32(sequence), frameCount: 120,
+                kind: .probe, capturedAt: at, sourceFrame: UInt64(sequence * 120), payload: Data(repeating: 0, count: 960))
+            consumer.receive(record, capturedAt: at, uncertainty: 0, now: 1_025_000_000)
+        }
+        _ = consumer.tick(now: 1_025_000_000)
+        _ = consumer.tick(now: 1_060_000_000)
+        XCTAssertEqual(consumer.bufferedFrames, 0)
+        let fresh = try TimedAudioRecord(streamID: 7, generation: 2, sequence: 60, frameCount: 120,
+            kind: .probe, capturedAt: 1_150_000_000, sourceFrame: 7200, payload: Data(repeating: 0, count: 960))
+        consumer.receive(fresh, capturedAt: fresh.capturedAt, uncertainty: 0, now: 1_200_000_000)
+        let tick = consumer.tick(now: 1_200_000_000)
+        XCTAssertGreaterThan(tick.skippedFrames, 0)
+        XCTAssertGreaterThan(tick.waitingFrames, 0)
+        XCTAssertEqual(consumer.playedSourceFrame, tick.missingSource.last?.upperBound)
+    }
+
 }
