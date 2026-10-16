@@ -5,6 +5,16 @@ import XCTest
 @testable import HearPortReceiver
 
 final class QuicTransportTests: XCTestCase {
+    func testInitialConnectDoesNotPublishAClosedSession() {
+        let transport = HearPortQuicTransport()
+        let closed = expectation(description: "No close event for initial state reset")
+        closed.isInverted = true
+        transport.onStateChange = { state in if state == .closed { closed.fulfill() } }
+        transport.connect(host: "127.0.0.1", port: 44330, tlsPolicy: .pairing(onPeerSPKIHash: { _ in }))
+        wait(for: [closed], timeout: 0.1)
+        transport.onStateChange = nil
+        transport.cancel()
+    }
     func testMusicTestSwitchesDatagramReliableDatagramOnOneConnection() throws {
         guard ProcessInfo.processInfo.environment["HEARPORT_QUIC_INTEGRATION"] == "1" else {
             throw XCTSkip("Requires the loopback QUIC echo server")

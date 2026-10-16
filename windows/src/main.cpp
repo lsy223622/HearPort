@@ -108,7 +108,7 @@ int main(int argc, char** argv) {
                  "report.\n";
     const auto timeout = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::seconds(*debug_seconds) + std::chrono::minutes(7));
-    const bool completed = host.service().WaitForDebugCompletion(timeout);
+    const bool completed = host.WaitForDebugCompletion(timeout);
     host.Stop();
     logger.Stop();
     if (!completed) {

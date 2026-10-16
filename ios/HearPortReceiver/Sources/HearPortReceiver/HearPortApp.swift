@@ -548,9 +548,16 @@ import SwiftUI
             try PlayoutBudget(targetMilliseconds: Double(target), maximumMilliseconds: Double(maximum),
                               outputReserveMilliseconds: prepareOutputReserve())
         }
+        var authenticatedIdentity: Data?
         session.onAuthenticated = { [weak session] identity, features in
             DispatchQueue.main.async {
-                guard let session, connectionManager.authenticated(id, identity: identity, features: features) else { return }
+                guard let session, pendingControls[id] === session else { return }
+                authenticatedIdentity = identity
+                if requestedAuthMode == .pair {
+                    hasRememberedCredential = true; authMode = .remembered; pin = ""
+                    connectionManager.setRememberedIdentity(identity)
+                }
+                guard connectionManager.authenticated(id, identity: identity, features: features) else { return }
                 connectionID = id; control = session; receiver = activeReceiver
                 pendingControls.removeValue(forKey: id)
                 currentHost = endpoint; activePath = route.path
@@ -559,10 +566,6 @@ import SwiftUI
                 activeTargetLatencyMs = target; activeMaximumLatencyMs = maximum
                 sendingReport = false; isConnecting = true
                 status = Self.localize(route.path == .usb ? "Connecting via USB…" : "Connecting via network…")
-                if requestedAuthMode == .pair {
-                    hasRememberedCredential = true; authMode = .remembered; pin = ""
-                    connectionManager.setRememberedIdentity(identity)
-                }
                 diagnostics.log(.info, category: .transport, message: "physical_path_selected",
                     fields: ["physical_path": route.path.rawValue, "connection_id": id.uuidString])
                 session.activate()
@@ -570,7 +573,7 @@ import SwiftUI
         }
         session.onSessionEnded = { reason in
             DispatchQueue.main.async {
-                guard connectionID == id else { return }
+                guard connectionID == id || (reason == 1 && authenticatedIdentity.map { connectionManager.acceptsStop(from: $0) } == true) else { return }
                 if reason == 1 {
                     let completed = completedTestStatus
                     control?.cancel(); control = nil

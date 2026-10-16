@@ -70,6 +70,9 @@ public final class USBPacketTunnel {
     public func setMaximumLatency(milliseconds: Int) {
         queue.async { [weak self] in self?.maximum = UInt64(max(1, min(60000, milliseconds))) * 1_000_000 }
     }
+    public func resetConnection() {
+        queue.async { [weak self] in self?.close("USB session ended") }
+    }
     private func startOnQueue() {
         guard listener == nil else { return }
         do {

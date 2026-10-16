@@ -1448,7 +1448,7 @@ class Application {
   }
 
   void OnTimer() {
-    if (pin_expires_ || network_probe_active_ || music_test_active_) UpdateStatus();
+    if (running_ || pin_expires_) UpdateStatus();
     if (!diagnostic_duration_ || !service_) return;
     if (service_->WaitForDebugCompletion(std::chrono::milliseconds(0))) {
       const int completed_test = music_test_active_ ? kMusicTest :

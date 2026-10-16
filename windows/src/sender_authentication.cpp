@@ -214,6 +214,7 @@ bool SenderAuthentication::HandleAuthResponse(
       !remembered_verifier_->Verify(envelope.bytes1, envelope.bytes2)) {
     return Fail(ErrorCode::auth_failed, "remembered authentication failed");
   }
+  peer_identity_.assign(reinterpret_cast<const char*>(envelope.bytes1.data()), envelope.bytes1.size());
   return CompleteAuthentication(false);
 }
 

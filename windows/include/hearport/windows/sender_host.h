@@ -15,6 +15,7 @@ class SenderHost {
   bool OpenPairingWindow();
   std::string pairing_pin() const;
   SenderService& service();
+  bool WaitForDebugCompletion(std::chrono::milliseconds timeout);
   void SetConnectionHandler(ConnectionHandler handler) { handler_=std::move(handler); }
   std::string usb_status() const;
  private:
@@ -26,6 +27,8 @@ class SenderHost {
   QuicServerOptions options_;
   mutable std::mutex mutex_;
   std::mutex activation_mutex_;
+  std::condition_variable selected_condition_;
+  bool has_selected_ = false;
   ConnectionSelection selection_;
   unsigned last_=0;
   bool started_=false;
