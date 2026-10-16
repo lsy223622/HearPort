@@ -951,6 +951,7 @@ public final class HearPortQuicTransport {
     private var audioGeneration: UInt32 = 0
     private var progressSequence: (() -> UInt32?)?
     private var progressTimer: DispatchSourceTimer?
+    private var attemptID = UUID()
     private var progressInFlight = false
 
     public init(diagnostics: HearPortDiagnostics = .shared,
@@ -987,7 +988,8 @@ public final class HearPortQuicTransport {
                 "tls_policy": policyName
             ]
         )
-        cancel()
+        cancel(notify: false)
+        let attemptID = self.attemptID
         let endpoint = suppliedEndpoint ?? NWEndpoint.hostPort(
             host: NWEndpoint.Host(host),
             port: NWEndpoint.Port(rawValue: port)!
@@ -1010,6 +1012,7 @@ public final class HearPortQuicTransport {
         sec_protocol_options_set_verify_block(
             quicOptions.securityProtocolOptions,
             { metadata, _, complete in
+                guard self.attemptID == attemptID else { complete(false); return }
                 guard let certificateData = Self.peerSPKI(from: metadata),
                       let spkiHash = try? PairingSecurity.windowsSPKIHash(certificateData)
                 else {
@@ -1024,6 +1027,7 @@ public final class HearPortQuicTransport {
                         ]
                     )
                     complete(false)
+                    self.updateState(.failed); self.group?.cancel()
                     return
                 }
                 let accepted: Bool
@@ -1045,6 +1049,7 @@ public final class HearPortQuicTransport {
                     ]
                 )
                 complete(accepted)
+                if !accepted { self.updateState(.failed); self.group?.cancel() }
             },
             queue
         )
@@ -1190,7 +1195,8 @@ public final class HearPortQuicTransport {
                            })
     }
 
-    public func cancel() {
+    public func cancel(notify: Bool = true) {
+        attemptID = UUID()
         probeTimer?.cancel()
         probeTimer = nil
         progressTimer?.cancel()
@@ -1218,7 +1224,7 @@ public final class HearPortQuicTransport {
             message: "transport_cancelled",
             fields: ["event": "transport_cancelled"]
         )
-        updateState(.closed)
+        if notify { updateState(.closed) } else { state = .idle }
     }
 
     public func acceptReliableAudio() {

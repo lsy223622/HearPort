@@ -1,8 +1,26 @@
 # Windows onboarding and firewall guidance
 
-The v1 core path uses a manually entered hostname or IP address and UDP port.
-Bonjour/DNS-SD is optional product onboarding and is not required for
-interoperability.
+HearPort advertises its network endpoint through the Windows DNS-SD API; iPad
+browses `_hearport._udp`. Manual hostname or IP address entry remains available
+when local network discovery is blocked or unavailable.
+
+The Windows sender also discovers physically attached iPads through the Apple
+Mobile Device service. Install Apple's Windows device support, connect a data
+cable, unlock iPad and accept the system trust prompt when needed. Open the
+ordinary HearPort app on iPad. The app listens only on loopback TCP `52138` for
+usbmux; no inbound LAN TCP firewall rule is needed.
+
+USB forwards encrypted QUIC packets to a separate loopback sender entrance.
+Existing certificate pinning and PIN/remembered authentication remain required.
+For a remembered PC, an authenticated USB connection takes priority over network
+playback. Switching rebuilds the audio stream and clock mapping and can pause
+briefly. USB loss reconnects the known network endpoint; manual stop suppresses
+automatic playback. Both apps show the physical path separately from the audio
+protocol mode. A one-time pairing does not silently become a remembered pairing.
+
+Network tests and environment calibration admit the network path only. Music
+and timed diagnostics retain their starting path through report recovery; a
+lost path interrupts the run. Ordinary playback considers both paths.
 
 The sender listens on UDP `52137` by default (or the explicitly configured
 port). An installer or an administrator onboarding screen may add a narrowly

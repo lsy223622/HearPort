@@ -31,9 +31,13 @@ bool SenderHost::Start() {
   stopping_=false;
   if(!services_[0]->Start()) { stopping_=true; return false; }
   started_=true;
-  if(services_[1]->Start()) {
+  if(services_[0]->network_probe()) {
+    std::lock_guard lock(mutex_); usb_status_="Network test uses network connection";
+  } else if(services_[1]->Start()) {
     tunnel_.Start(services_[1]->local_port(),[this](std::string status) {
-      std::lock_guard lock(mutex_); usb_status_=std::move(status);
+      const bool available=status=="USB available";
+      { std::lock_guard lock(mutex_); usb_status_=std::move(status); }
+      if(!available) services_[1]->CloseConnection();
     },options_.diagnostic_log);
   } else { std::lock_guard lock(mutex_); usb_status_="USB listener unavailable"; }
   std::wostringstream identity; identity<<std::hex<<std::setfill(L'0');
@@ -50,6 +54,8 @@ bool SenderHost::Activate(unsigned index) {
     previous=selection_.active();
     if(!selection_.Activate(index+1,index?PhysicalPath::usb:PhysicalPath::network,services_[index]->authenticated_peer())) return false;
     last_=index;
+    has_selected_=true;
+    selected_condition_.notify_all();
   }
   if(previous && *previous!=index+1) services_[*previous-1]->SuspendForHandover();
   return true;
@@ -67,7 +73,8 @@ void SenderHost::Connected(unsigned index,bool connected,bool reliable) {
 void SenderHost::Stop() {
   if(!started_) return;
   stopping_=true;
-  service().NotifyUserStop();
+  selected_condition_.notify_all();
+  for(auto& service:services_) service->NotifyUserStop();
   tunnel_.Stop(); discovery_.Stop();
   { std::lock_guard transition(activation_mutex_); }
   for(auto& service:services_) service->Stop();
@@ -76,5 +83,13 @@ void SenderHost::Stop() {
 bool SenderHost::OpenPairingWindow() { return authentications_[0]->OpenPairingWindow(); }
 std::string SenderHost::pairing_pin() const { return authentications_[0]->pairing_pin(); }
 SenderService& SenderHost::service() { std::lock_guard lock(mutex_); return *services_[last_]; }
+bool SenderHost::WaitForDebugCompletion(std::chrono::milliseconds timeout) {
+  const auto until=std::chrono::steady_clock::now()+timeout;
+  std::unique_lock lock(mutex_);
+  if(!selected_condition_.wait_until(lock,until,[this] { return has_selected_ || stopping_; }) || stopping_) return false;
+  auto* selected=services_[last_].get();
+  lock.unlock();
+  return selected->WaitForDebugCompletion(std::chrono::duration_cast<std::chrono::milliseconds>(until-std::chrono::steady_clock::now()));
+}
 std::string SenderHost::usb_status() const { std::lock_guard lock(mutex_); return usb_status_; }
 }

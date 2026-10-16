@@ -20,6 +20,18 @@ struct ConnectionSelectionPolicy {
         return true
     }
     mutating func stop() { wantsConnection = false; active = nil; path = nil; identity = nil; pinned = false }
+    func acceptsStop(from peer: Data) -> Bool { wantsConnection && !peer.isEmpty && identity == peer }
+}
+
+struct ConnectionAttemptHistory {
+    private var attempted: [String: Date] = [:]
+    private var blocked: [String: Date] = [:]
+    mutating func started(_ id: String, at: Date) { attempted[id] = at }
+    mutating func failed(_ id: String, until: Date) { blocked[id] = until }
+    func usable(_ id: String, at: Date) -> Bool { blocked[id, default: .distantPast] <= at }
+    func choose(_ ids: [String], at: Date) -> String? {
+        ids.filter { usable($0, at: at) }.min { attempted[$0, default: .distantPast] < attempted[$1, default: .distantPast] }
+    }
 }
 
 #if canImport(Network) && canImport(Combine)
@@ -64,7 +76,7 @@ public struct ConnectionEndpoint: Identifiable {
     private var activeEndpoint: ConnectionEndpoint?
     private var retry: DispatchWorkItem?
     private var retrySeconds: Double = 1
-    private var cooldown: [String: Date] = [:]
+    private var history = ConnectionAttemptHistory()
     private var networkTestOnly = false
     public var hasUSB: Bool { usbEndpoint != nil }
     public var isWaiting: Bool { policy.wantsConnection && policy.active == nil }
@@ -104,14 +116,14 @@ public struct ConnectionEndpoint: Identifiable {
     public func connect(manualHost: String, selected: ConnectionEndpoint? = nil) {
         stop()
         fallback = selected?.path == .network ? selected : (manualHost.isEmpty ? nil : ConnectionEndpoint(host: manualHost))
-        policy.wantsConnection = true; cooldown = [:]; networkTestOnly = false; retrySeconds = 1
+        policy.wantsConnection = true; history = ConnectionAttemptHistory(); networkTestOnly = false; retrySeconds = 1
         attempt()
     }
     public func authenticated(_ id: UUID, identity: Data, features: UInt32) -> Bool {
         guard let endpoint = pending[id], policy.wantsConnection else { return false }
         let networkTest = (features & (ControlFeature.networkProbe | ControlFeature.environmentCalibration)) != 0
         if endpoint.path == .usb && networkTest {
-            networkTestOnly = true; pending.removeValue(forKey: id); onCancel?(id); attempt(); return false
+            networkTestOnly = true; pending.removeValue(forKey: id); onCancel?(id); recycleUSB(); attempt(); return false
         }
         let previous = policy.active
         guard policy.promote(id, path: endpoint.path, identity: identity) else {
@@ -124,40 +136,51 @@ public struct ConnectionEndpoint: Identifiable {
         return true
     }
     public func pinActive() { policy.pinned = true }
+    public func acceptsStop(from identity: Data) -> Bool { policy.acceptsStop(from: identity) }
     public func completed() { policy.wantsConnection = false; retry?.cancel(); retry = nil; cancelPending() }
     public func stop() {
         let old = policy.active
+        let wasUSB = activeEndpoint?.path == .usb
         policy.stop(); activeEndpoint = nil
         retry?.cancel(); retry = nil; cancelPending()
         if let old { onCancel?(old) }
+        if wasUSB { recycleUSB() }
     }
     public func ended(_ id: UUID) {
         if let candidate = pending.removeValue(forKey: id) {
-            cooldown[candidate.id] = Date().addingTimeInterval(retrySeconds); onCancel?(id)
-        } else if policy.closed(id) { activeEndpoint = nil }
+            history.failed(candidate.path == .usb ? "usb" : candidate.id, until: Date().addingTimeInterval(retrySeconds)); onCancel?(id)
+            if candidate.path == .usb { recycleUSB() }
+        } else if policy.closed(id) {
+            let wasUSB = activeEndpoint?.path == .usb; activeEndpoint = nil
+            if wasUSB { recycleUSB() }
+        }
         else { return }
         scheduleRetry()
     }
     public func setMaximumLatency(_ ms: Int) { tunnel.setMaximumLatency(milliseconds: ms) }
     private func cancelPending() {
+        let hadUSB = pending.values.contains { $0.path == .usb }
         let ids = Array(pending.keys); pending.removeAll()
         for id in ids { onCancel?(id) }
+        if hadUSB { recycleUSB() }
     }
+    private func recycleUSB() { usbEndpoint = nil; publish(); tunnel.resetConnection() }
     private func publish() { endpoints = (usbEndpoint.map { [$0] } ?? []) + networks }
     private func attempt() {
         guard policy.wantsConnection, pending.isEmpty, !policy.pinned else { return }
-        let usable: (ConnectionEndpoint) -> Bool = { self.cooldown[$0.id, default: .distantPast] <= Date() }
+        let usable: (ConnectionEndpoint) -> Bool = { self.history.usable($0.path == .usb ? "usb" : $0.id, at: Date()) }
         var endpoint: ConnectionEndpoint?
         if !networkTestOnly, let usbEndpoint, policy.path != .usb, usable(usbEndpoint) { endpoint = usbEndpoint }
         if endpoint == nil && policy.active == nil {
-            if let fallback, usable(fallback) { endpoint = fallback }
-            else { endpoint = networks.first { (rememberedName == nil || $0.host == rememberedName) && usable($0) } }
+            let candidates = (fallback.map { [$0] } ?? []) + networks.filter { rememberedName == nil || $0.host == rememberedName }
+            if let selected = history.choose(candidates.map { $0.id }, at: Date()) { endpoint = candidates.first { $0.id == selected } }
         }
         guard let endpoint else {
             if policy.active == nil { onSearching?(); scheduleRetry() }
             return
         }
         retry?.cancel(); retry = nil
+        history.started(endpoint.path == .usb ? "usb" : endpoint.id, at: Date())
         let id = UUID(); pending[id] = endpoint; onRequest?(id, endpoint)
         DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
             guard let self, self.pending[id] != nil else { return }

@@ -830,6 +830,7 @@ class MsQuicServer final : public QuicServer {
 
   void StopLocked(std::unique_lock<std::mutex>& lock) {
     started_ = false;
+    shutdown_condition_.wait(lock, [this] { return !closing_; });
     if (listener_ != nullptr && api_ != nullptr) {
       api_->ListenerClose(listener_);
       listener_ = nullptr;
@@ -849,8 +850,11 @@ class MsQuicServer final : public QuicServer {
       configuration_ = nullptr;
     }
     if (registration_ != nullptr && api_ != nullptr) {
-      api_->RegistrationClose(registration_);
+      const auto registration = registration_;
       registration_ = nullptr;
+      lock.unlock();
+      api_->RegistrationClose(registration);
+      lock.lock();
     }
     if (api_ != nullptr) {
       MsQuicClose(api_);
