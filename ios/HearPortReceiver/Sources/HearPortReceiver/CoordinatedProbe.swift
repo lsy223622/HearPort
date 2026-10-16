@@ -47,6 +47,8 @@ struct ProbeConsumption: Sendable {
     let correction: Double
     let targetMilliseconds: Double
     let sourceAgeMilliseconds: Double?
+    var missingSource: [Range<UInt64>] = []
+    var missingOutput: [Range<Double>] = []
 }
 
 struct ProbeConsumer: Sendable {
@@ -72,10 +74,11 @@ struct ProbeConsumer: Sendable {
     private var clockUncertainty: UInt64 = 0
 
     init(round: CoordinatedProbePlan.Round, budget: PlayoutBudget,
-         firstSequence: UInt32, sourceFrame: UInt64) {
+         firstSequence: UInt32, sourceFrame: UInt64, durationSeconds: Int = 30,
+         sourceFrameLimit: UInt64? = nil) {
         self.round = round; self.budget = budget
         nextSequence = firstSequence; self.sourceFrame = sourceFrame
-        endSourceFrame = sourceFrame + 30 * 48_000
+        endSourceFrame = sourceFrameLimit ?? (sourceFrame + UInt64(durationSeconds) * 48_000)
         control = PlayoutController(budget: budget,
             maximumCorrection: round.controller == 0 ? 0 : Double(round.correctionPercent) / 100,
             adaptive: round.controller >= 2)
@@ -177,12 +180,14 @@ struct ProbeConsumer: Sendable {
         renderReserveFrames = min(2_048, max(round.framesPerPacket,
             Int(ceil(decision.bufferTargetMilliseconds * 48 / Double(round.framesPerPacket))) * round.framesPerPacket))
         var skipped: UInt64 = 0
+        var missingSource: [Range<UInt64>] = []
         if decision.action == .resync {
             let valid = packets.values.filter {
                 budget.prepareDeadline(capturedAt: $0.captured, uncertaintyNanoseconds: max($0.uncertainty, clockUncertainty)) > now
             }.min { ($0.record.sequence &- nextSequence) < ($1.record.sequence &- nextSequence) }
             if let valid, valid.record.sourceFrame >= sourceFrame {
                 skipped = valid.record.sourceFrame - sourceFrame
+                if skipped > 0 { missingSource.append(sourceFrame..<valid.record.sourceFrame) }
                 sourceFrame = valid.record.sourceFrame; nextSequence = valid.record.sequence; offset = 0
             }
             packets = packets.filter { !SequenceNumber.isBefore($0.key, nextSequence) &&
@@ -195,12 +200,14 @@ struct ProbeConsumer: Sendable {
         guard running else {
             return ProbeConsumption(playedFrames: 0, concealedFrames: 0, waitingFrames: Int(min(2, elapsed) * 48_000), skippedFrames: skipped,
                 correction: decision.correction, targetMilliseconds: decision.targetMilliseconds,
-                sourceAgeMilliseconds: nil)
+                sourceAgeMilliseconds: nil, missingSource: missingSource, missingOutput: [0..<1])
         }
         fractionalFrames += min(2, elapsed) * 48_000 * (1 + decision.correction)
         var wanted = Int(fractionalFrames), played = 0, concealed = 0
         fractionalFrames -= Double(wanted)
         wanted = min(wanted, Int(endSourceFrame - min(endSourceFrame, sourceFrame)))
+        let requested = wanted
+        var missingOutput: [Range<Double>] = []
         var age: Double?
         while wanted > 0 {
             let packet = packets[nextSequence]
@@ -210,7 +217,11 @@ struct ProbeConsumer: Sendable {
                budget.prepareDeadline(capturedAt: capture, uncertaintyNanoseconds: max(packet.uncertainty, clockUncertainty)) > now {
                 played += count
                 if age == nil { age = now >= capture ? Double(now - capture) / 1e6 : 0 }
-            } else { concealed += count }
+            } else {
+                concealed += count
+                missingSource.append(sourceFrame..<(sourceFrame + UInt64(count)))
+                missingOutput.append(Double(requested - wanted) / Double(requested)..<Double(requested - wanted + count) / Double(requested))
+            }
             wanted -= count; offset += count; sourceFrame += UInt64(count)
             if offset == round.framesPerPacket {
                 packets.removeValue(forKey: nextSequence)
@@ -221,6 +232,6 @@ struct ProbeConsumer: Sendable {
         repair.discard(before: nextSequence)
         return ProbeConsumption(playedFrames: played, concealedFrames: concealed, waitingFrames: 0, skippedFrames: skipped,
             correction: decision.correction, targetMilliseconds: decision.targetMilliseconds,
-            sourceAgeMilliseconds: age)
+            sourceAgeMilliseconds: age, missingSource: missingSource, missingOutput: missingOutput)
     }
 }

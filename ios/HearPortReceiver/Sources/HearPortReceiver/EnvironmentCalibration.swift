@@ -64,6 +64,8 @@ struct CalibrationMessage: Equatable, Sendable {
             generation = UInt32(try r.take(4)); firstSourceFrame = try r.take(8)
             guard phase <= 1, (1...10).contains(count), (1...count).contains(index), mode <= 1, reserved == 0,
                   generation != 0, [30,60,120].contains(seconds), validCalibrationBudget(budget, reserve: outputReserve),
+                  firstSourceFrame == UInt64(firstSequence) * 120,
+                  UInt64(firstSequence) + UInt64(seconds * 400) <= UInt64(UInt32.max),
                   (phase == 0 ? profileMask == 0 : (1...7).contains(profileMask)) else {
                 throw ControlMessageError.invalidMessage
             }
