@@ -94,6 +94,8 @@ std::optional<CalibrationMessage> DecodeCalibrationMessage(std::span<const std::
         m.first_source_frame = r.get(8);
         if (m.phase > 1 || !m.index || m.index > m.count || m.count > 10 || reliable > 1 || reserved || !m.generation ||
             !Seconds(m.seconds) || !Budget(m.budget,m.output_reserve_ms) ||
+            m.first_source_frame != std::uint64_t(m.first_sequence) * 120 ||
+            std::uint64_t(m.first_sequence) + std::uint64_t(m.seconds) * 400 > UINT32_MAX ||
             (m.phase == 0 ? m.profile_mask != 0 : m.profile_mask == 0 || m.profile_mask > 7)) return std::nullopt;
         break;
       }
