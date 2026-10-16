@@ -33,27 +33,30 @@ SenderAuthentication::SenderAuthentication(
     SenderService& service,
     security::Bytes32 windows_spki_sha256,
     ProtectedCredentialStore credential_store,
-    std::filesystem::path report_root)
+    std::filesystem::path report_root,
+    std::shared_ptr<SenderPairingState> pairing)
     : service_(service),
       windows_spki_sha256_(windows_spki_sha256),
       credential_store_(std::move(credential_store)),
-      report_store_(std::move(report_root)) {}
+      report_store_(std::move(report_root)),
+      pairing_(pairing ? std::move(pairing) : std::make_shared<SenderPairingState>()) {}
 
 bool SenderAuthentication::OpenPairingWindow() {
-  std::lock_guard lock(mutex_);
+  std::lock_guard lock(pairing_->mutex);
   if (!security::Spake2Session::ProviderAvailable() || !ChoosePairingPin()) {
     return false;
   }
-  pairing_window_.Open(security::PairingWindow::Clock::now());
-  return pairing_pin_ready_ &&
-         pairing_window_.IsOpen(security::PairingWindow::Clock::now());
+  ++pairing_->epoch;
+  pairing_->window.Open(security::PairingWindow::Clock::now());
+  return pairing_->ready &&
+         pairing_->window.IsOpen(security::PairingWindow::Clock::now());
 }
 
 std::string SenderAuthentication::pairing_pin() const {
-  std::lock_guard lock(mutex_);
-  if (!pairing_pin_ready_) return {};
-  return std::string(reinterpret_cast<const char*>(pairing_pin_.data()),
-                     pairing_pin_.size());
+  std::lock_guard lock(pairing_->mutex);
+  if (!pairing_->ready) return {};
+  return std::string(reinterpret_cast<const char*>(pairing_->pin.data()),
+                     pairing_->pin.size());
 }
 
 void SenderAuthentication::SetConnectionHandler(
@@ -75,16 +78,16 @@ bool SenderAuthentication::ChoosePairingPin() {
   const auto pin_text = std::to_string(numeric);
   const auto first = 6 - pin_text.size();
   for (std::size_t index = 0; index < first; ++index) {
-    pairing_pin_[index] = std::byte{'0'};
+    pairing_->pin[index] = std::byte{'0'};
   }
   for (std::size_t index = 0; index < pin_text.size(); ++index) {
-    pairing_pin_[first + index] = std::byte{static_cast<unsigned char>(
+    pairing_->pin[first + index] = std::byte{static_cast<unsigned char>(
         pin_text[index])};
   }
-  const auto scalar = security::PinToScalar(Span(pairing_pin_));
+  const auto scalar = security::PinToScalar(Span(pairing_->pin));
   if (!scalar.has_value()) return false;
-  pairing_scalar_ = *scalar;
-  pairing_pin_ready_ = true;
+  pairing_->scalar = *scalar;
+  pairing_->ready = true;
   return true;
 }
 
@@ -108,6 +111,9 @@ bool SenderAuthentication::Fail(ErrorCode code, std::string_view message) {
 
 bool SenderAuthentication::HandleConnect(
     const wire::ControlEnvelope& envelope) {
+  std::lock_guard pairing_lock(pairing_->mutex);
+  peer_identity_.clear();
+  if (!envelope.bytes1.empty()) peer_identity_.assign(reinterpret_cast<const char*>(envelope.bytes1.data()), envelope.bytes1.size());
   if (flow_ != Flow::idle || authenticated_ ||
       !service_.ReceiveConnect(envelope.auth_mode, envelope.bytes1)) {
     return Fail(ErrorCode::protocol, "unexpected ConnectRequest");
@@ -145,19 +151,20 @@ bool SenderAuthentication::HandleConnect(
     return Send(challenge);
   }
 
-  if (!pairing_pin_ready_ ||
-      !pairing_window_.IsOpen(security::PairingWindow::Clock::now()) ||
+  if (!pairing_->ready ||
+      !pairing_->window.IsOpen(security::PairingWindow::Clock::now()) ||
       !security::Spake2Session::ProviderAvailable()) {
     return Fail(ErrorCode::pairing_closed, "pairing window is closed");
   }
   const auto identity_a = security::BuildWindowsIdentity(windows_spki_sha256_);
   const auto identity_b = security::BuildReceiverIdentity();
   spake_session_ = security::Spake2Session::Begin(
-      security::Spake2Role::windows_party_a, pairing_scalar_, identity_a,
+      security::Spake2Role::windows_party_a, pairing_->scalar, identity_a,
       identity_b);
   if (!spake_session_.has_value()) {
     return Fail(ErrorCode::auth_failed, "SPAKE2 setup failed");
   }
+  pairing_epoch_ = pairing_->epoch;
   remember_pairing_ = envelope.auth_mode == AuthMode::pair;
   wire::ControlEnvelope message;
   message.type = wire::ControlMessageType::pair_spake_a;
@@ -169,13 +176,14 @@ bool SenderAuthentication::HandleConnect(
 
 bool SenderAuthentication::HandlePairSpakeB(
     const wire::ControlEnvelope& envelope) {
+  std::lock_guard pairing_lock(pairing_->mutex);
   if (flow_ != Flow::pairing_wait_b || !spake_session_.has_value()) {
     return Fail(ErrorCode::protocol, "unexpected PairSpakeB");
   }
   auto result = std::move(*spake_session_).Finish(envelope.bytes1);
   spake_session_.reset();
   if (!result.has_value()) {
-    pairing_window_.RecordFailure(security::PairingWindow::Clock::now());
+    pairing_->window.RecordFailure(security::PairingWindow::Clock::now());
     return Fail(ErrorCode::auth_failed, "invalid SPAKE2 public point");
   }
   wire::ControlEnvelope confirmation;
@@ -189,12 +197,14 @@ bool SenderAuthentication::HandlePairSpakeB(
 
 bool SenderAuthentication::HandlePairConfirmB(
     const wire::ControlEnvelope& envelope) {
-  if (flow_ != Flow::pairing_wait_confirm_b || !spake_result_.has_value() ||
+  std::lock_guard pairing_lock(pairing_->mutex);
+  if (pairing_epoch_ != pairing_->epoch || !pairing_->window.IsOpen(security::PairingWindow::Clock::now()) ||
+      flow_ != Flow::pairing_wait_confirm_b || !spake_result_.has_value() ||
       !spake_result_->VerifyPeerConfirmation(envelope.bytes1)) {
-    pairing_window_.RecordFailure(security::PairingWindow::Clock::now());
+    pairing_->window.RecordFailure(security::PairingWindow::Clock::now());
     return Fail(ErrorCode::auth_failed, "SPAKE2 confirmation failed");
   }
-  pairing_window_.Close();
+  pairing_->window.Close();
   return CompleteAuthentication(remember_pairing_);
 }
 
@@ -215,6 +225,7 @@ bool SenderAuthentication::CompleteAuthentication(bool remember) {
       return Fail(ErrorCode::internal, "unable to create remembered credential");
     }
     credential.windows_spki_sha256 = windows_spki_sha256_;
+    peer_identity_.assign(reinterpret_cast<const char*>(credential.peer_id.data()), credential.peer_id.size());
     if (!credential_store_.Save(credential)) {
       return Fail(ErrorCode::internal, "unable to protect remembered credential");
     }
@@ -226,6 +237,7 @@ bool SenderAuthentication::CompleteAuthentication(bool remember) {
                                      credential.pair_secret.end());
     if (!Send(credential_message)) return false;
   }
+  service_.SetAuthenticatedPeer(peer_identity_);
   if (!service_.MarkAuthenticated()) {
     return Fail(ErrorCode::protocol, "session authentication state rejected");
   }
@@ -251,6 +263,7 @@ bool SenderAuthentication::CompleteAuthentication(bool remember) {
   ready.feature_bits = peer_supports_diagnostics_
                            ? wire::kFeatureDiagnosticsUpload
                            : 0;
+  if (service_.debug_duration().has_value()) ready.feature_bits |= wire::kFeatureTimedDiagnostics;
   if (peer_wants_reliable_) ready.feature_bits |= wire::kFeatureReliableAudio;
   if (peer_coordinated_audio_) ready.feature_bits |= wire::kFeatureCoordinatedAudio;
   if (service_.music_test()) ready.feature_bits |= wire::kFeatureMusicTest;
@@ -407,6 +420,16 @@ bool SenderAuthentication::HandleControlPayload(
     return Fail(ErrorCode::protocol, "malformed control envelope");
   }
   switch (envelope->type) {
+    case wire::ControlMessageType::session_end_ack:
+      if (!authenticated_) return false;
+      service_.AcknowledgeEnd();
+      return true;
+    case wire::ControlMessageType::session_end: {
+      if (!authenticated_) return false;
+      wire::ControlEnvelope ack;
+      ack.type = wire::ControlMessageType::session_end_ack;
+      return Send(ack);
+    }
     case wire::ControlMessageType::probe_manifest: {
       if (!authenticated_ || !service_.environment_calibration() || !peer_supports_calibration_ ||
           flow_ != Flow::debug_stream_active || envelope->stream_id != stream_id_) {

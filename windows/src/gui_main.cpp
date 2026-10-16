@@ -32,6 +32,7 @@
 #include "hearport/windows/sender_authentication.h"
 #include "hearport/windows/sender_certificate.h"
 #include "hearport/windows/sender_service.h"
+#include "hearport/windows/sender_host.h"
 #include "hearport/windows/network_probe.h"
 
 namespace {
@@ -899,7 +900,7 @@ class Application {
       audio_label = Tr(L"Test data only; no audio is sent.",
                        L"仅传输测试数据，不发送音频。");
     } else if (running_ && connected_) {
-      heading = Tr(L"iPad connected", L"iPad 已连接");
+      heading = usb_connected_ ? Tr(L"iPad connected via USB", L"iPad 已通过 USB 连接") : Tr(L"iPad connected via network", L"iPad 已通过网络连接");
       detail = reliable_ ? Tr(L"Audio: reliable stream", L"音频：稳定性模式")
                          : Tr(L"Audio: low latency", L"音频：低延迟模式");
     } else if (running_ && completed_test_) {
@@ -912,8 +913,10 @@ class Application {
                   L"iPad 报告已回收并保存到诊断文件夹。");
     } else if (running_) {
       heading = Tr(L"Ready for iPad", L"已就绪，等待 iPad 连接");
-      detail = Tr(L"HearPort is listening on your local network.",
-                  L"HearPort 正在局域网中等待连接。");
+      const auto usb = host_ ? host_->usb_status() : std::string{};
+      detail = usb.find("Apple device service unavailable") != std::string::npos
+          ? Tr(L"Network ready. Install Apple device support for USB.", L"网络已就绪；USB 需要安装 Apple 设备支持服务。")
+          : Tr(L"Searching network and USB; USB has priority.", L"同时等待网络与 USB 连接，优先使用 USB。");
     } else {
       heading = Tr(L"Sender stopped", L"发送服务已停止");
       detail = error_.empty()
@@ -941,7 +944,7 @@ class Application {
     if (pin_expires_) {
       const auto seconds = std::chrono::ceil<std::chrono::seconds>(
           *pin_expires_ - Clock::now()).count();
-      const std::string pin = authentication_->pairing_pin();
+      const std::string pin = host_->pairing_pin();
       const std::wstring digits(pin.begin(), pin.end());
       const std::wstring countdown = std::to_wstring(seconds / 60) + L":" +
                                      (seconds % 60 < 10 ? L"0" : L"") +
@@ -1003,32 +1006,22 @@ class Application {
     identity->diagnostic_log = [this](std::string_view line) {
       logger_.TryLog(line);
     };
-    service_ = std::make_unique<SenderService>(*identity);
-    service_->ConfigureNetworkProbe(network_probe);
-    service_->ConfigureDebugDuration(diagnostics);
-    if (calibration) service_->ConfigureCalibration({static_cast<std::uint16_t>(calibration_seconds_), static_cast<std::uint16_t>(calibration_maximum_)});
-    if (music) service_->ConfigureMusicTest(std::move(*music));
+    host_ = std::make_unique<hearport::windows::SenderHost>(*identity, data_dir_ / L"diagnostics");
+    host_->Configure([&](SenderService& service) {
+      service.ConfigureNetworkProbe(network_probe);
+      service.ConfigureDebugDuration(diagnostics);
+      if (calibration) service.ConfigureCalibration({static_cast<std::uint16_t>(calibration_seconds_), static_cast<std::uint16_t>(calibration_maximum_)});
+      if (music) service.ConfigureMusicTest(*music);
+      service.SetDebugOutputDirectory(data_dir_ / L"diagnostics");
+    });
+    service_ = &host_->service();
     diagnostics = service_->debug_duration();
-    service_->SetDebugOutputDirectory(data_dir_ / L"diagnostics");
-    hearport::security::Bytes32 spki = identity->certificate_spki_sha256;
-    authentication_ = std::make_unique<SenderAuthentication>(
-        *service_, spki, hearport::windows::ProtectedCredentialStore{},
-        data_dir_ / L"diagnostics");
-    authentication_->SetConnectionHandler([this](bool connected, bool reliable) {
-      PostMessageW(hwnd_, kConnectionMessage, connected, reliable);
+    host_->SetConnectionHandler([this](bool connected, bool reliable, hearport::windows::PhysicalPath path) {
+      PostMessageW(hwnd_, kConnectionMessage, connected, (reliable ? 1 : 0) | (path == hearport::windows::PhysicalPath::usb ? 2 : 0));
     });
-    service_->SetControlHandler([this](std::span<const std::byte> payload) {
-      return authentication_->HandleControlPayload(payload);
-    });
-    service_->SetResetHandler([this] { authentication_->OnCaptureReset(); });
-    service_->SetClosedHandler([this] { authentication_->Reset(); });
-    service_->SetDebugEndedHandler(
-        [this](std::array<std::byte, 16> session, std::uint32_t reason) {
-          authentication_->OnDebugSessionEnded(session, reason);
-        });
-    if (!service_->Start()) {
-      authentication_.reset();
-      service_.reset();
+    if (!host_->Start()) {
+      host_.reset();
+      service_ = nullptr;
       logger_.Stop();
       error_ = network_probe
                    ? Tr(L"Could not start the network listener.", L"无法启动网络监听。")
@@ -1059,9 +1052,9 @@ class Application {
   void StopService() {
     const auto session_directory = service_ ? service_->debug_session_directory()
                                              : std::filesystem::path{};
-    if (service_) service_->Stop();
-    authentication_.reset();
-    service_.reset();
+    if (host_) host_->Stop();
+    host_.reset();
+    service_ = nullptr;
     logger_.Stop();
     if (!session_directory.empty()) {
       std::error_code archive_error;
@@ -1085,8 +1078,8 @@ class Application {
   }
 
   void OpenPairing() {
-    if (!running_ || !authentication_) return;
-    if (!authentication_->OpenPairingWindow()) {
+    if (!running_ || !host_) return;
+    if (!host_->OpenPairingWindow()) {
       MessageBoxW(hwnd_, Tr(L"Could not open pairing. Check the security provider.",
                              L"无法开启配对，请检查安全组件。")
                              .c_str(), L"HearPort", MB_OK | MB_ICONERROR);
@@ -1516,7 +1509,9 @@ class Application {
         return 0;
       case kConnectionMessage:
         connected_ = wparam != 0;
-        reliable_ = lparam != 0;
+        reliable_ = (lparam & 1) != 0;
+        usb_connected_ = (lparam & 2) != 0;
+        if (host_) service_ = &host_->service();
         if (connected_) {
           pin_expires_.reset();
         }
@@ -1727,6 +1722,7 @@ class Application {
   bool running_ = false;
   bool connected_ = false;
   bool reliable_ = false;
+  bool usb_connected_ = false;
   bool certificate_ready_ = false;
   bool tray_ready_ = false;
   bool dark_ = false;
@@ -1742,8 +1738,8 @@ class Application {
   HBRUSH dark_brush_ = CreateSolidBrush(RGB(32, 32, 32));
   HBRUSH page_brush_ = CreateSolidBrush(RGB(42, 42, 42));
   HBRUSH edit_brush_ = CreateSolidBrush(RGB(45, 45, 45));
-  std::unique_ptr<SenderService> service_;
-  std::unique_ptr<SenderAuthentication> authentication_;
+  std::unique_ptr<hearport::windows::SenderHost> host_;
+  SenderService* service_ = nullptr;
 };
 
 }  // namespace

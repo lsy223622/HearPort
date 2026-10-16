@@ -40,6 +40,8 @@ message SessionReady {
 }
 
 message ReceiverReady {}
+message SessionEnd { uint32 reason = 1; } // 1: user stop, 2: handover
+message SessionEndAck {}
 
 message DiagnosticsStart {
   bytes session_id = 1;         // exactly 16 bytes
@@ -181,5 +183,7 @@ message ControlEnvelope {
     ClockResponse clock_response = 42;
     RepairRequest repair_request = 43;
     ProbeManifest probe_manifest = 44;
+    SessionEnd session_end = 45;
+    SessionEndAck session_end_ack = 46;
   }
 }

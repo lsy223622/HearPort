@@ -26,6 +26,8 @@
 	<true/>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>HearPort connects to your Windows PC on the local network.</string>
+	<key>NSBonjourServices</key>
+	<array><string>_hearport._udp</string></array>
 	<key>UILaunchScreen</key>
 	<dict/>
 	<key>UISupportedInterfaceOrientations</key>

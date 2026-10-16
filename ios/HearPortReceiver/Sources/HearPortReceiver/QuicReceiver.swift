@@ -968,7 +968,8 @@ public final class HearPortQuicTransport {
     public func connect(
         host: String,
         port: UInt16 = defaultPort,
-        tlsPolicy: TLSIdentityPolicy
+        tlsPolicy: TLSIdentityPolicy,
+        endpoint suppliedEndpoint: NWEndpoint? = nil
     ) {
         let policyName: String
         switch tlsPolicy {
@@ -987,7 +988,7 @@ public final class HearPortQuicTransport {
             ]
         )
         cancel()
-        let endpoint = NWEndpoint.hostPort(
+        let endpoint = suppliedEndpoint ?? NWEndpoint.hostPort(
             host: NWEndpoint.Host(host),
             port: NWEndpoint.Port(rawValue: port)!
         )
@@ -1162,6 +1163,8 @@ public final class HearPortQuicTransport {
         }
         connectionGroup.start(queue: queue)
     }
+
+    func perform(_ action: @escaping () -> Void) { queue.async(execute: action) }
 
     public func sendControl(
         _ payload: Data,

@@ -32,6 +32,9 @@ add_library(hearport_windows_platform STATIC
   src/sender_options.cpp
   src/sender_authentication.cpp
   src/sender_service.cpp
+  src/usb_tunnel.cpp
+  src/sender_host.cpp
+  src/service_discovery.cpp
   src/wasapi_capture.cpp
 )
 target_include_directories(hearport_windows_platform PUBLIC include)
@@ -48,7 +51,7 @@ else()
   target_compile_definitions(hearport_windows_platform PRIVATE HEARPORT_HAS_MSQUIC=0)
 endif()
 
-target_link_libraries(hearport_windows_platform PRIVATE ole32 avrt advapi32 crypt32 mfplat mfreadwrite mfuuid)
+target_link_libraries(hearport_windows_platform PRIVATE ole32 avrt advapi32 crypt32 mfplat mfreadwrite mfuuid ws2_32 xmllite shlwapi dnsapi)
 
 add_executable(hearport_sender src/main.cpp)
 target_link_libraries(hearport_sender PRIVATE hearport_windows_platform)
@@ -89,10 +92,17 @@ if(HEARPORT_MSQUIC_INCLUDE_DIR AND HEARPORT_MSQUIC_LIBRARY)
 endif()
 
 if(BUILD_TESTING)
+  add_executable(hearport_usb_tunnel_tests tests/usb_tunnel_tests.cpp)
+  target_link_libraries(hearport_usb_tunnel_tests PRIVATE hearport_windows_platform)
+  add_test(NAME hearport_usb_tunnel_tests COMMAND hearport_usb_tunnel_tests)
+  add_executable(hearport_connection_selection_tests tests/connection_selection_tests.cpp)
+  target_link_libraries(hearport_connection_selection_tests PRIVATE hearport_windows_platform)
+  add_test(NAME hearport_connection_selection_tests COMMAND hearport_connection_selection_tests)
   add_executable(hearport_calibration_tests tests/calibration_tests.cpp)
   target_link_libraries(hearport_calibration_tests PRIVATE hearport_windows_platform)
   add_test(NAME hearport_calibration_tests COMMAND hearport_calibration_tests)
   add_executable(hearport_music_file_tests tests/music_file_tests.cpp)
+  target_compile_definitions(hearport_music_file_tests PRIVATE NOMINMAX)
   target_link_libraries(hearport_music_file_tests PRIVATE hearport_windows_platform)
   add_test(NAME hearport_music_file_tests COMMAND hearport_music_file_tests)
   add_executable(hearport_debug_session_trace_tests

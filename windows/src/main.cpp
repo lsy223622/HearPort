@@ -15,6 +15,7 @@
 
 #include "hearport/windows/diagnostic_logger.h"
 #include "hearport/windows/sender_authentication.h"
+#include "hearport/windows/sender_host.h"
 #include "hearport/windows/sender_options.h"
 #include "hearport/windows/sender_service.h"
 
@@ -81,37 +82,23 @@ int main(int argc, char** argv) {
   }
   std::cout << "HearPort iPad reports: " << report_root.string() << '\n';
 
-  hearport::windows::SenderService service(options);
-  service.ConfigureDebugDuration(
-      debug_seconds.has_value()
-          ? std::optional<std::chrono::seconds>(
-                std::chrono::seconds(*debug_seconds))
-          : std::nullopt);
-  service.SetDebugOutputDirectory(report_root);
-  hearport::security::Bytes32 spki = options.certificate_spki_sha256;
-  hearport::windows::SenderAuthentication authentication(
-      service, spki, {}, report_root);
-  service.SetControlHandler([&](std::span<const std::byte> payload) {
-    return authentication.HandleControlPayload(payload);
+  hearport::windows::SenderHost host(options, report_root);
+  host.Configure([&](hearport::windows::SenderService& service) {
+    service.ConfigureDebugDuration(debug_seconds.has_value() ? std::optional<std::chrono::seconds>(std::chrono::seconds(*debug_seconds)) : std::nullopt);
+    service.SetDebugOutputDirectory(report_root);
   });
-  service.SetResetHandler([&] { authentication.OnCaptureReset(); });
-  service.SetClosedHandler([&] { authentication.Reset(); });
-  service.SetDebugEndedHandler(
-      [&](std::array<std::byte, 16> session_id, std::uint32_t reason) {
-        authentication.OnDebugSessionEnded(session_id, reason);
-      });
-  if (open_pairing && !authentication.OpenPairingWindow()) {
+  if (open_pairing && !host.OpenPairingWindow()) {
     std::cerr << "failed to open the authenticated pairing window\n";
     logger.Stop();
     return 1;
   }
-  if (!service.Start()) {
+  if (!host.Start()) {
     std::cerr << "failed to start WASAPI/MsQuic sender\n";
     logger.Stop();
     return 1;
   }
   if (open_pairing) {
-    std::cout << "Pairing PIN: " << authentication.pairing_pin() << '\n';
+    std::cout << "Pairing PIN: " << host.pairing_pin() << '\n';
   }
   std::cout << "HearPort sender listening on UDP " << options.port
             << '\n';
@@ -121,8 +108,8 @@ int main(int argc, char** argv) {
                  "report.\n";
     const auto timeout = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::seconds(*debug_seconds) + std::chrono::minutes(7));
-    const bool completed = service.WaitForDebugCompletion(timeout);
-    service.Stop();
+    const bool completed = host.service().WaitForDebugCompletion(timeout);
+    host.Stop();
     logger.Stop();
     if (!completed) {
       std::cerr << "diagnostic session did not complete; inspect HearPort-sender.log\n";
@@ -135,7 +122,7 @@ int main(int argc, char** argv) {
   std::cout << "Press Enter to stop.\n";
   std::string line;
   std::getline(std::cin, line);
-  service.Stop();
+  host.Stop();
   logger.Stop();
   return 0;
 }

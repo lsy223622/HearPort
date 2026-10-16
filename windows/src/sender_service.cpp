@@ -109,6 +109,7 @@ bool SenderService::Start() {
         if (IsFinalDebugSendState(state)) CompleteDebugSend(stream_id);
       };
   callbacks.on_closed = [this] {
+    StopCapture();
     stop_music_.store(true);
     music_condition_.notify_all();
     stop_probe_.store(true);
@@ -167,15 +168,6 @@ bool SenderService::Start() {
     stop_diagnostics_ = false;
   }
   diagnostics_thread_ = std::thread([this] { DiagnosticsWorker(); });
-  if (!network_probe_ && !music_clip_ && !capture_.Start(
-          [this](std::span<const std::byte> bytes, const PcmFormat& format,
-                 std::uint64_t captured_at_ns) {
-            HandleCapturePacket(bytes, format, captured_at_ns);
-          },
-          [this] { HandleCaptureReset(); })) {
-    Stop();
-    return false;
-  }
   started_ = true;
   return true;
 }
@@ -192,7 +184,7 @@ void SenderService::Stop() {
   if (music_thread_.joinable()) music_thread_.join();
   if (probe_thread_.joinable()) probe_thread_.join();
   if (debug_trace_.IsActive()) EndDebugSession(2);
-  capture_.Stop();
+  StopCapture();
   {
     std::lock_guard lock(queue_mutex_);
     stop_worker_ = true;
@@ -212,6 +204,7 @@ void SenderService::Stop() {
   if (quic_) {
     quic_->Stop();
   }
+  StopCapture();
   {
     std::lock_guard lock(queue_mutex_);
     audio_queue_.clear();
@@ -223,6 +216,37 @@ void SenderService::Stop() {
   normalizer_.reset();
   normalizer_format_.reset();
   started_ = false;
+}
+
+void SenderService::StopCapture() {
+  std::lock_guard lifecycle(capture_lifecycle_mutex_);
+  capture_.Stop();
+  capture_started_ = false;
+}
+
+void SenderService::NotifyUserStop() {
+  wire::ControlEnvelope end;
+  end.type=wire::ControlMessageType::session_end; end.reason=1;
+  std::unique_lock lock(end_mutex_);
+  end_acknowledged_=false;
+  if(SendControlPayload(wire::EncodeControlEnvelope(end)))
+    end_condition_.wait_for(lock,std::chrono::milliseconds(500),[this] { return end_acknowledged_; });
+}
+void SenderService::AcknowledgeEnd() {
+  std::lock_guard lock(end_mutex_); end_acknowledged_=true; end_condition_.notify_all();
+}
+
+void SenderService::SuspendForHandover() {
+  StopCapture();
+  {
+    std::lock_guard send_lock(audio_send_mutex_);
+    std::lock_guard session_lock(session_mutex_);
+    session_.Reset();
+    std::lock_guard queue_lock(queue_mutex_);
+    audio_queue_.clear();
+  }
+  quic_->StopReliableAudio();
+  quic_->CloseConnection();
 }
 
 bool SenderService::ReceiveConnect(AuthMode mode,
@@ -247,6 +271,16 @@ bool SenderService::SendControlPayload(std::span<const std::byte> payload) {
 bool SenderService::BeginStream(
     std::uint32_t stream_id,
     std::span<const std::byte> debug_session_id) {
+  if (activation_handler_ && !activation_handler_()) return false;
+  {
+  std::lock_guard lifecycle(capture_lifecycle_mutex_);
+  if (!network_probe_ && !music_clip_ && !capture_started_) {
+    if (!capture_.Start([this](std::span<const std::byte> bytes, const PcmFormat& format, std::uint64_t at) {
+          HandleCapturePacket(bytes, format, at);
+        }, [this] { HandleCaptureReset(); })) return false;
+    capture_started_ = true;
+  }
+  }
   if (!debug_session_id.empty() && debug_session_id.size() != 16) return false;
   if (!debug_session_id.empty() && !debug_duration().has_value()) return false;
   if (music_thread_.joinable()) {
@@ -861,6 +895,7 @@ bool SenderService::ConfigurePlayoutBudget(std::uint32_t target_ms,
   if (target_ms <= output_reserve_ms || maximum_ms < target_ms || maximum_ms > 2000) {
     return false;
   }
+  if (budget_handler_) budget_handler_(maximum_ms);
   target_ms_.store(target_ms);
   maximum_ms_.store(maximum_ms);
   output_reserve_ms_.store(output_reserve_ms);
