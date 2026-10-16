@@ -37,11 +37,6 @@ public struct HearPortApp: View {
     @State private var diagnosticsStatus: String?
     @State private var showingClearConfirmation = false
     @State private var showingConnectionSetup = false
-    @State private var musicBenchmarkTask: Task<Void, Never>?
-    @State private var musicBenchmarkReport: MusicPredictionBenchmarkReport?
-    @State private var musicBenchmarkURL: URL?
-    @State private var musicBenchmarkStatus: String?
-    @Environment(\.scenePhase) private var scenePhase
 
     public init() {}
 
@@ -126,9 +121,6 @@ public struct HearPortApp: View {
                 authMode = .pair
             }
         }
-        .onChange(of: scenePhase) { phase in
-            if phase != .active { musicBenchmarkTask?.cancel() }
-        }
         .confirmationDialog(
             "Clear retained diagnostics?",
             isPresented: $showingClearConfirmation,
@@ -140,7 +132,6 @@ public struct HearPortApp: View {
             Button("Cancel", role: .cancel) {}
         }
         .onDisappear {
-            musicBenchmarkTask?.cancel()
             disconnect()
         }
     }
@@ -193,7 +184,7 @@ public struct HearPortApp: View {
                                 }
                                 .buttonStyle(.borderedProminent)
                                 .disabled(isConnecting || audioOutput != nil ||
-                                          control?.isNetworkProbe == true || musicBenchmarkTask != nil)
+                                          control?.isNetworkProbe == true)
                             }
                             .padding(20)
                             .background(Color(uiColor: .secondarySystemGroupedBackground),
@@ -335,7 +326,7 @@ public struct HearPortApp: View {
                     showingConnectionSetup = false
                 }
                 .disabled(host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
-                          (authMode != .remembered && !PairingSecurity.validatePIN(pin)) || musicBenchmarkTask != nil)
+                          (authMode != .remembered && !PairingSecurity.validatePIN(pin)))
             }
         }
         .navigationTitle("Connect to a PC")
@@ -421,44 +412,6 @@ public struct HearPortApp: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            Section {
-                Button("Run music prediction benchmark") { startMusicBenchmark() }
-                    .disabled(musicBenchmarkTask != nil || isConnecting || audioOutput != nil || control != nil)
-                if musicBenchmarkTask != nil {
-                    ProgressView("Measuring prediction and idle wake…")
-                }
-                if let musicBenchmarkStatus {
-                    Text(musicBenchmarkStatus)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-                if let report = musicBenchmarkReport {
-                    ForEach(report.cases.indices, id: \.self) { index in
-                        let item = report.cases[index]
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(Self.localize(item.usesFuture ? "AR with available future" : "Forward AR"))
-                                .font(.headline)
-                            Text(String(format: Self.localize("Output %.1f ms · 100 ms context"), Double(item.frames) / 48))
-                            ForEach(["first", "warm", "consecutive", "idle100", "idle1000"], id: \.self) { phase in
-                                let times = item.measurements.filter { $0.phase == phase }.map(\.totalMilliseconds).sorted()
-                                Text(String(format: Self.localize("%@ · P99 %.2f ms · max %.2f ms"),
-                                    Self.localize("Prediction phase " + phase),
-                                    times[Int(Double(times.count - 1) * 0.99)], times.last!))
-                                    .font(.caption.monospacedDigit())
-                            }
-                        }
-                    }
-                }
-                if let musicBenchmarkURL {
-                    ShareLink(item: musicBenchmarkURL) {
-                        Label("Share prediction benchmark", systemImage: "square.and.arrow.up")
-                    }
-                }
-            } header: {
-                Text("Music prediction performance")
-            } footer: {
-                Text("Disconnect first. Uses synthetic stereo data and takes about 20 seconds. Keep the app in the foreground. Measures CPU, conversion and worker dispatch; not audio playback deadlines or listening quality. AR has no external model to load. First means first call of each case, not process cold start; idle samples are limited.")
-            }
         }
         .navigationTitle("Diagnostics")
         .navigationBarTitleDisplayMode(.inline)
@@ -469,7 +422,6 @@ public struct HearPortApp: View {
     }
 
     private func connect() {
-        guard musicBenchmarkTask == nil else { return }
         let endpoint = host.trimmingCharacters(in: .whitespacesAndNewlines)
         let requestedAuthMode = authMode
         if requestedAuthMode != .remembered && !PairingSecurity.validatePIN(pin) {
@@ -689,54 +641,6 @@ public struct HearPortApp: View {
             diagnosticsStatus = Self.localize("Unable to export diagnostics.")
         }
         refreshDiagnostics()
-    }
-
-    private func startMusicBenchmark() {
-        guard musicBenchmarkTask == nil, !isConnecting, audioOutput == nil, control == nil else { return }
-        musicBenchmarkReport = nil
-        musicBenchmarkURL = nil
-        musicBenchmarkStatus = nil
-        musicBenchmarkTask = Task { @MainActor in
-            defer { musicBenchmarkTask = nil }
-            do {
-                let report = try await MusicPredictionBenchmark.run()
-                try Task.checkCancellation()
-                let encoded = try JSONEncoder().encode(report)
-                let payload: [String: Any] = [
-                    "scope": "Local synthetic CPU, conversion, worker dispatch and return; not playback deadline qualification",
-                    "externalModel": false,
-                    "build": Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown",
-                    "buildID": Bundle.main.object(forInfoDictionaryKey: "HearPortBuildID") as? String ?? "unknown",
-                    "device": UIDevice.current.model,
-                    "report": try JSONSerialization.jsonObject(with: encoded)
-                ]
-                let url = FileManager.default.temporaryDirectory.appendingPathComponent("HearPort-music-prediction.json")
-                try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys])
-                    .write(to: url, options: .atomic)
-                for item in report.cases {
-                    for phase in ["first", "warm", "consecutive", "idle100", "idle1000"] {
-                        let samples = item.measurements.filter { $0.phase == phase }
-                        let times = samples.map(\.totalMilliseconds).sorted()
-                        diagnostics.log(.info, category: .audio, message: "music_prediction_benchmark", fields: [
-                            "frames": "\(item.frames)", "available_future": "\(item.usesFuture)", "phase": phase,
-                            "count": "\(times.count)", "total_p99_ms": "\(times[Int(Double(times.count - 1) * 0.99)])",
-                            "total_max_ms": "\(times.last!)", "setup_ms": "\(report.setupMilliseconds)",
-                            "queue_max_ms": "\(samples.map(\.queueMilliseconds).max()!)",
-                            "compute_max_ms": "\(samples.map(\.computeMilliseconds).max()!)",
-                            "thermal_start": "\(report.thermalStateAtStart)", "thermal_end": "\(report.thermalStateAtEnd)"
-                        ])
-                    }
-                }
-                musicBenchmarkReport = report
-                musicBenchmarkURL = url
-                musicBenchmarkStatus = Self.localize("Prediction benchmark complete. Share the result for analysis.")
-                refreshDiagnostics()
-            } catch is CancellationError {
-                musicBenchmarkStatus = Self.localize("Benchmark interrupted. Keep the app in the foreground and run again.")
-            } catch {
-                musicBenchmarkStatus = Self.localize("Unable to save the prediction benchmark.")
-            }
-        }
     }
 
     private func clearDiagnostics() {

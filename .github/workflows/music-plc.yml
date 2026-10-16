@@ -13,8 +13,7 @@ jobs:
           swiftc -O ios/HearPortReceiver/Sources/HearPortReceiver/StreamingTimeStretch.swift \
             diagnostics/music_concealment_reference.swift -o "$RUNNER_TEMP/music-reference"
           "$RUNNER_TEMP/music-reference" "$RUNNER_TEMP/music-reference.json"
-          swiftc -O -parse-as-library ios/HearPortReceiver/Sources/HearPortReceiver/MusicPredictionBenchmark.swift \
-            diagnostics/music_ar_benchmark.swift -o "$RUNNER_TEMP/music-ar"
+          swiftc -O -parse-as-library diagnostics/music_ar_benchmark.swift -o "$RUNNER_TEMP/music-ar"
           "$RUNNER_TEMP/music-ar" "$RUNNER_TEMP/music-ar.json"
       - name: Verify numerical agreement and prediction deadlines
         run: |
