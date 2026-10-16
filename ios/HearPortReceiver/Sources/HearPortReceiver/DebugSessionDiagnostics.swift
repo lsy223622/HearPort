@@ -109,6 +109,8 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
     private var jitterDecisions: [DebugJitterDecisionRecord] = []
     private var probePackets: [DebugProbePacketRecord] = []
     private var coordinatedPlan: CoordinatedProbePlan?
+    private var calibration: EnvironmentCalibrationSession?
+    private var calibrationResult: CalibrationResult?
     private var probeBudget = try! PlayoutBudget(targetMilliseconds: 50, maximumMilliseconds: 100,
                                                 outputReserveMilliseconds: 10)
     private var consumer: ProbeConsumer?
@@ -209,9 +211,13 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
         guard data.count >= 8 else { dropped.increment(); return }
         let streamID = data.prefix(4).reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
         guard streamID == session.streamID else { dropped.increment(); return }
-        let timed = session.coordinatedPlan != nil ? try? TimedAudioRecord(encoded: data) : nil
-        if session.coordinatedPlan != nil && timed == nil { dropped.increment(); return }
+        let timed = session.coordinatedPlan != nil || calibration != nil ? try? TimedAudioRecord(encoded: data) : nil
+        if (session.coordinatedPlan != nil || calibration != nil) && timed == nil { dropped.increment(); return }
         let sequence = timed?.sequence ?? data.dropFirst(4).prefix(4).reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
+        if let calibration, let timed {
+            calibration.receive(timed, capturedAt: mappedCapturedAt, uncertainty: uncertainty,
+                receivedAt: receivedAt, processedAt: DispatchTime.now().uptimeNanoseconds)
+        }
         if let timed, let plan = session.coordinatedPlan, let mappedCapturedAt {
             if probeStartedAt == nil {
                 let sourceTime = UInt64(Double(timed.sourceFrame) / 48_000 * 1e9) +
@@ -255,12 +261,32 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
         lock.lock(); coordinatedPlan = plan; lock.unlock()
     }
 
+    func configureCalibration(_ setup: CalibrationMessage?) {
+        lock.lock()
+        let previous = calibration
+        calibration = setup.map { EnvironmentCalibrationSession(setup: $0) }
+        calibrationResult = nil
+        lock.unlock()
+        previous?.cancel()
+    }
+
+    func calibrationSession() -> EnvironmentCalibrationSession? {
+        lock.lock(); defer { lock.unlock() }
+        return calibration
+    }
+
+    func completedCalibration() -> CalibrationResult? {
+        lock.lock(); defer { lock.unlock() }
+        return calibrationResult
+    }
+
     public func configureProbeBudget(_ budget: PlayoutBudget) {
         lock.lock(); probeBudget = budget; lock.unlock()
     }
 
     func probeProgress() -> (sequence: UInt32?, played: UInt64?, buffered: UInt32)? {
         lock.lock(); defer { lock.unlock() }
+        if let calibration { return calibration.feedback() }
         guard let consumer else { return nil }
         return (consumer.latestReceivedSequence, consumer.playedSourceFrame,
                 UInt32(consumer.bufferedFrames / 48))
@@ -284,6 +310,10 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
     func tickProbe(at now: UInt64, roundTrip: UInt64, uncertainty: UInt64 = 0) -> ControlMessage? {
         lock.lock(); defer { lock.unlock() }
         guard recording.load() != 0, let session else { return nil }
+        if let calibration {
+            calibration.tick(at: DispatchTime.now().uptimeNanoseconds, uncertainty: uncertainty)
+            return nil
+        }
         if let plan = session.coordinatedPlan {
             advanceProbeRound(at: now, plan: plan)
             if let start = probeStartedAt, now >= start,
@@ -398,6 +428,7 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
         let capturedBudget: PlayoutBudget
         let capturedClockExchanges: [String]
         let clockUnavailableCount: UInt64
+        let capturedCalibration: EnvironmentCalibrationSession?
         lock.lock()
         guard recording.load() != 0, let current = session else {
             lock.unlock()
@@ -414,12 +445,16 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
         capturedBudget = probeBudget
         capturedClockExchanges = clockExchanges
         clockUnavailableCount = clockUnavailablePackets.load()
+        capturedCalibration = calibration
         lock.unlock()
 
         do {
             let diagnosticURL = try diagnostics.export()
             defer { try? FileManager.default.removeItem(at: diagnosticURL) }
             let safeDiagnostics = try String(contentsOf: diagnosticURL, encoding: .utf8)
+            if dropCount > 0 { capturedCalibration?.cancel() }
+            let calibrationResult = capturedCalibration?.result(at: DispatchTime.now().uptimeNanoseconds,
+                completed: reason == "duration_expired")
             let report = Self.makeReport(
                 metadata: metadata,
                 records: capturedRecords,
@@ -433,7 +468,8 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
                 dropCount: dropCount,
                 reason: reason,
                 safeDiagnostics: safeDiagnostics,
-                bufferTargetPackets: bufferTargetPackets
+                bufferTargetPackets: bufferTargetPackets,
+                calibrationResult: calibrationResult
             )
             let reportURL = try reportTransfer.store(
                 sessionID: metadata.sessionID,
@@ -442,6 +478,7 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
             )
 
             lock.lock()
+            self.calibrationResult = calibrationResult
             if session?.sessionID == metadata.sessionID {
                 records.removeAll(keepingCapacity: true)
                 jitterDecisions.removeAll(keepingCapacity: true)
@@ -481,7 +518,8 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
                                    dropCount: UInt64,
                                    reason: String,
                                    safeDiagnostics: String,
-                                   bufferTargetPackets: Int) -> String {
+                                   bufferTargetPackets: Int,
+                                   calibrationResult: CalibrationResult? = nil) -> String {
         let finishedAt = DispatchTime.now().uptimeNanoseconds
         let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
         let appBuild = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "unknown"
@@ -513,6 +551,21 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
         lines.append("\nclock_exchange_v1")
         lines.append("local_sent_ns\tremote_received_ns\tremote_sent_ns\tlocal_received_ns\taccepted\tmapping_age_ns\tuncertainty_ns")
         lines.append(contentsOf: clockExchanges)
+        if let calibrationResult {
+            lines.append("probe_mode=environment_calibration")
+            if let data = try? JSONEncoder().encode(calibrationResult), let json = String(data: data, encoding: .utf8) {
+                lines.append("\ncalibration_summary_v1")
+                lines.append(json)
+            }
+            lines.append("\ncalibration_trace_v1")
+            lines.append("received_at_ns\tstream_id\tsequence\tpayload_bytes\trecorded_at_ns\tcaptured_at_ns\tsource_frame\tgeneration\tmapped_captured_at_ns\tuncertainty_ns")
+            for p in probePackets {
+                lines.append("\(p.receivedAt)\t\(p.streamID)\t\(p.sequence)\t\(p.payloadBytes)\t\(p.recordedAt)\t\(p.capturedAt)\t\(p.sourceFrame)\t\(p.generation)\t\(p.mappedCapturedAt)\t\(p.uncertainty)")
+            }
+            lines.append("\napp_diagnostics_v1")
+            lines.append(safeDiagnostics.trimmingCharacters(in: .newlines))
+            return lines.joined(separator: "\n") + "\n"
+        }
         if metadata.networkProbe {
             lines.insert("probe_mode=network", at: 5)
             if metadata.coordinatedPlan != nil {

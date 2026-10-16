@@ -112,6 +112,7 @@ bool SenderService::Start() {
     stop_music_.store(true);
     music_condition_.notify_all();
     stop_probe_.store(true);
+    calibration_condition_.notify_all();
     reliable_mode_.store(false);
     {
       std::lock_guard lock(reliable_mutex_);
@@ -185,6 +186,7 @@ void SenderService::Stop() {
     return;
   }
   stop_probe_.store(true);
+  calibration_condition_.notify_all();
   stop_music_.store(true);
     music_condition_.notify_all();
   if (music_thread_.joinable()) music_thread_.join();
@@ -274,6 +276,12 @@ bool SenderService::BeginStream(
 }
 
 bool SenderService::MarkStartStreamAckWritten(std::uint32_t stream_id) {
+  if (probe_thread_.joinable()) {
+    stop_probe_.store(true);
+    calibration_condition_.notify_all();
+    probe_thread_.join();
+  }
+  stop_probe_.store(false);
   if (music_thread_.joinable()) {
     stop_music_.store(true);
     music_condition_.notify_all();
@@ -326,6 +334,42 @@ bool SenderService::MarkStartStreamAckWritten(std::uint32_t stream_id) {
 
 void SenderService::ConfigureNetworkProbe(bool enabled) {
   network_probe_ = enabled;
+}
+
+void SenderService::ConfigureCalibration(CalibrationOptions options) {
+  if (started_ || music_clip_ || (options.seconds != 30 && options.seconds != 60 && options.seconds != 120) ||
+      options.maximum_ms < 20 || options.maximum_ms > 2000) throw std::invalid_argument("invalid calibration options");
+  calibration_options_ = options; network_probe_ = true;
+  ConfigureDebugDuration(std::chrono::seconds(3600));
+}
+
+CalibrationMessage SenderService::calibration_setup(std::uint32_t plan_id) const {
+  CalibrationMessage message;
+  message.kind = CalibrationMessageKind::setup; message.plan_id = plan_id;
+  if (calibration_options_) {
+    message.seconds = calibration_options_->seconds;
+    message.budget.maximum_ms = calibration_options_->maximum_ms;
+  }
+  return message;
+}
+
+CalibrationProgress SenderService::calibration_progress() const {
+  std::lock_guard lock(calibration_mutex_);
+  CalibrationProgress message;
+  message.stage = calibration_stage_.load();
+  if (calibration_exchange_) {
+    message.index = calibration_exchange_->completed() + 1;
+    message.count = calibration_exchange_->total();
+    message.completed = calibration_exchange_->analysis_completed();
+    message.total = calibration_exchange_->analysis_total();
+  }
+  return message;
+}
+
+bool SenderService::HandleCalibrationMessage(const CalibrationMessage& message) {
+  std::lock_guard lock(calibration_mutex_);
+  if (!calibration_exchange_ || !calibration_exchange_->Handle(message)) return false;
+  calibration_condition_.notify_all(); return true;
 }
 
 void SenderService::ConfigureMusicTest(MusicExcerpt clip) {
@@ -438,7 +482,154 @@ void SenderService::MusicWorker() {
   debug_end_pending_ = true; debug_end_reason_ = 1;
 }
 
+void SenderService::CalibrationWorker(std::uint32_t stream_id) {
+  using Clock = std::chrono::steady_clock;
+  const auto options = *calibration_options_;
+  probe_stream_id_.store(stream_id); probe_packets_processed_.store(0);
+  {
+    std::lock_guard lock(calibration_mutex_);
+    calibration_exchange_ = std::make_unique<CalibrationExchange>(stream_id, options,
+        static_cast<std::uint16_t>(output_reserve_ms_.load()));
+  }
+  const auto close_timer = [](HANDLE handle) { CloseHandle(handle); };
+  std::unique_ptr<void, decltype(close_timer)> timer(CreateWaitableTimerExW(nullptr, nullptr,
+      CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS), close_timer);
+  const auto finish = [&](bool success) {
+    calibration_round_active_.store(false); calibration_stage_.store(success ? 4 : 5);
+    std::lock_guard lock(debug_mutex_);
+    debug_end_pending_ = true; debug_end_reason_ = success ? 1 : 2;
+    diagnostics_condition_.notify_all();
+  };
+  if (!timer) { LogDiagnostic("calibration_timer_failed"); finish(false); return; }
+  const auto wait_until = [&](Clock::time_point target) {
+    while (!stop_probe_.load()) {
+      const auto remaining = target - Clock::now();
+      if (remaining <= Clock::duration::zero()) return true;
+      if (remaining > std::chrono::milliseconds(20)) {
+        std::unique_lock lock(calibration_mutex_);
+        calibration_condition_.wait_for(lock, std::min(std::chrono::duration_cast<std::chrono::milliseconds>(remaining),
+            std::chrono::milliseconds(50)), [&] { return stop_probe_.load(); });
+      } else {
+        LARGE_INTEGER due{};
+        due.QuadPart = -std::max<std::int64_t>(1, std::chrono::duration_cast<std::chrono::nanoseconds>(remaining).count() / 100);
+        if (!SetWaitableTimerEx(timer.get(), &due, 0, nullptr, nullptr, nullptr, 0) ||
+            WaitForSingleObject(timer.get(), INFINITE) != WAIT_OBJECT_0) {
+          LogDiagnostic("calibration_timer_wait_failed"); finish(false); return false;
+        }
+      }
+    }
+    return false;
+  };
+  const auto send_message = [&](const CalibrationMessage& message) {
+    wire::ControlEnvelope envelope;
+    envelope.type = wire::ControlMessageType::probe_manifest; envelope.stream_id = stream_id;
+    envelope.bytes1 = EncodeCalibrationMessage(message);
+    return SendControlPayload(wire::EncodeControlEnvelope(envelope));
+  };
+  while (!stop_probe_.load()) {
+    calibration_round_active_.store(false);
+    {
+      std::unique_lock lock(calibration_mutex_);
+      if (calibration_exchange_->finished()) break;
+      if (calibration_exchange_->awaiting_selection()) {
+        calibration_stage_.store(2);
+        CalibrationMessage request;
+        request.kind = CalibrationMessageKind::analyze; request.plan_id = stream_id;
+        lock.unlock();
+        if (!send_message(request)) { finish(false); return; }
+        lock.lock();
+        if (!calibration_condition_.wait_for(lock, std::chrono::seconds(120), [&] {
+              return stop_probe_.load() || !calibration_exchange_->awaiting_selection();
+            })) { lock.unlock(); LogDiagnostic("calibration_analysis_timeout"); finish(false); return; }
+        if (stop_probe_.load()) return;
+        if (calibration_exchange_->finished()) break;
+      }
+    }
+    std::uint32_t generation;
+    {
+      std::lock_guard send_lock(audio_send_mutex_);
+      std::lock_guard reliable_lock(reliable_mutex_);
+      quic_->StopReliableAudio(); reliable_mode_.store(false);
+      reliable_generation_ = reliable_generation_ == UINT32_MAX ? 1 : reliable_generation_ + 1;
+      generation = reliable_generation_;
+    }
+    std::optional<CalibrationMessage> round;
+    {
+      std::lock_guard lock(calibration_mutex_);
+      round = calibration_exchange_->NextRound(generation);
+    }
+    if (!round) { LogDiagnostic("calibration_round_invalid"); finish(false); return; }
+    calibration_stage_.store(round->phase == 0 ? 1 : 3);
+    if (!send_message(*round)) { finish(false); return; }
+    {
+      std::unique_lock lock(calibration_mutex_);
+      if (!calibration_condition_.wait_for(lock, std::chrono::seconds(5), [&] {
+            return stop_probe_.load() || !calibration_exchange_->awaiting_ack();
+          })) { lock.unlock(); LogDiagnostic("calibration_round_ack_timeout"); finish(false); return; }
+      if (stop_probe_.load()) return;
+    }
+    {
+      std::lock_guard send_lock(audio_send_mutex_);
+      std::lock_guard reliable_lock(reliable_mutex_);
+      ConfigurePlayoutBudget(round->budget.target_ms,round->budget.maximum_ms,round->output_reserve_ms);
+      reliable_mode_.store(round->reliable); probe_repair_mode_.store(0);
+      last_buffered_ms_ = 0; repair_pressure_ = false;
+      if (round->reliable) {
+        if (!quic_->StartReliableAudio(stream_id,generation)) { finish(false); return; }
+        reliable_lag_.Begin(stream_id,generation,Clock::now(),std::chrono::milliseconds(
+            round->budget.maximum_ms - round->output_reserve_ms));
+      }
+      calibration_round_active_.store(true);
+    }
+    const auto began = Clock::now();
+    LogDiagnostic("calibration_round_start round=" + std::to_string(round->index) + " phase=" + std::to_string(round->phase) +
+        " transport=" + (round->reliable ? std::string("reliable_stream") : std::string("datagram")) +
+        " target_ms=" + std::to_string(round->budget.target_ms) + " maximum_ms=" + std::to_string(round->budget.maximum_ms) +
+        " output_reserve_ms=" + std::to_string(round->output_reserve_ms));
+    for (std::uint32_t packet = 0; packet < std::uint32_t(options.seconds) * 400; ++packet) {
+      const auto target = began + std::chrono::nanoseconds(std::uint64_t(packet) * 2'500'000);
+      if (!wait_until(target)) return;
+      const auto woke = MonotonicNanoseconds();
+      const auto sequence = round->first_sequence + packet;
+      auto random = MakeNetworkProbeDatagram(stream_id,sequence,968);
+      std::lock_guard send_lock(audio_send_mutex_);
+      {
+        std::lock_guard debug_lock(debug_mutex_);
+        if (!debug_trace_.IsActive() || active_debug_stream_id_ != stream_id || debug_ending_) return;
+        ++outstanding_debug_sends_;
+      }
+      const auto capture = std::chrono::duration_cast<std::chrono::nanoseconds>(target.time_since_epoch()).count();
+      const auto sent_at = MonotonicNanoseconds();
+      wire::TimedAudioRecord record{stream_id,reliable_generation_,sequence,120,wire::AudioRecordKind::probe,
+          static_cast<std::uint64_t>(capture),round->first_source_frame + std::uint64_t(packet) * 120,
+          std::vector<std::byte>(random.begin() + 8,random.end())};
+      if (round->reliable) {
+        std::lock_guard reliable_lock(reliable_mutex_);
+        reliable_lag_.Produced(sequence,record.source_frame + 120,120);
+        reliable_lag_.Retain(record,static_cast<std::uint64_t>(sent_at));
+      }
+      const auto bytes = wire::EncodeTimedAudioRecord(record);
+      const auto outcome = AudioDeadline(round->budget.maximum_ms,round->output_reserve_ms).Expired(capture,sent_at) ?
+          ProbeSendOutcome{ProbeSendStatus::expired} : quic_->SendProbe(bytes,stream_id,sequence,round->reliable);
+      const bool accepted = outcome.status == ProbeSendStatus::accepted;
+      debug_trace_.RecordPacket(sequence,capture,woke,sent_at,accepted,outcome);
+      if (!accepted) CompleteDebugSend(stream_id);
+      probe_packets_processed_.store(sequence + 1);
+    }
+    if (!wait_until(began + std::chrono::seconds(options.seconds))) return;
+    bool finished;
+    {
+      std::lock_guard lock(calibration_mutex_);
+      finished = calibration_exchange_->CompleteRound() && calibration_exchange_->finished();
+    }
+    // Retain the current receiver and feedback during the bounded drain interval.
+    if (!wait_until(Clock::now() + std::chrono::seconds(finished ? 10 : 5))) return;
+  }
+  finish(true);
+}
+
 void SenderService::ProbeWorker(std::uint32_t stream_id) {
+  if (calibration_options_) { CalibrationWorker(stream_id); return; }
   using Clock = std::chrono::steady_clock;
   probe_packets_processed_.store(0);
   probe_recovering_.store(false);
@@ -685,6 +876,7 @@ bool SenderService::ObserveAudioProgress(
     std::optional<std::uint32_t> latest_received, std::uint64_t feedback_at_ns,
     std::optional<std::uint64_t> played_source, std::uint32_t buffered_ms) {
   std::unique_lock send_lock(audio_send_mutex_);
+  if (calibration_options_ && !calibration_round_active_.load()) return true;
   if (network_probe_) {
     if (stream_id != probe_stream_id_.load() || generation != reliable_generation_) return true;
     const auto stamp = static_cast<std::uint64_t>(MonotonicNanoseconds());

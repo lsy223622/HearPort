@@ -127,4 +127,65 @@ std::optional<CalibrationMessage> DecodeCalibrationMessage(std::span<const std::
     return m;
   } catch (...) { return std::nullopt; }
 }
+CalibrationExchange::CalibrationExchange(std::uint32_t plan_id, CalibrationOptions options, std::uint16_t reserve)
+    : plan_id_(plan_id), options_(options), reserve_(reserve) {}
+
+std::optional<CalibrationMessage> CalibrationExchange::NextRound(std::uint32_t generation) {
+  if (pending_ || finished() || awaiting_selection() || generation == 0) return std::nullopt;
+  const auto candidates = MakeCalibrationBudgets(options_.maximum_ms, reserve_);
+  const auto sampling = std::find_if(candidates.begin(), candidates.end(), [&](const auto& b) { return b.maximum_ms == options_.maximum_ms; });
+  if (sampling == candidates.end()) return std::nullopt;
+  CalibrationMessage m;
+  m.kind = CalibrationMessageKind::round; m.plan_id = plan_id_;
+  m.phase = completed_ >= 4; m.index = static_cast<std::uint8_t>(completed_ + 1);
+  m.count = static_cast<std::uint8_t>(m.phase ? total() : 4);
+  m.seconds = options_.seconds; m.output_reserve_ms = reserve_; m.generation = generation;
+  m.first_sequence = completed_ * options_.seconds * 400;
+  m.first_source_frame = std::uint64_t(m.first_sequence) * 120;
+  if (!m.phase) {
+    m.reliable = (completed_ == 1 || completed_ == 2) != ((plan_id_ & 1) != 0);
+    m.budget = *sampling;
+  } else {
+    const auto& choice = validation_.at(completed_ - 4);
+    m.reliable = choice.reliable; m.budget = choice.budget; m.profile_mask = choice.profile_mask;
+  }
+  acked_ = false; pending_ = m;
+  return m;
+}
+
+bool CalibrationExchange::Handle(const CalibrationMessage& m) {
+  if (m.plan_id != plan_id_) return false;
+  if (m.kind == CalibrationMessageKind::ack) {
+    if (!awaiting_ack() || pending_->index != m.index || pending_->phase != m.phase) return false;
+    acked_ = true; return true;
+  }
+  if (!awaiting_selection()) return false;
+  if (m.kind == CalibrationMessageKind::progress) {
+    if (!m.total || m.completed > m.total || m.completed < analysis_completed_ ||
+        (analysis_total_ != 0 && m.total != analysis_total_)) return false;
+    analysis_completed_ = m.completed; analysis_total_ = m.total; return true;
+  }
+  if (m.kind != CalibrationMessageKind::selection || m.choices.size() > 3) return false;
+  const auto budgets = MakeCalibrationBudgets(options_.maximum_ms, reserve_);
+  unsigned seen = 0;
+  for (const auto& choice : m.choices) {
+    if (!choice.profile_mask || choice.profile_mask > 7 || (seen & choice.profile_mask) ||
+        choice.output_reserve_ms != reserve_ || std::find(budgets.begin(), budgets.end(), choice.budget) == budgets.end()) return false;
+    seen |= choice.profile_mask;
+  }
+  validation_ = m.choices;
+  std::uint32_t seed = plan_id_ ^ 0xa5a55a5au;
+  for (std::size_t remaining = validation_.size(); remaining > 1; --remaining) {
+    seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5;
+    std::swap(validation_[remaining - 1],validation_[seed % remaining]);
+  }
+  const auto first = validation_;
+  validation_.insert(validation_.end(), first.rbegin(), first.rend());
+  selected_ = true; return true;
+}
+
+bool CalibrationExchange::CompleteRound() {
+  if (!pending_ || !acked_) return false;
+  ++completed_; pending_.reset(); acked_ = false; return true;
+}
 }  // namespace hearport::windows

@@ -80,7 +80,7 @@ struct CalibrationMeasurement: Codable, Sendable {
     let reliable: Bool
     let budget: CalibrationBudget
     let outputReserve: Int
-    let inputFingerprint: String
+    var inputFingerprint: String
     var complete = false
     var clockValid = false
     var sampleCount = 1
@@ -307,7 +307,10 @@ enum CalibrationSelector {
         return groups.values.map { group in
             var m = group[0]
             if group.count == 1 { return m }
-            m.complete = group.allSatisfy(\.complete); m.clockValid = group.allSatisfy(\.clockValid)
+            m.complete = group.allSatisfy(\.complete) && Set(group.map(\.round)).count == group.count
+            m.clockValid = group.allSatisfy(\.clockValid)
+            m.inputFingerprint = SHA256.hash(data: Data(group.map(\.inputFingerprint).sorted().joined(separator: ",").utf8))
+                .map { String(format: "%02x", $0) }.joined()
             m.sampleCount = group.reduce(0) { $0 + $1.sampleCount }
             m.sourceFrames = group.reduce(0) { $0 + $1.sourceFrames }
             m.missingSourceFrames = group.reduce(0) { $0 + $1.missingSourceFrames }

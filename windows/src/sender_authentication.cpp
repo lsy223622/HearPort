@@ -121,6 +121,7 @@ bool SenderAuthentication::HandleConnect(
   peer_wants_reliable_ =
       (envelope.feature_bits & wire::kFeatureReliableAudio) != 0;
   peer_supports_music_test_ = (envelope.feature_bits & wire::kFeatureMusicTest) != 0;
+  peer_supports_calibration_ = (envelope.feature_bits & wire::kFeatureEnvironmentCalibration) != 0;
   peer_coordinated_audio_ = (envelope.feature_bits & wire::kFeatureCoordinatedAudio) != 0;
   service_.ConfigureCoordinatedAudio(peer_coordinated_audio_);
 
@@ -231,6 +232,9 @@ bool SenderAuthentication::CompleteAuthentication(bool remember) {
   if (service_.music_test() && (!peer_coordinated_audio_ || !peer_supports_music_test_)) {
     return Fail(ErrorCode::protocol, "Update HearPort on iPad to use automatic music tests.");
   }
+  if (service_.environment_calibration() && (!peer_coordinated_audio_ || !peer_supports_calibration_)) {
+    return Fail(ErrorCode::protocol, "Update HearPort on iPad to use environment calibration.");
+  }
   service_.ConfigureReliableAudio(peer_wants_reliable_ && !service_.network_probe());
   if (service_.debug_duration().has_value() && !peer_supports_diagnostics_) {
     service_.LogDiagnostic("debug_session_refused receiver_feature_missing=1");
@@ -250,6 +254,7 @@ bool SenderAuthentication::CompleteAuthentication(bool remember) {
   if (peer_wants_reliable_) ready.feature_bits |= wire::kFeatureReliableAudio;
   if (peer_coordinated_audio_) ready.feature_bits |= wire::kFeatureCoordinatedAudio;
   if (service_.music_test()) ready.feature_bits |= wire::kFeatureMusicTest;
+  if (service_.environment_calibration()) ready.feature_bits |= wire::kFeatureEnvironmentCalibration;
   if (service_.network_probe()) {
     ready.feature_bits |=
         wire::kFeatureNetworkProbe | wire::kFeatureNetworkProbeRepeat;
@@ -281,13 +286,14 @@ bool SenderAuthentication::StartMediaStream(bool diagnostic) {
     if (!security::RandomBytes(MutableSpan(debug_session_id_))) return false;
     if (!service_.BeginStream(stream_id_, Span(debug_session_id_))) return false;
     if (service_.network_probe()) {
-      service_.ConfigureDebugDuration(std::chrono::seconds(peer_coordinated_audio_
-          ? kCoordinatedProbeDurationSeconds : kNetworkProbeDurationSeconds));
+      service_.ConfigureDebugDuration(std::chrono::seconds(service_.environment_calibration() ? 3600 :
+          (peer_coordinated_audio_ ? kCoordinatedProbeDurationSeconds : kNetworkProbeDurationSeconds)));
       if (peer_coordinated_audio_) {
         wire::ControlEnvelope manifest;
         manifest.type = wire::ControlMessageType::probe_manifest;
         manifest.stream_id = stream_id_;
-        manifest.bytes1 = EncodeProbeManifest(MakeCoordinatedProbeRounds(stream_id_));
+        manifest.bytes1 = service_.environment_calibration() ? EncodeCalibrationMessage(service_.calibration_setup(stream_id_)) :
+            EncodeProbeManifest(MakeCoordinatedProbeRounds(stream_id_));
         if (!Send(manifest)) return false;
       }
     }
@@ -401,9 +407,20 @@ bool SenderAuthentication::HandleControlPayload(
     return Fail(ErrorCode::protocol, "malformed control envelope");
   }
   switch (envelope->type) {
+    case wire::ControlMessageType::probe_manifest: {
+      if (!authenticated_ || !service_.environment_calibration() || !peer_supports_calibration_ ||
+          flow_ != Flow::debug_stream_active || envelope->stream_id != stream_id_) {
+        return Fail(ErrorCode::protocol, "unexpected calibration message");
+      }
+      const auto message = DecodeCalibrationMessage(envelope->bytes1);
+      if (!message || !service_.HandleCalibrationMessage(*message)) return Fail(ErrorCode::protocol, "invalid calibration state");
+      return true;
+    }
     case wire::ControlMessageType::audio_setup:
       if (!authenticated_ || !peer_coordinated_audio_ || envelope->stream_id != stream_id_ ||
           (flow_ != Flow::stream_ack && flow_ != Flow::debug_stream_ack) ||
+          (service_.environment_calibration() &&
+           envelope->maximum_ms != service_.calibration_setup(stream_id_).budget.maximum_ms) ||
           !service_.ConfigurePlayoutBudget(envelope->target_ms, envelope->maximum_ms,
                                           envelope->output_reserve_ms)) {
         return Fail(ErrorCode::stream_state, "unexpected AudioSetup");
@@ -499,6 +516,7 @@ void SenderAuthentication::Reset() noexcept {
   peer_supports_network_probe_ = false;
   peer_wants_reliable_ = false;
   peer_coordinated_audio_ = false;
+  peer_supports_calibration_ = false;
   report_upload_active_ = false;
   report_upload_session_id_.fill(std::byte{0});
   debug_session_id_.fill(std::byte{0});
