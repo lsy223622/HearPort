@@ -633,7 +633,7 @@ class Application {
                  reinterpret_cast<WPARAM>(font_), TRUE);
     if (groups_[0].size() != 3 || groups_[1].size() != 2 ||
         groups_[2].size() != 2 || pages_[0].size() != 8 ||
-        pages_[1].size() != 9 || pages_[2].size() != 7 ||
+        pages_[1].size() != 10 || pages_[2].size() != 7 ||
         !port_frame_ || !port_edit_ || !footer_close_ || !footer_exit_) {
       return false;
     }
@@ -844,6 +844,12 @@ class Application {
         detail = std::to_wstring(progress.index) + L" / " + std::to_wstring(progress.count) +
             Tr(L" rounds · ",L" 组 · ") + std::to_wstring(elapsed) + L" / " + std::to_wstring(calibration_seconds_) + Tr(L" s",L" 秒");
       } else detail = Tr(L"Connect the iPad; sampling and validation run automatically.", L"连接 iPad 后自动完成采样与复核。");
+      if (progress.stage < 4 && connected_) {
+        const unsigned count = progress.count ? progress.count : 10;
+        detail += L"\n" + Tr(L"Estimated traffic: ",L"预计传输：") +
+            std::to_wstring(count * calibration_seconds_ + (count - 1) * 5 + 10) +
+            Tr(L" s + analysis/upload",L" 秒，另加分析与回传");
+      }
       audio_label = Tr(L"Random data · 992 B · 400 packets/s · no audio", L"随机数据 · 992 字节 · 400 包/秒 · 不播放音频");
     } else if (running_ && network_probe_active_ && connected_) {
       const std::uint32_t processed = service_->network_probe_packets_processed();
@@ -1357,6 +1363,8 @@ class Application {
       text << L" ms · " << Tr(L"gap ",L"缺口 ") << point.gap_ratio*100 << L"% · " << Tr(L"longest ",L"最长 ") << point.longest_gap_ms << L" ms\r\n";
       if (point.gap_ratio == 0) text << Tr(L"No gaps observed in this sample.\r\n",L"本次样本未观察到缺口。\r\n");
     };
+    text << Tr(L"Profile targets: Low latency <=0.5% gaps and <=40 ms longest; Balanced <=0.1% and <=20 ms. Stability first minimizes gap ratio, then longest gap, then source age within the chosen ceiling.\r\n\r\n",
+        L"档位目标：低延迟缺口≤0.5%且最长≤40 毫秒；平衡≤0.1%且最长≤20 毫秒。稳定优先在所选上限内依次减少缺口占比、最长缺口及源年龄。\r\n\r\n");
     for (const auto& profile : report.profiles) {
       text << (profile.profile == 1 ? Tr(L"Low latency",L"低延迟") : profile.profile == 2 ? Tr(L"Balanced",L"平衡") : Tr(L"Stability first",L"稳定优先")) << L" · ";
       text << (profile.status == "observed" ? Tr(L"Observed in both repeats",L"两次复核已观测") : profile.status == "provisional" ? Tr(L"Provisional: live gaps worsened",L"暂定：复核缺口变差") : profile.status == "not_met" ? Tr(L"Live validation missed target",L"复核未达目标") : profile.status == "incomplete" ? Tr(L"Incomplete",L"不完整") : Tr(L"No qualifying recommendation",L"无达标推荐")) << L"\r\n";

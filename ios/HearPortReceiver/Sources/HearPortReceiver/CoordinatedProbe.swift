@@ -189,6 +189,7 @@ struct ProbeConsumer: Sendable {
                 skipped = valid.record.sourceFrame - sourceFrame
                 if skipped > 0 { missingSource.append(sourceFrame..<valid.record.sourceFrame) }
                 sourceFrame = valid.record.sourceFrame; nextSequence = valid.record.sequence; offset = 0
+                if skipped > 0 { playedSourceFrame = sourceFrame }
             }
             packets = packets.filter { !SequenceNumber.isBefore($0.key, nextSequence) &&
                 budget.prepareDeadline(capturedAt: $0.value.captured,

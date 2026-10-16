@@ -1256,6 +1256,8 @@ public final class HearPortQuicTransport {
 
     public func noteProbeGeneration(_ generation: UInt32) {
         if audioGeneration == 0 || SequenceNumber.isBefore(audioGeneration, generation) {
+            audioStream?.cancel()
+            audioStream = nil
             audioGeneration = generation
         }
         startProgressTimer()
@@ -1292,7 +1294,8 @@ public final class HearPortQuicTransport {
                    SequenceNumber.isBefore(generation, self.musicGeneration) {
                     stream.cancel(); return
                 }
-                if let generation = records.generation, (self.audioGeneration == 0 || SequenceNumber.isBefore(self.audioGeneration, generation)) {
+                if let generation = records.generation, (self.audioGeneration == 0 || SequenceNumber.isBefore(self.audioGeneration, generation) ||
+                    (self.audioGeneration == generation && self.audioStream == nil)) {
                     self.audioStream?.cancel()
                     self.audioStream = stream
                     self.audioGeneration = generation
