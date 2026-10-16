@@ -1,5 +1,7 @@
 name: HearPortUSBProbe
 options:
+  xcodeVersion: "15.3"
+  projectFormat: xcode15_3
   deploymentTarget:
     iOS: "16.0"
 packages:
