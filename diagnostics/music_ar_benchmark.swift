@@ -1,4 +1,69 @@
 import Foundation
+import Accelerate
+
+func predictAR(_ stereo: [Float], frames: Int, order: Int = 256) -> [Float] {
+    var output = [Float](repeating: 0, count: frames * 2)
+    for channel in 0..<2 {
+        var history = stride(from: channel, to: stereo.count, by: 2).map { Double(stereo[$0]) }
+        if history.count < order + 1 {
+            history.insert(contentsOf: repeatElement(0, count: order + 1 - history.count), at: 0)
+        }
+        var correlation = [Double](repeating: 0, count: order + 1)
+        history.withUnsafeBufferPointer { source in
+            for lag in 0...order {
+                vDSP_dotprD(source.baseAddress!, 1, source.baseAddress! + lag, 1,
+                            &correlation[lag], vDSP_Length(history.count - lag))
+            }
+        }
+        correlation[0] += 0.001
+        var coefficients = [Double](repeating: 0, count: order + 1)
+        var error = correlation[0]
+        for degree in 1...order {
+            var residual = correlation[degree]
+            if degree > 1 {
+                for j in 1..<degree { residual -= coefficients[j] * correlation[degree - j] }
+            }
+            let reflection = residual / error
+            let previous = coefficients
+            if degree > 1 {
+                for j in 1..<degree { coefficients[j] = previous[j] - reflection * previous[degree - j] }
+            }
+            coefficients[degree] = reflection
+            error *= 1 - reflection * reflection
+        }
+        var past = Array(history.suffix(order))
+        var cursor = 0
+        for frame in 0..<frames {
+            var value = 0.0
+            for j in 1...order { value += coefficients[j] * past[(cursor + order - j) % order] }
+            past[cursor] = value
+            cursor = (cursor + 1) % order
+            output[frame * 2 + channel] = Float(value)
+        }
+        if (0..<frames).contains(where: { !output[$0 * 2 + channel].isFinite || abs(output[$0 * 2 + channel]) > 1.5 }) {
+            for frame in 0..<frames { output[frame * 2 + channel] = 0 }
+        }
+    }
+    return output
+}
+
+func predictAvailableFutureAR(_ stereo: [Float], future: [Float], frames: Int) -> [Float] {
+    var output = predictAR(stereo, frames: frames)
+    guard future.count >= 512 else { return output }
+    var reversed: [Float] = []
+    for frame in stride(from: future.count / 2 - 1, through: 0, by: -1) {
+        reversed.append(contentsOf: future[(frame * 2)..<(frame * 2 + 2)])
+    }
+    let backward = predictAR(reversed, frames: frames)
+    for frame in 0..<frames {
+        let weight = frames > 1 ? Float(frame) / Float(frames - 1) : 0
+        for channel in 0..<2 {
+            output[frame * 2 + channel] = output[frame * 2 + channel] * (1 - weight) +
+                backward[(frames - 1 - frame) * 2 + channel] * weight
+        }
+    }
+    return output
+}
 
 @main
 struct MusicARBenchmark {
