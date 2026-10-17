@@ -178,6 +178,7 @@
 
 "Test complete" = "Test complete";
 "Test ended" = "Test ended";
+"Report transfer interrupted. Receipt not confirmed." = "Report transfer interrupted. Receipt not confirmed.";
 
 "Waiting for the PC to confirm receipt." = "Waiting for the PC to confirm receipt.";
 

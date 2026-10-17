@@ -61,7 +61,7 @@ struct AudioLinkQualityTracker {
         let total = received + missing
         missingRatio = total > 0 ? Double(missing) / Double(total) : nil
         lateRatio = received + late > 0 ? Double(late) / Double(received + late) : nil
-        guard total > 0 || intervals.contains(where: { $0.interrupted }) else {
+        guard total + late > 0 || intervals.contains(where: { $0.interrupted }) else {
             quality = .unknown; improvementStartedAt = nil; improvingTo = nil; return
         }
         // A real interruption is actionable even during warmup.
