@@ -2,30 +2,6 @@ import XCTest
 @testable import HearPortReceiver
 
 final class ConnectionPresentationTests: XCTestCase {
-    func testStartupShortfallsStayUnmeasuredAndDoNotPoisonPlaybackWindow() {
-        var tracker = AudioLinkQualityTracker()
-        for second in 0...2 {
-            var point = sample(Double(second), received: second * 100, interrupted: true)
-            point.outputGapFrames = UInt64(second * 480)
-            tracker.observe(point)
-            XCTAssertEqual(tracker.quality, .unknown)
-        }
-        var clean = sample(3, received: 600)
-        clean.outputGapFrames = 960
-        tracker.observe(clean)
-        XCTAssertEqual(tracker.quality, .stable)
-    }
-
-    func testSilentSourceDoesNotMakeIdleRendererAnUnstableLink() {
-        var tracker = AudioLinkQualityTracker()
-        for second in 0...12 {
-            var point = sample(Double(second), received: 0, interrupted: true)
-            point.outputGapFrames = UInt64(second * 48_000)
-            tracker.observe(point)
-        }
-        XCTAssertEqual(tracker.quality, .unknown)
-    }
-
     func testCompletionAndReportOutrankPlaybackAndTestCallbacks() {
         XCTAssertEqual(ConnectionPresentationStage.resolve(completed: true, reporting: true,
             recovering: true, connecting: true, playing: true, testing: true), .completed)
@@ -40,55 +16,55 @@ final class ConnectionPresentationTests: XCTestCase {
             recovering: false, connecting: true, playing: false, testing: false), .connecting)
     }
 
-    func testQualityWarmsUpThenDowngradesImmediatelyAndRecoversSlowly() {
+    func testSilentComputerCanHaveStableTiming() {
         var tracker = AudioLinkQualityTracker()
-        tracker.observe(sample(0, received: 0))
-        tracker.observe(sample(1, received: 400))
-        XCTAssertEqual(tracker.quality, .unknown)
-        tracker.observe(sample(2, received: 800))
-        tracker.observe(sample(3, received: 1200))
-        XCTAssertEqual(tracker.quality, .stable)
-        tracker.observe(sample(4, received: 1600, missing: 20))
-        XCTAssertEqual(tracker.quality, .poor)
-        for second in 5...13 {
-            tracker.observe(sample(Double(second), received: second * 400, missing: 20))
-        }
-        XCTAssertEqual(tracker.quality, .poor)
-        for second in 14...20 {
-            tracker.observe(sample(Double(second), received: second * 400, missing: 20))
+        for second in stride(from: 0, through: 12, by: 2) {
+            var point = sample(Double(second), rtt: 8)
+            point.outputGapFrames = UInt64(second * 48_000)
+            tracker.observe(point)
         }
         XCTAssertEqual(tracker.quality, .stable)
     }
 
-    func testCounterResetAndLongSamplingPauseReturnToUnknown() {
+    func testFiveToTenMillisecondsIsStillStable() {
         var tracker = AudioLinkQualityTracker()
-        for second in 0...3 { tracker.observe(sample(Double(second), received: second * 400)) }
-        XCTAssertEqual(tracker.quality, .stable)
-        tracker.observe(sample(4, received: 10, epoch: 2))
-        XCTAssertEqual(tracker.quality, .unknown)
-        for second in 5...7 { tracker.observe(sample(Double(second), received: (second - 4) * 400, epoch: 2)) }
-        XCTAssertEqual(tracker.quality, .stable)
-        tracker.observe(sample(20, received: 1400, epoch: 2))
-        XCTAssertEqual(tracker.quality, .unknown)
-    }
-
-    func testNoTrafficAndInterruptedOutputAreNotStable() {
-        var tracker = AudioLinkQualityTracker()
-        for second in 0...3 { tracker.observe(sample(Double(second), received: second * 400)) }
-        tracker.observe(sample(4, received: 1200, interrupted: true))
-        XCTAssertEqual(tracker.quality, .poor)
-        for second in 5...15 { tracker.observe(sample(Double(second), received: 1200)) }
-        XCTAssertEqual(tracker.quality, .unknown)
-    }
-
-    func testRoundTripAndLatePacketsCanDowngradeOtherwiseCleanDelivery() {
-        var tracker = AudioLinkQualityTracker()
-        for second in 0...3 {
-            tracker.observe(sample(Double(second), received: second * 400, rtt: 90))
+        for (index, delay) in [5.0,10,5,10,5,10].enumerated() {
+            tracker.observe(sample(Double(index * 2), rtt: delay))
         }
-        XCTAssertEqual(tracker.quality, .variable)
-        tracker.observe(sample(4, received: 1600, late: 80, rtt: 20))
-        XCTAssertEqual(tracker.quality, .poor)
+        XCTAssertEqual(tracker.quality, .stable)
+    }
+
+    func testConstantHighRoundTripIsStableRatherThanLowLatency() {
+        var tracker = AudioLinkQualityTracker()
+        for second in stride(from: 0, through: 12, by: 2) {
+            tracker.observe(sample(Double(second), rtt: 180))
+        }
+        XCTAssertEqual(tracker.quality, .stable)
+    }
+
+    func testAbsoluteDelayVariationDistinguishesModerateAndLargeSwings() {
+        for (delays, expected) in [([5.0,25,5,25,5], AudioLinkQuality.variable),
+                                    ([5.0,65,5,65,5], .poor)] {
+            var tracker = AudioLinkQualityTracker()
+            for (index, delay) in delays.enumerated() {
+                tracker.observe(sample(Double(index * 2), rtt: delay))
+            }
+            XCTAssertEqual(tracker.quality, expected)
+        }
+    }
+
+    func testAudioAvailabilityCountersDoNotChangeTimingAssessment() {
+        var tracker = AudioLinkQualityTracker()
+        for second in stride(from: 0, through: 12, by: 2) {
+            var point = sample(Double(second), rtt: 8)
+            point.outputGapFrames = UInt64(second * 48_000)
+            tracker.observe(point)
+        }
+        for second in stride(from: 14, through: 24, by: 2) {
+            tracker.observe(sample(Double(second), rtt: 8, received: second * 400,
+                missing: second * 10, late: second * 15))
+        }
+        XCTAssertEqual(tracker.quality, .stable)
     }
 
     func testReceiverReportsRawRttWithFreshnessAndConnectionReset() {
@@ -105,28 +81,9 @@ final class ConnectionPresentationTests: XCTestCase {
         XCTAssertNil(receiver.audioLinkSample(at: 2_100_000_000).roundTripMilliseconds)
     }
 
-    func testOutputUnderflowBetweenPollsDowngradesQuality() {
-        var tracker = AudioLinkQualityTracker()
-        for second in 0...3 { tracker.observe(sample(Double(second), received: second * 400)) }
-        let receiver = HearPortReceiver()
-        _ = receiver.renderFrames(120)
-        var next = sample(4, received: 1600)
-        next.outputGapFrames = receiver.audioLinkSample().outputGapFrames
-        tracker.observe(next)
-        XCTAssertEqual(tracker.quality, .poor)
-    }
-
-    func testOnlyLateTrafficDoesNotAppearAsAnUnmeasuredLink() {
-        var tracker = AudioLinkQualityTracker()
-        for second in 0...3 {
-            tracker.observe(sample(Double(second), received: 0, late: second * 400))
-        }
-        XCTAssertEqual(tracker.quality, .poor)
-    }
-
-    private func sample(_ time: Double, received: Int, missing: Int = 0, late: Int = 0,
-                        epoch: UInt64 = 1, rtt: Double? = 10, interrupted: Bool = false) -> AudioLinkSample {
-        AudioLinkSample(epoch: epoch, time: time, received: received, missing: missing,
-                        late: late, roundTripMilliseconds: rtt, interrupted: interrupted)
+    private func sample(_ time: Double, rtt: Double?, received: Int = 0,
+                        missing: Int = 0, late: Int = 0) -> AudioLinkSample {
+        AudioLinkSample(epoch: 1, time: time, received: received, missing: missing,
+                        late: late, roundTripMilliseconds: rtt, interrupted: true)
     }
 }
