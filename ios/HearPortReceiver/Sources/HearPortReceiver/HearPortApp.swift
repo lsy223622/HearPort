@@ -85,7 +85,7 @@ import SwiftUI
                 }
             }
             connectionManager.onSearching = {
-                if completedTestStatus == nil { isConnecting = true; status = Self.localize("Searching network and USB…") }
+                if completedTestStatus == nil { showConnectionSearch() }
             }
             connectionManager.start()
             if control == nil {
@@ -294,6 +294,10 @@ import SwiftUI
                 Text((activePath == .usb ? "USB · " : Self.localize("Network") + " · ") + currentHost)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
+            } else if isConnecting {
+                Text("Searching network and USB…")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
             } else {
                 Text("Choose a PC below to connect.")
                     .font(.subheadline)
@@ -326,7 +330,7 @@ import SwiftUI
                 }
             }
 
-            if control != nil || audioOutput != nil {
+            if control != nil || audioOutput != nil || isConnecting {
                 Button("Disconnect", role: .destructive) {
                     disconnect()
                 }
@@ -499,7 +503,10 @@ import SwiftUI
             return
         }
         let activeConnectionID = id
-        if control == nil { isConnecting = true; connectionError = nil }
+        if control == nil {
+            isConnecting = true; connectionError = nil
+            status = Self.localize(route.path == .usb ? "Connecting via USB…" : "Connecting via network…")
+        }
         let audioMode = AudioTransportMode(rawValue: audioTransportModeRaw) ?? .datagram
         let normalizedJitter = JitterBufferConfiguration(
             targetPackets: audioMode.bufferTargetPackets(selected: jitterBufferTargetPackets)
@@ -611,8 +618,12 @@ import SwiftUI
                     audioOutput = nil
                 }
                 if newState == .failed || newState == .closed {
-                    status = completedTestStatus ?? connectionError ??
-                        (connectionEstablished ? Self.localize("Connection ended. Reconnect to continue.") : Self.label(for: newState))
+                    if completedTestStatus == nil && connectionManager.isWaiting {
+                        showConnectionSearch()
+                    } else {
+                        status = completedTestStatus ?? connectionError ??
+                            (connectionEstablished ? Self.localize("Connection ended. Reconnect to continue.") : Self.label(for: newState))
+                    }
                 } else {
                     status = connectionError ?? Self.label(for: newState)
                 }
@@ -627,7 +638,7 @@ import SwiftUI
                 fields: ["event": "ui_connection_error", "message_bytes": "\(message.utf8.count)"]
             )
             DispatchQueue.main.async {
-                if connectionManager.isWaiting && control == nil && requestedAuthMode != .remembered {
+                if authenticatedIdentity == nil && connectionManager.isWaiting && control == nil && requestedAuthMode != .remembered {
                     connectionManager.stop(); isConnecting = false
                     connectionError = Self.localize(message); status = connectionError ?? Self.localize("Connection failed")
                     return
@@ -635,6 +646,7 @@ import SwiftUI
                 connectionManager.ended(id)
                 guard connectionID == activeConnectionID else { return }
                 guard completedTestStatus == nil else { return }
+                if connectionManager.isWaiting { showConnectionSearch(); return }
                 isConnecting = false
                 connectionError = Self.localize(message)
                 status = connectionError ?? Self.localize("Connection failed")
@@ -722,6 +734,11 @@ import SwiftUI
         }
         pendingControls[id] = session
         session.connect(host: endpoint, port: route.port, mode: requestedAuthMode, pin: pin, endpoint: route.endpoint, deferActivation: true)
+    }
+
+    private func showConnectionSearch() {
+        isConnecting = true; connectionError = nil
+        status = Self.localize("Searching network and USB…")
     }
 
     private func disconnect() {

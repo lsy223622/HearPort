@@ -33,6 +33,7 @@ class UsbPacketQueue {
 };
 std::vector<std::uint32_t> ParseUsbDevices(std::string_view plist);
 bool IsUsbDeviceChange(std::span<const std::uint32_t> known, std::string_view plist);
+bool IsUsbDeviceDetached(std::uint32_t device, std::string_view plist);
 class UsbTunnel {
  public:
   using StatusHandler = std::function<void(std::string)>;
