@@ -8,7 +8,7 @@ struct ConnectionStatusSymbol: View {
     let recovering: Bool
     let connecting: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var pulse = false
+    @Environment(\.scenePhase) private var scenePhase
 
     private var assessing: Bool { connecting || recovering || (connected && quality == .unknown) }
 
@@ -18,11 +18,20 @@ struct ConnectionStatusSymbol: View {
             ZStack {
                 DeviceOutline().stroke(Color.primary, style: StrokeStyle(lineWidth: lineWidth,
                     lineCap: .round, lineJoin: .round))
-                ForEach(0..<3) { index in
-                    ConnectionMark(index: index, wired: path == .usb ? 1 : 0)
-                        .stroke(quality.color, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
-                        .opacity(connected || connecting ? markOpacity(index) : 0)
-                        .opacity(assessing && !reduceMotion ? (pulse ? 1 : 0.3) : 1)
+                TimelineView(.animation(minimumInterval: 1.0 / 30,
+                    paused: !assessing || reduceMotion || scenePhase != .active)) { context in
+                    let phase = context.date.timeIntervalSinceReferenceDate
+                        .truncatingRemainder(dividingBy: 2.4) / 2.4
+                    let breath = assessing && !reduceMotion
+                        ? 0.2 + 0.8 * (1 - cos(phase * 2 * .pi)) / 2 : 1
+                    ZStack {
+                        ForEach(0..<3) { index in
+                            ConnectionMark(index: index, wired: path == .usb ? 1 : 0)
+                                .stroke(quality.color, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
+                                .opacity(connected || connecting ? markOpacity(index) : 0)
+                        }
+                    }
+                    .opacity(breath)
                 }
             }
         }
@@ -30,17 +39,7 @@ struct ConnectionStatusSymbol: View {
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.5), value: path)
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.35), value: connected)
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.35), value: quality)
-        .onAppear { updatePulse() }
-        .onChange(of: assessing) { _ in updatePulse() }
-        .onChange(of: reduceMotion) { _ in updatePulse() }
         .accessibilityHidden(true)
-    }
-
-    private func updatePulse() {
-        pulse = false
-        if assessing && !reduceMotion {
-            withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true)) { pulse = true }
-        }
     }
 
     private func markOpacity(_ index: Int) -> Double {
