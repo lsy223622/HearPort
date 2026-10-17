@@ -46,6 +46,7 @@ constexpr wchar_t kWindowClass[] = L"HearPortSenderGui";
 constexpr UINT kTrayMessage = WM_APP + 1;
 constexpr UINT kStartMessage = WM_APP + 2;
 constexpr UINT kConnectionMessage = WM_APP + 3;
+constexpr UINT kCalibrationRequestMessage = WM_APP + 4;
 constexpr UINT kTimer = 1;
 constexpr UINT kTrayIcon = 1;
 constexpr int kTab = 100;
@@ -1019,6 +1020,9 @@ class Application {
     host_->SetConnectionHandler([this](bool connected, bool reliable, hearport::windows::PhysicalPath path) {
       PostMessageW(hwnd_, kConnectionMessage, connected, (reliable ? 1 : 0) | (path == hearport::windows::PhysicalPath::usb ? 2 : 0));
     });
+    host_->SetCalibrationRequestHandler([this](hearport::windows::CalibrationOptions options) {
+      PostMessageW(hwnd_, kCalibrationRequestMessage, options.seconds, options.maximum_ms);
+    });
     if (!host_->Start()) {
       host_.reset();
       service_ = nullptr;
@@ -1506,6 +1510,17 @@ class Application {
         return 0;
       case kStartMessage:
         StartService();
+        return 0;
+      case kCalibrationRequestMessage:
+        if (running_ && service_ && !service_->debug_duration() &&
+            !service_->network_probe() && !service_->music_test() && !service_->environment_calibration() &&
+            (wparam == 30 || wparam == 60 || wparam == 120) && lparam >= 20 && lparam <= 2000) {
+          calibration_seconds_ = static_cast<unsigned>(wparam);
+          calibration_maximum_ = static_cast<unsigned>(lparam);
+          StopService();
+          StartService(std::nullopt, true, std::nullopt, true);
+          SelectPage(0);
+        }
         return 0;
       case kConnectionMessage:
         connected_ = wparam != 0;

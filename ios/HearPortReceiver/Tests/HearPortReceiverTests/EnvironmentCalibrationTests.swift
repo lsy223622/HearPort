@@ -44,4 +44,37 @@ final class EnvironmentCalibrationTests: XCTestCase {
         progress.completed = 25
         XCTAssertThrowsError(try progress.encoded())
     }
+
+    func testCalibrationRequestMatchesSharedFixtureAndValidatesBounds() throws {
+        var request = CalibrationMessage(kind: .request, planID: 0x01020304)
+        request.budget = CalibrationBudget(target: 0, maximum: 300)
+        let fixture = Data([4,6,1,2,3,4,0,30,1,44])
+        XCTAssertEqual(try request.encoded(), fixture)
+        XCTAssertEqual(try CalibrationMessage(encoded: fixture), request)
+        for seconds in [30,60,120] {
+            for maximum in [20,2000] {
+                request.seconds = seconds
+                request.budget = CalibrationBudget(target: 0, maximum: maximum)
+                XCTAssertEqual(try CalibrationMessage(encoded: request.encoded()), request)
+            }
+        }
+        for seconds in [-1,0,29,31,65536] {
+            request.seconds = seconds
+            XCTAssertThrowsError(try request.encoded())
+        }
+        request.seconds = 30
+        for maximum in [-1,0,19,2001,65536] {
+            request.budget = CalibrationBudget(target: 0, maximum: maximum)
+            XCTAssertThrowsError(try request.encoded())
+        }
+        for count in 0..<fixture.count {
+            XCTAssertThrowsError(try CalibrationMessage(encoded: fixture.prefix(count)))
+        }
+        XCTAssertThrowsError(try CalibrationMessage(encoded: fixture + Data([0])))
+        for (offset, bytes) in [(1, [UInt8(7)]), (2, [0,0,0,0]), (6, [0,31]), (8, [0,19]), (8, [7,209])] {
+            var invalid = fixture
+            invalid.replaceSubrange(offset..<(offset + bytes.count), with: bytes)
+            XCTAssertThrowsError(try CalibrationMessage(encoded: invalid))
+        }
+    }
 }

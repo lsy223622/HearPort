@@ -7,17 +7,26 @@ func encodeUSBPacket(_ payload: Data) throws -> Data {
 }
 struct USBPacketDecoder {
     private var buffer: [UInt8] = []
+    private(set) var peerIdentity: String?
     var complete: Bool { buffer.isEmpty }
     mutating func append(_ input: Data) throws -> [Data] {
         guard input.count <= 65536 else { throw USBPacketError.invalidFrame }
         buffer.append(contentsOf: input)
         var result: [Data] = [], offset = 0
         while buffer.count - offset >= 8 {
-            guard Array(buffer[offset..<offset+6]) == [72,80,85,81,1,0] else { throw USBPacketError.invalidFrame }
+            guard Array(buffer[offset..<offset+5]) == [72,80,85,81,1], buffer[offset+5] <= 1 else { throw USBPacketError.invalidFrame }
             let length = Int(buffer[offset+6]) << 8 | Int(buffer[offset+7])
             guard length > 0 else { throw USBPacketError.invalidFrame }
+            let isIdentity = buffer[offset+5] == 1
+            guard !isIdentity || length == 64 else { throw USBPacketError.invalidFrame }
             guard buffer.count - offset >= length + 8 else { break }
-            result.append(Data(buffer[offset+8..<offset+8+length])); offset += length + 8
+            let payload = Data(buffer[offset+8..<offset+8+length])
+            if isIdentity {
+                guard let identity = computerIdentity(String(data: payload, encoding: .utf8)),
+                      peerIdentity == nil || peerIdentity == identity else { throw USBPacketError.invalidFrame }
+                peerIdentity = identity
+            } else { result.append(payload) }
+            offset += length + 8
         }
         if offset > 0 { buffer.removeFirst(offset) }
         return result
@@ -44,6 +53,7 @@ struct USBPacketWriteQueue {
 import Network
 public final class USBPacketTunnel {
     public var onAvailable: ((UInt16) -> Void)?
+    public var onPeerIdentity: ((UInt16, String) -> Void)?
     public var onUnavailable: ((String) -> Void)?
     private let queue = DispatchQueue(label: "com.hearport.usb-tunnel", qos: .userInitiated)
     private var listener: NWListener?
@@ -129,7 +139,10 @@ public final class USBPacketTunnel {
             udpListener = local
             local.stateUpdateHandler = { [weak self, weak local] state in
                 guard let self, self.generation == id else { return }
-                if case .ready = state, let port = local?.port { self.onAvailable?(port.rawValue) }
+                if case .ready = state, let port = local?.port {
+                    self.onAvailable?(port.rawValue)
+                    if let identity = self.decoder.peerIdentity { self.onPeerIdentity?(port.rawValue, identity) }
+                }
                 if case .failed = state { self.close("USB local forwarding unavailable") }
             }
             local.newConnectionHandler = { [weak self] peer in
@@ -163,9 +176,13 @@ public final class USBPacketTunnel {
             guard let self, self.generation == id else { return }
             if let data, !data.isEmpty {
                 do {
+                    let oldIdentity = self.decoder.peerIdentity
                     for packet in try self.decoder.append(data) {
                         guard self.toUDP.push(packet, at: DispatchTime.now().uptimeNanoseconds) else { self.close("USB queue overflow"); return }
                         if self.toUDP.packets.count == 1 { self.sendUDP(id) }
+                    }
+                    if oldIdentity != self.decoder.peerIdentity, let identity = self.decoder.peerIdentity, let port = self.udpListener?.port {
+                        self.onPeerIdentity?(port.rawValue, identity)
                     }
                 } catch { self.close("USB invalid packet"); return }
             }
@@ -206,6 +223,7 @@ public final class USBPacketTunnel {
         generation = UUID(); timer?.cancel(); timer = nil
         tcp?.cancel(); tcp = nil; udp?.cancel(); udp = nil
         udpListener?.cancel(); udpListener = nil
+        decoder = USBPacketDecoder()
         toTCP = USBPacketWriteQueue(); toUDP = USBPacketWriteQueue()
         if hadConnection {
             diagnostics.log(.info, category: .transport, message: "usb_tunnel_closed", fields: ["reason": reason])

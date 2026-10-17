@@ -133,7 +133,6 @@
 "Zero gaps means none were observed in this test. It is not a guarantee for future network conditions." = "Zero gaps means none were observed in this test. It is not a guarantee for future network conditions.";
 "Source age includes estimated output reserve. Audio DSP, render output and acoustic latency were not measured." = "Source age includes estimated output reserve. Audio DSP, render output and acoustic latency were not measured.";
 "If either live repeat misses the profile target, its status is downgraded. Worse live gaps remain provisional; network changes can explain the difference." = "If either live repeat misses the profile target, its status is downgraded. Worse live gaps remain provisional; network changes can explain the difference.";
-"Run environment calibration from the PC's Network test settings to obtain recommendations for this location." = "Run environment calibration from the PC's Network test settings to obtain recommendations for this location.";
 "%lld s / round · ceiling %lld ms" = "%lld s / round · ceiling %lld ms";
 "Target %lld ms · maximum %lld ms · output reserve %lld ms" = "Target %lld ms · maximum %lld ms · output reserve %lld ms";
 "Live validation %lld" = "Live validation %lld";
@@ -186,7 +185,6 @@
 
 "Local network" = "Local network";
 
-"Preferred" = "Preferred";
 
 "Round elapsed %.0f / %d s" = "Round elapsed %.0f / %d s";
 
@@ -200,9 +198,7 @@
 
 "Connection details" = "Connection details";
 
-"Change PC" = "Change PC";
 
-"Connection actions" = "Connection actions";
 
 "Current connection" = "Current connection";
 
@@ -228,7 +224,6 @@
 
 "Maximum total delay" = "Maximum total delay";
 
-"Recommendations" = "Recommendations";
 
 "About HearPort" = "About HearPort";
 
@@ -243,3 +238,29 @@
 "Unstable" = "Unstable";
 
 "USB" = "USB";
+
+"Author" = "Author";
+
+"GitHub repository" = "GitHub repository";
+
+"Duration per round" = "Duration per round";
+
+"30 seconds" = "30 seconds";
+
+"60 seconds" = "60 seconds";
+
+"120 seconds" = "120 seconds";
+
+"Calibration ceiling: %lld ms" = "Calibration ceiling: %lld ms";
+
+"Starting calibration…" = "Starting calibration…";
+
+"Start environment calibration" = "Start environment calibration";
+
+"New calibration" = "New calibration";
+
+"Calibration temporarily stops playback and tests this PC's local network connection. Connect a remembered PC with a network route to start." = "Calibration temporarily stops playback and tests this PC's local network connection. Connect a remembered PC with a network route to start.";
+
+"Could not start calibration. Reconnect and try again." = "Could not start calibration. Reconnect and try again.";
+
+"The PC did not start calibration. Reconnect and try again." = "The PC did not start calibration. Reconnect and try again.";

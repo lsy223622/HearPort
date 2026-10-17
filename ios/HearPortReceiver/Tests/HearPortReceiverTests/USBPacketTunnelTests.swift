@@ -2,6 +2,33 @@ import Foundation
 import XCTest
 @testable import HearPortReceiver
 final class USBPacketTunnelTests: XCTestCase {
+    func testIdentityMetadataIsConsumedAcrossFragmentedAndCoalescedReads() throws {
+        let identity = String(repeating: "ab", count: 32)
+        let metadata = Data([72,80,85,81,1,1,0,64]) + Data(identity.uppercased().utf8)
+        let packet = try encodeUSBPacket(Data([7,8]))
+        var decoder = USBPacketDecoder()
+        for byte in metadata { XCTAssertTrue(try decoder.append(Data([byte])).isEmpty) }
+        XCTAssertEqual(decoder.peerIdentity, identity)
+        XCTAssertTrue(decoder.complete)
+        XCTAssertEqual(try decoder.append(packet), [Data([7,8])])
+        var coalesced = USBPacketDecoder()
+        XCTAssertEqual(try coalesced.append(metadata + packet), [Data([7,8])])
+        XCTAssertEqual(coalesced.peerIdentity, identity)
+    }
+    func testInvalidIdentityAndUnknownFlagsAreRejected() throws {
+        for invalid in [
+            Data([72,80,85,81,1,1,0,63]),
+            Data([72,80,85,81,1,2,0,1,7]),
+            Data([72,80,85,81,1,1,0,64]) + Data(String(repeating: "g", count: 64).utf8)
+        ] {
+            var decoder = USBPacketDecoder()
+            XCTAssertThrowsError(try decoder.append(invalid))
+        }
+        var decoder = USBPacketDecoder()
+        let header = Data([72,80,85,81,1,1,0,64])
+        _ = try decoder.append(header + Data(String(repeating: "a", count: 64).utf8))
+        XCTAssertThrowsError(try decoder.append(header + Data(String(repeating: "b", count: 64).utf8)))
+    }
     func testFragmentedAndCoalescedPackets() throws {
         let golden = Data([72,80,85,81,1,0,0,2,7,8])
         XCTAssertEqual(try encodeUSBPacket(Data([7,8])), golden)

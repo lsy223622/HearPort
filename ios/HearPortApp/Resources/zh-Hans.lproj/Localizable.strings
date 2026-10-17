@@ -133,7 +133,6 @@
 "Zero gaps means none were observed in this test. It is not a guarantee for future network conditions." = "零缺口仅表示本次没有观察到，不保证未来网络条件下的稳定性。";
 "Source age includes estimated output reserve. Audio DSP, render output and acoustic latency were not measured." = "源年龄包含估计输出预留；未测音频 DSP、实际渲染输出或声学延迟。";
 "If either live repeat misses the profile target, its status is downgraded. Worse live gaps remain provisional; network changes can explain the difference." = "任一复核未达档位目标都会降低状态。复核缺口变差时标为暂定；差异可能由网络波动造成。";
-"Run environment calibration from the PC's Network test settings to obtain recommendations for this location." = "请从电脑端的网络测试设置启动环境校准，获得当前位置的推荐参数。";
 "%lld s / round · ceiling %lld ms" = "每组 %lld 秒 · 测试上限 %lld 毫秒";
 "Target %lld ms · maximum %lld ms · output reserve %lld ms" = "目标 %lld 毫秒 · 最大 %lld 毫秒 · 输出预留 %lld 毫秒";
 "Live validation %lld" = "实际复核 %lld";
@@ -186,7 +185,6 @@
 
 "Local network" = "局域网";
 
-"Preferred" = "优先";
 
 "Round elapsed %.0f / %d s" = "本组已进行 %.0f / %d 秒";
 
@@ -200,9 +198,7 @@
 
 "Connection details" = "连接详情";
 
-"Change PC" = "更换电脑";
 
-"Connection actions" = "连接操作";
 
 "Current connection" = "当前连接";
 
@@ -228,7 +224,6 @@
 
 "Maximum total delay" = "总延迟上限";
 
-"Recommendations" = "推荐参数";
 
 "About HearPort" = "关于 HearPort";
 
@@ -243,3 +238,29 @@
 "Unstable" = "不稳定";
 
 "USB" = "USB";
+
+"Author" = "作者";
+
+"GitHub repository" = "GitHub 项目";
+
+"Duration per round" = "每组时长";
+
+"30 seconds" = "30 秒";
+
+"60 seconds" = "60 秒";
+
+"120 seconds" = "120 秒";
+
+"Calibration ceiling: %lld ms" = "校准延迟上限：%lld 毫秒";
+
+"Starting calibration…" = "正在启动校准…";
+
+"Start environment calibration" = "开始环境校准";
+
+"New calibration" = "新建校准";
+
+"Calibration temporarily stops playback and tests this PC's local network connection. Connect a remembered PC with a network route to start." = "校准将暂时停止播放，测试这台电脑的局域网连接。请先连接已保存配对且有网络路线的电脑。";
+
+"Could not start calibration. Reconnect and try again." = "无法启动校准，请重新连接后重试。";
+
+"The PC did not start calibration. Reconnect and try again." = "电脑未能开始校准，请重新连接后重试。";

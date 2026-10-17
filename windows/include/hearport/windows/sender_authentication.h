@@ -45,6 +45,7 @@ class SenderAuthentication {
   bool OpenPairingWindow();
   std::string pairing_pin() const;
   void SetConnectionHandler(std::function<void(bool, bool)> handler);
+  void SetCalibrationRequestHandler(std::function<void(CalibrationOptions)> handler);
 
   bool HandleControlPayload(std::span<const std::byte> payload);
   void OnDebugSessionEnded(std::array<std::byte, 16> session_id,
@@ -90,6 +91,8 @@ class SenderAuthentication {
   std::string peer_identity_;
   bool authenticated_ = false;
   std::function<void(bool, bool)> connection_handler_;
+  std::function<void(CalibrationOptions)> calibration_request_handler_;
+  bool calibration_request_pending_ = false;
   bool remember_pairing_ = false;
   bool peer_supports_diagnostics_ = false;
   bool peer_supports_network_probe_ = false;

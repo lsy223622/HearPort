@@ -6,7 +6,11 @@ struct ConnectionStatusSymbol: View {
     let path: ConnectionPath
     let quality: AudioLinkQuality
     let recovering: Bool
+    let connecting: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var pulse = false
+
+    private var assessing: Bool { connecting || recovering || (connected && quality == .unknown) }
 
     var body: some View {
         GeometryReader { geometry in
@@ -17,7 +21,8 @@ struct ConnectionStatusSymbol: View {
                 ForEach(0..<3) { index in
                     ConnectionMark(index: index, wired: path == .usb ? 1 : 0)
                         .stroke(quality.color, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
-                        .opacity(connected ? markOpacity(index) : 0)
+                        .opacity(connected || connecting ? markOpacity(index) : 0)
+                        .opacity(assessing && !reduceMotion ? (pulse ? 1 : 0.3) : 1)
                 }
             }
         }
@@ -25,12 +30,22 @@ struct ConnectionStatusSymbol: View {
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.5), value: path)
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.35), value: connected)
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.35), value: quality)
+        .onAppear { updatePulse() }
+        .onChange(of: assessing) { _ in updatePulse() }
+        .onChange(of: reduceMotion) { _ in updatePulse() }
         .accessibilityHidden(true)
+    }
+
+    private func updatePulse() {
+        pulse = false
+        if assessing && !reduceMotion {
+            withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true)) { pulse = true }
+        }
     }
 
     private func markOpacity(_ index: Int) -> Double {
         if path == .usb { return index == 0 ? (recovering ? 0.35 : 1) : 0 }
-        guard !recovering, quality != .unknown else { return 0.2 }
+        guard !assessing else { return 0.65 }
         let count = quality == .stable ? 3 : quality == .variable ? 2 : 1
         return index < count ? 1 : 0.18
     }

@@ -1,5 +1,7 @@
+#include <algorithm>
 #include <iostream>
 #include "hearport/windows/calibration.h"
+#include "hearport/windows/sender_authentication.h"
 
 int main() {
   using namespace hearport::windows;
@@ -68,5 +70,45 @@ int main() {
       "1\t7\t1\t30\t100\t4\t0\t50\t100\t11\t1\tobserved\t60\t0\t0\n");
   if (!result || result->complete || result->profiles.size() != 3) return 21;
   if (ParseCalibrationReport(summary + "2\t7\t1\t30\t100\t1\t0\t50\t100\t11\t1\tobserved\t60\t0\t0\n")) return 22;
+  CalibrationMessage request;
+  request.kind = CalibrationMessageKind::request; request.plan_id = 0x01020304;
+  request.seconds = 30; request.budget.maximum_ms = 300;
+  const std::vector<std::byte> request_fixture{std::byte{4}, std::byte{6}, std::byte{1}, std::byte{2},
+      std::byte{3}, std::byte{4}, std::byte{0}, std::byte{30}, std::byte{1}, std::byte{44}};
+  if (EncodeCalibrationMessage(request) != request_fixture) return 23;
+  const auto decoded_request = DecodeCalibrationMessage(request_fixture);
+  if (!decoded_request || decoded_request->kind != CalibrationMessageKind::request ||
+      decoded_request->seconds != 30 || decoded_request->budget.maximum_ms != 300) return 24;
+  for (const auto seconds : {30,60,120}) for (const auto maximum : {20,2000}) {
+    request.seconds = static_cast<std::uint16_t>(seconds);
+    request.budget.maximum_ms = static_cast<std::uint16_t>(maximum);
+    const auto decoded = DecodeCalibrationMessage(EncodeCalibrationMessage(request));
+    if (!decoded || decoded->seconds != seconds || decoded->budget.maximum_ms != maximum) return 25;
+  }
+  for (const auto seconds : {0,29,31,65535}) {
+    invalid = request_fixture; invalid[6] = std::byte(seconds >> 8); invalid[7] = std::byte(seconds & 255);
+    if (DecodeCalibrationMessage(invalid)) return 26;
+  }
+  for (const auto maximum : {0,19,2001,65535}) {
+    invalid = request_fixture; invalid[8] = std::byte(maximum >> 8); invalid[9] = std::byte(maximum & 255);
+    if (DecodeCalibrationMessage(invalid)) return 27;
+  }
+  for (std::size_t size = 0; size < request_fixture.size(); ++size) {
+    if (DecodeCalibrationMessage(std::span(request_fixture).first(size))) return 28;
+  }
+  invalid = request_fixture; invalid.push_back(std::byte{0});
+  if (DecodeCalibrationMessage(invalid)) return 29;
+  invalid = request_fixture; std::fill(invalid.begin() + 2, invalid.begin() + 6, std::byte{0});
+  if (DecodeCalibrationMessage(invalid)) return 30;
+  invalid = request_fixture; invalid[1] = std::byte{7};
+  if (DecodeCalibrationMessage(invalid)) return 31;
+  SenderService service(QuicServerOptions{});
+  SenderAuthentication authentication(service, {});
+  unsigned requested = 0;
+  authentication.SetCalibrationRequestHandler([&](CalibrationOptions) { ++requested; });
+  hearport::wire::ControlEnvelope envelope;
+  envelope.type = hearport::wire::ControlMessageType::probe_manifest;
+  envelope.stream_id = 0x01020304; envelope.bytes1 = request_fixture;
+  if (authentication.HandleControlPayload(hearport::wire::EncodeControlEnvelope(envelope)) || requested) return 32;
   std::cout << "calibration codec and budgets passed\n";
 }

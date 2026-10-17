@@ -21,6 +21,9 @@ SenderHost::SenderHost(QuicServerOptions options,std::filesystem::path root)
   }
 }
 SenderHost::~SenderHost() { Stop(); }
+void SenderHost::SetCalibrationRequestHandler(std::function<void(CalibrationOptions)> handler) {
+  for(auto& authentication:authentications_) authentication->SetCalibrationRequestHandler(handler);
+}
 void SenderHost::Configure(const std::function<void(SenderService&)>& configure) {
   for(auto& service:services_) configure(*service);
   selection_.SetPinned(services_[0]->network_probe());
@@ -34,7 +37,7 @@ bool SenderHost::Start() {
   if(services_[0]->network_probe()) {
     std::lock_guard lock(mutex_); usb_status_="Network test uses network connection";
   } else if(services_[1]->Start()) {
-    tunnel_.Start(services_[1]->local_port(),[this](std::string status) {
+    tunnel_.Start(services_[1]->local_port(),options_.certificate_spki_sha256,[this](std::string status) {
       const bool available=status=="USB available";
       { std::lock_guard lock(mutex_); usb_status_=std::move(status); }
       if(!available) services_[1]->CloseConnection();

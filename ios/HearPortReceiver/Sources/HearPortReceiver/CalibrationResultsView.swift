@@ -5,10 +5,31 @@ import Charts
 struct CalibrationResultsView: View {
     let result: CalibrationResult?
     let apply: (Int) -> Void
+    var canStart = false
+    var starting = false
+    var startStatus: String?
+    var start: ((Int, Int) -> Void)?
     @State private var applied: Int?
+    @State private var seconds = 30
+    @State private var maximum = 300
 
     var body: some View {
         List {
+            Section {
+                Picker("Duration per round", selection: $seconds) {
+                    Text("30 seconds").tag(30)
+                    Text("60 seconds").tag(60)
+                    Text("120 seconds").tag(120)
+                }
+                Stepper("Calibration ceiling: \(maximum) ms", value: $maximum, in: 40...2000, step: 10)
+                Button { start?(seconds, maximum) } label: {
+                    Text(starting ? LocalizedStringKey("Starting calibration…") : LocalizedStringKey("Start environment calibration"))
+                }
+                    .disabled(!canStart || starting)
+                if let startStatus { Text(startStatus).font(.footnote).foregroundStyle(.secondary) }
+            } header: { Text("New calibration") } footer: {
+                Text("Calibration temporarily stops playback and tests this PC's local network connection. Connect a remembered PC with a network route to start.")
+            }
             if let result {
                 Section("Test conditions") {
                     Text(result.testedAt, style: .date) + Text(" ") + Text(result.testedAt, style: .time)
@@ -79,8 +100,6 @@ struct CalibrationResultsView: View {
                     Text("Source age includes estimated output reserve. Audio DSP, render output and acoustic latency were not measured.")
                     Text("If either live repeat misses the profile target, its status is downgraded. Worse live gaps remain provisional; network changes can explain the difference.")
                 }
-            } else {
-                Text("Run environment calibration from the PC's Network test settings to obtain recommendations for this location.")
             }
         }
         .navigationTitle("Environment calibration")

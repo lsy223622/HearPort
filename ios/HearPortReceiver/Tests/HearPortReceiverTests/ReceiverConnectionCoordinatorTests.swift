@@ -2,6 +2,45 @@ import Foundation
 import XCTest
 @testable import HearPortReceiver
 final class ReceiverConnectionCoordinatorTests: XCTestCase {
+    func testOnlyFullMatchingIdentitiesMergeUSBAndLAN() {
+        let identity = String(repeating: "ab", count: 32)
+        let routes = [
+            ComputerDiscoveryRoute(id: "usb:1", identity: identity.uppercased(), title: "USB", path: .usb, networkAddress: nil),
+            ComputerDiscoveryRoute(id: "service:one", identity: identity, title: "HearPort-one", path: .network, networkAddress: "192.168.1.10")
+        ]
+        let groups = groupComputerRoutes(routes)
+        XCTAssertEqual(groups.count, 1)
+        XCTAssertEqual(groups.first?.identity, identity)
+        XCTAssertEqual(groups.first?.title, "HearPort-one")
+        XCTAssertEqual(groups.first?.networkAddress, "192.168.1.10")
+        XCTAssertEqual(groups.first?.preferredRouteID, "usb:1")
+        XCTAssertEqual(groups.first?.hasUSB, true)
+    }
+    func testUnknownOrDifferentIdentitiesStaySeparate() {
+        let prefix = String(repeating: "a", count: 12)
+        let groups = groupComputerRoutes([
+            ComputerDiscoveryRoute(id: "usb:1", identity: prefix + String(repeating: "b", count: 52), title: "USB", path: .usb, networkAddress: nil),
+            ComputerDiscoveryRoute(id: "service:one", identity: prefix + String(repeating: "c", count: 52), title: "HearPort-one", path: .network, networkAddress: nil),
+            ComputerDiscoveryRoute(id: "usb:2", identity: nil, title: "USB", path: .usb, networkAddress: nil),
+            ComputerDiscoveryRoute(id: "service:two", identity: prefix, title: "HearPort-two", path: .network, networkAddress: nil)
+        ])
+        XCTAssertEqual(groups.count, 4)
+        XCTAssertTrue(groups.allSatisfy { $0.networkAddress == nil })
+        XCTAssertNil(groups.last?.identity)
+        XCTAssertNil(computerIdentity(String(repeating: "g", count: 64)))
+    }
+    func testSelectedComputerExcludesAnotherComputersUSBAndUnknownRoutes() {
+        let first = String(repeating: "a", count: 64), second = String(repeating: "b", count: 64)
+        let selected = ComputerRouteSelection(identity: second, routeID: nil, fallbackRouteID: "remembered-ip")
+        XCTAssertTrue(selected.includes(identity: second, routeID: "network:second"))
+        XCTAssertTrue(selected.includes(identity: second, routeID: "usb:second"))
+        XCTAssertFalse(selected.includes(identity: first, routeID: "usb:first"))
+        XCTAssertFalse(selected.includes(identity: nil, routeID: "usb:unknown"))
+        XCTAssertTrue(selected.includes(identity: nil, routeID: "remembered-ip"))
+        let unidentified = ComputerRouteSelection(identity: nil, routeID: "service:chosen", fallbackRouteID: nil)
+        XCTAssertTrue(unidentified.includes(identity: nil, routeID: "service:chosen"))
+        XCTAssertFalse(unidentified.includes(identity: nil, routeID: "usb:unknown"))
+    }
     func testUSBRemovalKeepsReconnectIntentUntilExplicitStop() {
         var policy = ConnectionSelectionPolicy(); policy.wantsConnection = true
         let usb = UUID()
