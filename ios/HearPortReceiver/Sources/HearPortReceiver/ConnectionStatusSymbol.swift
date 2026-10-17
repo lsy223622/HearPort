@@ -9,13 +9,16 @@ struct ConnectionStatusSymbol: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        ZStack {
-            DeviceOutline().stroke(Color.primary, style: StrokeStyle(lineWidth: 48,
-                lineCap: .round, lineJoin: .round))
-            ForEach(0..<3) { index in
-                ConnectionMark(index: index, wired: path == .usb ? 1 : 0)
-                    .stroke(quality.color, style: StrokeStyle(lineWidth: 48, lineCap: .round))
-                    .opacity(connected ? markOpacity(index) : 0)
+        GeometryReader { geometry in
+            let lineWidth = geometry.size.width * 48 / 1254
+            ZStack {
+                DeviceOutline().stroke(Color.primary, style: StrokeStyle(lineWidth: lineWidth,
+                    lineCap: .round, lineJoin: .round))
+                ForEach(0..<3) { index in
+                    ConnectionMark(index: index, wired: path == .usb ? 1 : 0)
+                        .stroke(quality.color, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
+                        .opacity(connected ? markOpacity(index) : 0)
+                }
             }
         }
         .aspectRatio(1, contentMode: .fit)
@@ -66,9 +69,13 @@ private struct ConnectionMark: Shape {
         ]
         let cable: [CGPoint] = [.init(x: 751, y: 816), .init(x: 1020, y: 816),
                                 .init(x: 1100, y: 650), .init(x: 999, y: 565)]
-        let points = zip(arcs[index], cable).map { a, b in
-            CGPoint(x: (a.x + (b.x - a.x) * wired) * rect.width / 1254,
-                    y: (a.y + (b.y - a.y) * wired) * rect.height / 1254)
+        let scaleX: CGFloat = rect.width / 1254
+        let scaleY: CGFloat = rect.height / 1254
+        var points: [CGPoint] = []
+        for (start, end) in zip(arcs[index], cable) {
+            let x: CGFloat = start.x + (end.x - start.x) * wired
+            let y: CGFloat = start.y + (end.y - start.y) * wired
+            points.append(CGPoint(x: x * scaleX, y: y * scaleY))
         }
         var path = Path()
         path.move(to: points[0])

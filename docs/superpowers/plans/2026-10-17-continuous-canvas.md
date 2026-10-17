@@ -33,3 +33,5 @@
 
 - Approved design and main-checkout execution confirmed by user.
 - Local Windows environment has no Swift toolchain; use the established macOS Actions workflow for behavioral tests and iOS compilation. Layout changes receive build/review validation; unit tests cover derived state and quality behavior.
+- Regression-first run 39016984853 failed on missing presentation/quality types as expected. Implementation run 39017310172 passed the Swift package suite; the iOS archive exposed an overloaded geometry expression, now split into explicitly typed coordinates.
+- Continuous canvas, system colors, reduced motion, quality observation, discovery deduplication, secondary settings and localized states implemented. Concentrated review fixed scaled icon strokes, retained-report resume and failed-report cleanup; those report paths were re-reviewed successfully.

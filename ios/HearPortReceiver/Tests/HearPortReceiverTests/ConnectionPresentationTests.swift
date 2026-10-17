@@ -92,6 +92,14 @@ final class ConnectionPresentationTests: XCTestCase {
         XCTAssertEqual(tracker.quality, .poor)
     }
 
+    func testOnlyLateTrafficDoesNotAppearAsAnUnmeasuredLink() {
+        var tracker = AudioLinkQualityTracker()
+        for second in 0...3 {
+            tracker.observe(sample(Double(second), received: 0, late: second * 400))
+        }
+        XCTAssertEqual(tracker.quality, .poor)
+    }
+
     private func sample(_ time: Double, received: Int, missing: Int = 0, late: Int = 0,
                         epoch: UInt64 = 1, rtt: Double? = 10, interrupted: Bool = false) -> AudioLinkSample {
         AudioLinkSample(epoch: epoch, time: time, received: received, missing: missing,

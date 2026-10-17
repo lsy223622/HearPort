@@ -178,6 +178,7 @@
 
 "Test complete" = "测试已完成";
 "Test ended" = "测试已结束";
+"Report transfer interrupted. Receipt not confirmed." = "报告回传中断，尚未确认电脑收妥。";
 
 "Waiting for the PC to confirm receipt." = "正在等待电脑确认收妥报告。";
 

@@ -49,6 +49,7 @@ import SwiftUI
     @State private var qualityTracker = AudioLinkQualityTracker()
     @State private var linkSample: AudioLinkSample?
     @State private var musicRound: MusicTestRound?
+    @State private var testRunning = false
     @State private var roundStartedAt: TimeInterval = 0
     @State private var roundElapsed: TimeInterval = 0
     @Environment(\.scenePhase) private var scenePhase
@@ -205,7 +206,7 @@ import SwiftUI
         .resolve(completed: completedTestStatus != nil, reporting: sendingReport,
             recovering: retainingConnection && isConnecting, connecting: isConnecting,
             playing: audioOutput != nil,
-            testing: control?.isMusicTest == true || control?.isNetworkProbe == true)
+            testing: testRunning)
     }
 
     private var showsConnections: Bool { presentationStage == .idle }
@@ -384,9 +385,11 @@ import SwiftUI
 
     private func selectConnection(_ endpoint: ConnectionEndpoint) {
         selectedEndpoint = endpoint
-        if endpoint.path == .network { host = endpoint.host }
         if hasRememberedCredential { authMode = .remembered; connect(selected: endpoint) }
-        else { authMode = .pair; showingConnectionSetup = true }
+        else {
+            if endpoint.path == .network { host = endpoint.host }
+            authMode = .pair; showingConnectionSetup = true
+        }
     }
 
     private var canvasSurface: some View {
@@ -651,7 +654,7 @@ import SwiftUI
         }
         completedTestStatus = nil; connectionError = nil
         sendingReport = false; retainingConnection = false
-        musicRound = nil; currentComputerName = ""
+        musicRound = nil; testRunning = false; currentComputerName = ""
         qualityTracker = AudioLinkQualityTracker(); linkSample = nil
         isConnecting = true; status = Self.localize("Searching network and USB…")
         connectionManager.setMaximumLatency(maximumLatencyMs)
@@ -739,7 +742,7 @@ import SwiftUI
                 pendingControls.removeValue(forKey: id)
                 activePath = route.path
                 currentComputerName = "HearPort-" + identity.prefix(6).map { String(format: "%02x", $0) }.joined()
-                qualityTracker = AudioLinkQualityTracker(); linkSample = nil; musicRound = nil
+                qualityTracker = AudioLinkQualityTracker(); linkSample = nil; musicRound = nil; testRunning = false
                 connectionEstablished = false; connectionError = nil; completedTestStatus = nil
                 activeAudioMode = audioMode; activeBufferTargetPackets = normalizedJitter.targetPackets
                 activeTargetLatencyMs = target; activeMaximumLatencyMs = maximum
@@ -758,6 +761,7 @@ import SwiftUI
                     control?.cancel(); control = nil
                     connectionManager.stop(); connectionID = UUID()
                     isConnecting = false; connectionError = nil
+                    sendingReport = false; testRunning = false
                     status = completed ?? Self.localize("PC stopped the connection")
                 } else { connectionManager.ended(id) }
             }
@@ -786,6 +790,7 @@ import SwiftUI
                 guard connectionID == activeConnectionID else { return }
                 if newState == .failed || newState == .closed {
                     isConnecting = false
+                    sendingReport = false; testRunning = false
                     try? audioOutput?.stop()
                     audioOutput = nil
                 }
@@ -818,16 +823,22 @@ import SwiftUI
                 connectionManager.ended(id)
                 guard connectionID == activeConnectionID else { return }
                 guard completedTestStatus == nil else { return }
+                let reportInterrupted = sendingReport
+                sendingReport = false; testRunning = false
+                try? audioOutput?.stop(); audioOutput = nil
+                control?.cancel(); control = nil
                 if connectionManager.isWaiting { showConnectionSearch(); return }
                 isConnecting = false
-                connectionError = Self.localize(message)
+                connectionError = Self.localize(reportInterrupted ? "Report transfer interrupted. Receipt not confirmed." : message)
                 status = connectionError ?? Self.localize("Connection failed")
                 refreshDiagnostics()
             }
         }
         session.onReady = { [weak session] in
             DispatchQueue.main.async {
-                guard connectionID == activeConnectionID, completedTestStatus == nil, !sendingReport else { return }
+                guard connectionID == activeConnectionID, completedTestStatus == nil else { return }
+                // Ready also resumes playback after the PC acknowledges an older retained report.
+                sendingReport = false
                 isConnecting = false
                 connectionEstablished = true
                 retainingConnection = true
@@ -842,6 +853,7 @@ import SwiftUI
                     lastHost = endpoint; if hasRememberedCredential { rememberedHost = endpoint }
                 }
                 if session?.isNetworkProbe == true {
+                    testRunning = true
                     status = Self.localize("Network test running")
                     refreshDiagnostics()
                     return
@@ -850,6 +862,7 @@ import SwiftUI
                     let output = PlatformAudioOutputController(receiver: activeReceiver)
                     try output.start()
                     audioOutput = output
+                    testRunning = session?.isMusicTest == true
                     musicRound = session?.musicTestRound
                     roundStartedAt = ProcessInfo.processInfo.systemUptime; roundElapsed = 0
                     status = session?.musicTestRound.map { Self.label(for: $0) } ??
@@ -901,6 +914,7 @@ import SwiftUI
                     : "Test ended. Report saved on the PC.")
                 connectionManager.completed()
                 completedTestStatus = message
+                testRunning = false
                 testCompletedNormally = reason == 1
                 sendingReport = false
                 connectionError = nil
@@ -929,7 +943,7 @@ import SwiftUI
         connectionError = nil
         connectionEstablished = false
         completedTestStatus = nil
-        sendingReport = false; retainingConnection = false; musicRound = nil
+        sendingReport = false; retainingConnection = false; musicRound = nil; testRunning = false
         qualityTracker = AudioLinkQualityTracker(); linkSample = nil
         currentComputerName = ""
         control?.cancel()
