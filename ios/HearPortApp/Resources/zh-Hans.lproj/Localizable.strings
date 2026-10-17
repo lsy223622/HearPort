@@ -206,17 +206,12 @@
 
 "Identity verified" = "身份已验证";
 
-"Delivery quality" = "交付状态";
 
 "Round-trip time" = "往返时间";
 
-"Unavailable packets" = "未能及时播放的包";
 
-"Late packets" = "迟到包占比";
 
-"Recent audio delivery" = "近期音频交付";
 
-"The indicator summarizes recent audio delivery, not Wi-Fi signal strength. Packet counts describe playout availability, not proven network loss. RTT is not end-to-end playback latency." = "指示标记反映近期音频交付情况，不是 Wi-Fi 信号强度。包统计表示未能及时播放的情况，不等于已确认的网络丢包。往返时间不等于端到端播放延迟。";
 
 "Active playback budget" = "当前播放预算";
 
@@ -264,3 +259,15 @@
 "Could not start calibration. Reconnect and try again." = "无法启动校准，请重新连接后重试。";
 
 "The PC did not start calibration. Reconnect and try again." = "电脑未能开始校准，请重新连接后重试。";
+
+"Link stability" = "链路稳定性";
+
+"Stable timing" = "稳定";
+
+"Delay variation" = "延迟波动";
+
+"Probe samples" = "有效探测样本";
+
+"Recent link timing" = "近期链路延迟";
+
+"Stability uses the absolute RTT variation of recent independent probes, including during silence. Variation is the P90–P10 difference over 12 seconds. Missing probe responses also lower stability. A steady high RTT can be stable; RTT is not end-to-end playback latency." = "稳定性依据近期独立往返探测的绝对波动，静音时也会评估。波动为近 12 秒内 P90 与 P10 的毫秒差；持续无探测响应也会降低稳定性。延迟平稳不等于低延迟，往返时间不等于端到端播放延迟。";

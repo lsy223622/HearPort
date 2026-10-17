@@ -14,69 +14,57 @@ enum ConnectionPresentationStage {
     }
 }
 
-enum AudioLinkQuality: Int { case unknown, poor, variable, stable }
+enum LinkStability: Int { case unknown, poor, variable, stable }
 
-struct AudioLinkSample {
+struct LinkTimingSample {
     let epoch: UInt64
     let time: TimeInterval
-    let received, missing, late: Int
     let roundTripMilliseconds: Double?
-    let interrupted: Bool
-    var outputGapFrames: UInt64 = 0
+    let roundTripObservedAt: UInt64?
 }
 
-/// UI observation only: counts describe packets unavailable to playout, not Wi-Fi loss.
-struct AudioLinkQualityTracker {
-    private(set) var quality: AudioLinkQuality = .unknown
-    private(set) var missingRatio: Double?
-    private(set) var lateRatio: Double?
-    private var previous: AudioLinkSample?
-    private struct Interval {
-        let end: TimeInterval
-        let received, missing, late: Int
-        let interrupted: Bool
-        let rtt: Double?
-    }
-    private var intervals: [Interval] = []
+struct LinkStabilityTracker {
+    private(set) var quality: LinkStability = .unknown
+    private(set) var variationMilliseconds: Double?
+    var sampleCount: Int { observations.count }
+    private var epoch: UInt64?
+    private var lastPollAt: TimeInterval?
     private var startedAt: TimeInterval = 0
+    private var newestObservation: UInt64?
+    private var observations: [(at: UInt64, milliseconds: Double)] = []
     private var improvementStartedAt: TimeInterval?
-    private var improvingTo: AudioLinkQuality?
+    private var improvingTo: LinkStability?
 
-    mutating func observe(_ sample: AudioLinkSample) {
-        guard let prior = previous, prior.epoch == sample.epoch,
-              sample.time > prior.time, sample.time - prior.time <= 3,
-              sample.received >= prior.received, sample.missing >= prior.missing,
-              sample.late >= prior.late else {
-            self = Self(); previous = sample; startedAt = sample.time; return
+    mutating func observe(_ sample: LinkTimingSample) {
+        if epoch != sample.epoch || lastPollAt.map({ sample.time < $0 || sample.time - $0 > 3 }) == true {
+            self = Self(); epoch = sample.epoch; startedAt = sample.time
         }
-        previous = sample
-        // Initial buffer fill is not an observation of steady audio delivery.
-        guard sample.time - startedAt >= 3 else {
-            intervals.removeAll(); missingRatio = nil; lateRatio = nil; return
+        lastPollAt = sample.time
+        if let at = sample.roundTripObservedAt, let rtt = sample.roundTripMilliseconds,
+           rtt.isFinite, rtt >= 0, Double(at) / 1_000_000_000 <= sample.time,
+           sample.time - Double(at) / 1_000_000_000 <= 6,
+           newestObservation.map({ at > $0 }) ?? true {
+            observations.append((at, rtt)); newestObservation = at
         }
-        intervals.append(Interval(end: sample.time, received: sample.received - prior.received,
-            missing: sample.missing - prior.missing, late: sample.late - prior.late,
-            interrupted: sample.interrupted || sample.outputGapFrames > prior.outputGapFrames,
-            rtt: sample.roundTripMilliseconds))
-        intervals.removeAll { sample.time - $0.end >= 5 }
-        let received = intervals.reduce(0) { $0 + $1.received }
-        let missing = intervals.reduce(0) { $0 + $1.missing }
-        let late = intervals.reduce(0) { $0 + $1.late }
-        let total = received + missing
-        missingRatio = total > 0 ? Double(missing) / Double(total) : nil
-        lateRatio = received + late > 0 ? Double(late) / Double(received + late) : nil
-        guard total + late > 0 else {
-            quality = .unknown; startedAt = sample.time
+        // At one probe every two seconds, retain roughly six independent exchanges.
+        observations.removeAll { sample.time - Double($0.at) / 1_000_000_000 > 12 }
+        let lastResponse = newestObservation ?? sample.roundTripObservedAt
+        let lastResponseTime = lastResponse.map { Double($0) / 1_000_000_000 } ?? startedAt
+        if sample.time - lastResponseTime > 6 {
+            quality = .poor; variationMilliseconds = nil
             improvementStartedAt = nil; improvingTo = nil; return
         }
-        let rtt = intervals.compactMap(\.rtt).max() ?? 0
-        let unavailable = missingRatio ?? 0, delayed = lateRatio ?? 0
-        let candidate: AudioLinkQuality
-        if intervals.contains(where: { $0.interrupted }) || unavailable >= 0.01 || delayed >= 0.02 || rtt >= 150 {
-            candidate = .poor
-        } else if unavailable > 0.001 || delayed > 0.005 || rtt >= 80 {
-            candidate = .variable
-        } else { candidate = .stable }
+        guard observations.count >= 3, let first = observations.first, let last = observations.last,
+              last.at - first.at >= 4_000_000_000 else {
+            variationMilliseconds = nil
+            if quality != .poor { quality = .unknown }
+            return
+        }
+        let sorted = observations.map(\.milliseconds).sorted()
+        let spread = percentile(sorted, fraction: 0.9) - percentile(sorted, fraction: 0.1)
+        variationMilliseconds = spread
+        // Absolute milliseconds: 5 -> 10 ms remains within the stable band.
+        let candidate: LinkStability = spread <= 10 ? .stable : spread <= 30 ? .variable : .poor
         if quality == .unknown || candidate.rawValue <= quality.rawValue {
             quality = candidate; improvementStartedAt = nil; improvingTo = nil
         } else {
@@ -85,5 +73,11 @@ struct AudioLinkQualityTracker {
                 quality = candidate; improvementStartedAt = nil; improvingTo = nil
             }
         }
+    }
+
+    private func percentile(_ sorted: [Double], fraction: Double) -> Double {
+        let position = Double(sorted.count - 1) * fraction
+        let lower = Int(position), upper = min(lower + 1, sorted.count - 1)
+        return sorted[lower] + (sorted[upper] - sorted[lower]) * (position - Double(lower))
     }
 }

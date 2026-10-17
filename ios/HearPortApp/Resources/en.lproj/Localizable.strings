@@ -206,17 +206,12 @@
 
 "Identity verified" = "Identity verified";
 
-"Delivery quality" = "Delivery quality";
 
 "Round-trip time" = "Round-trip time";
 
-"Unavailable packets" = "Unavailable packets";
 
-"Late packets" = "Late packets";
 
-"Recent audio delivery" = "Recent audio delivery";
 
-"The indicator summarizes recent audio delivery, not Wi-Fi signal strength. Packet counts describe playout availability, not proven network loss. RTT is not end-to-end playback latency." = "The indicator summarizes recent audio delivery, not Wi-Fi signal strength. Packet counts describe playout availability, not proven network loss. RTT is not end-to-end playback latency.";
 
 "Active playback budget" = "Active playback budget";
 
@@ -264,3 +259,15 @@
 "Could not start calibration. Reconnect and try again." = "Could not start calibration. Reconnect and try again.";
 
 "The PC did not start calibration. Reconnect and try again." = "The PC did not start calibration. Reconnect and try again.";
+
+"Link stability" = "Link stability";
+
+"Stable timing" = "Stable timing";
+
+"Delay variation" = "Delay variation";
+
+"Probe samples" = "Probe samples";
+
+"Recent link timing" = "Recent link timing";
+
+"Stability uses the absolute RTT variation of recent independent probes, including during silence. Variation is the P90–P10 difference over 12 seconds. Missing probe responses also lower stability. A steady high RTT can be stable; RTT is not end-to-end playback latency." = "Stability uses the absolute RTT variation of recent independent probes, including during silence. Variation is the P90–P10 difference over 12 seconds. Missing probe responses also lower stability. A steady high RTT can be stable; RTT is not end-to-end playback latency.";
