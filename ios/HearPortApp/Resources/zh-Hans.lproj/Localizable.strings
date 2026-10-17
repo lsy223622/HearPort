@@ -169,3 +169,76 @@
 "USB listener unavailable" = "USB 监听不可用";
 
 "USB queue deadline exceeded" = "USB 队列等待超时";
+
+"Restoring connection" = "正在恢复连接";
+
+"Music test · %d / 8" = "音乐测试 · %d / 8";
+
+"Sending report" = "正在回传报告";
+
+"Test complete" = "测试已完成";
+"Test ended" = "测试已结束";
+
+"Waiting for the PC to confirm receipt." = "正在等待电脑确认收妥报告。";
+
+"Back to connections" = "返回连接";
+
+"Local network" = "局域网";
+
+"Preferred" = "优先";
+
+"Round elapsed %.0f / %d s" = "本组已进行 %.0f / %d 秒";
+
+"Playback budget" = "播放延迟预算";
+
+"Target / maximum · configured, not measured latency" = "常态目标 / 总延迟上限 · 设置值，非实测延迟";
+
+"The report is being prepared and transferred. Keep HearPort open." = "正在整理并回传报告，请保持 HearPort 打开。";
+
+"Playback settings" = "播放设置";
+
+"Connection details" = "连接详情";
+
+"Change PC" = "更换电脑";
+
+"Connection actions" = "连接操作";
+
+"Current connection" = "当前连接";
+
+"Path" = "连接线路";
+
+"Identity verified" = "身份已验证";
+
+"Delivery quality" = "交付状态";
+
+"Round-trip time" = "往返时间";
+
+"Unavailable packets" = "未能及时播放的包";
+
+"Late packets" = "迟到包占比";
+
+"Recent audio delivery" = "近期音频交付";
+
+"The indicator summarizes recent audio delivery, not Wi-Fi signal strength. Packet counts describe playout availability, not proven network loss. RTT is not end-to-end playback latency." = "指示标记反映近期音频交付情况，不是 Wi-Fi 信号强度。包统计表示未能及时播放的情况，不等于已确认的网络丢包。往返时间不等于端到端播放延迟。";
+
+"Active playback budget" = "当前播放预算";
+
+"Normal target" = "常态目标";
+
+"Maximum total delay" = "总延迟上限";
+
+"Recommendations" = "推荐参数";
+
+"About HearPort" = "关于 HearPort";
+
+"Version" = "版本";
+
+"Build" = "构建号";
+
+"Assessing link" = "链路评估中";
+
+"Fluctuating" = "有波动";
+
+"Unstable" = "不稳定";
+
+"USB" = "USB";

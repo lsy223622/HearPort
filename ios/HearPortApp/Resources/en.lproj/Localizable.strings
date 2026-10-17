@@ -169,3 +169,76 @@
 "USB listener unavailable" = "USB listener unavailable";
 
 "USB queue deadline exceeded" = "USB queue deadline exceeded";
+
+"Restoring connection" = "Restoring connection";
+
+"Music test · %d / 8" = "Music test · %d / 8";
+
+"Sending report" = "Sending report";
+
+"Test complete" = "Test complete";
+"Test ended" = "Test ended";
+
+"Waiting for the PC to confirm receipt." = "Waiting for the PC to confirm receipt.";
+
+"Back to connections" = "Back to connections";
+
+"Local network" = "Local network";
+
+"Preferred" = "Preferred";
+
+"Round elapsed %.0f / %d s" = "Round elapsed %.0f / %d s";
+
+"Playback budget" = "Playback budget";
+
+"Target / maximum · configured, not measured latency" = "Target / maximum · configured, not measured latency";
+
+"The report is being prepared and transferred. Keep HearPort open." = "The report is being prepared and transferred. Keep HearPort open.";
+
+"Playback settings" = "Playback settings";
+
+"Connection details" = "Connection details";
+
+"Change PC" = "Change PC";
+
+"Connection actions" = "Connection actions";
+
+"Current connection" = "Current connection";
+
+"Path" = "Path";
+
+"Identity verified" = "Identity verified";
+
+"Delivery quality" = "Delivery quality";
+
+"Round-trip time" = "Round-trip time";
+
+"Unavailable packets" = "Unavailable packets";
+
+"Late packets" = "Late packets";
+
+"Recent audio delivery" = "Recent audio delivery";
+
+"The indicator summarizes recent audio delivery, not Wi-Fi signal strength. Packet counts describe playout availability, not proven network loss. RTT is not end-to-end playback latency." = "The indicator summarizes recent audio delivery, not Wi-Fi signal strength. Packet counts describe playout availability, not proven network loss. RTT is not end-to-end playback latency.";
+
+"Active playback budget" = "Active playback budget";
+
+"Normal target" = "Normal target";
+
+"Maximum total delay" = "Maximum total delay";
+
+"Recommendations" = "Recommendations";
+
+"About HearPort" = "About HearPort";
+
+"Version" = "Version";
+
+"Build" = "Build";
+
+"Assessing link" = "Assessing link";
+
+"Fluctuating" = "Fluctuating";
+
+"Unstable" = "Unstable";
+
+"USB" = "USB";
