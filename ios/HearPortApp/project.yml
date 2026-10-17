@@ -20,6 +20,9 @@ targets:
       - path: Resources/zh-Hans.lproj/Localizable.strings
       - path: Resources/zh-Hans.lproj/InfoPlist.strings
       - path: Resources/Assets.xcassets
+      - path: Resources/ThirdPartyNotices
+        type: folder
+        buildPhase: resources
     dependencies:
       - package: HearPortReceiver
     settings:

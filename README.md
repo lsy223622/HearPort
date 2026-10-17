@@ -1,60 +1,87 @@
-# HearPort
+# HearPort 0.1.0
 
-HearPort turns an iPad into a low-latency speaker for a Windows PC over a
-local network. The v1 implementation follows the design and interoperability
-documents under `plans/`:
+HearPort sends Windows PC audio to an iPad over your local network. A USB data
+cable is also supported when Apple's Windows device support is installed. For
+a paired iPad, USB is preferred when available; disconnecting USB returns
+playback to the remembered network connection.
 
-- Windows captures shared-mode WASAPI Loopback audio;
-- audio is normalized to 48 kHz, stereo, Float32LE PCM;
-- 120 frames are sent in each 968-byte QUIC DATAGRAM application payload;
-- iPad uses one reliable control stream plus QUIC DATAGRAM audio, a jitter
-  buffer, silence concealment, a render ring, and slow buffer-fill drift
-  correction;
-- release connections use the v1 pairing/remembered-authentication flow.
+The Windows app is a portable GUI. The iPad app is distributed as an unsigned
+IPA. Sign and install the IPA with an Apple-compatible signing tool of your
+choice before iPadOS can run it. Signing options have different account,
+device, and renewal limits. Keep all files in the Windows ZIP together.
 
-## Repository layout
+## First use
 
-- `protocol/` — canonical protobuf schema and fixed wire constants;
-- `core/` — platform-independent wire, ordering, buffering, and drift code;
-- `windows/` — WASAPI and MsQuic sender;
-- `ios/HearPortReceiver/` — Swift/iPad receiver package and audio lifecycle;
-- `security/` — pairing and remembered credentials;
-- `tests/` — deterministic reference/conformance tests;
-- `docs/` — implementation plan, progress ledger, and validation matrix.
+1. Unpack the Windows ZIP and start `HearPort.exe`.
+2. Open HearPort on iPad and select the discovered PC. If discovery is
+   unavailable, enter its hostname or IP address in connection setup.
+3. On Windows, choose **Pair new iPad** to show a temporary PIN. On iPad, choose
+   **Pair and remember** and enter that PIN. The PC credential is stored in
+   Windows Credential Manager and the iPad credential in Keychain.
+4. For USB, install Apple's Windows device support, connect a data cable,
+   unlock the iPad, and accept the system trust prompt if shown. Pairing can
+   also be completed over USB. If Apple device support or trust is unavailable,
+   use the LAN connection instead.
 
-## Current build boundary
+Windows discovery and audio use the local network; the sender listens on UDP
+52137 by default. An administrator may need to allow that UDP port through
+Windows Firewall. USB uses Apple's device service and loopback forwarding, so
+it does not require an inbound LAN TCP rule. See
+[`windows/installer/README.md`](windows/installer/README.md) for connection and
+firewall details.
 
-The Python reference suite can run on Windows without native audio or Apple
-toolchains:
+## Playback settings and tests
+
+The iPad's **Playback** settings select Datagram or Reliable stream audio and
+set a normal target and maximum total delay. These are playback budget values,
+not measured speaker latency. They include transport, processing, and output;
+the maximum controls how long an interruption can be tolerated. Changes apply
+on the next connection.
+
+**Automatic test and recommendations** compares transport and playback-budget
+choices using the PC's LAN connection. It pauses playback while running and
+reports Low latency, Balanced, and Stability first recommendations; it does
+not test over USB. A recommendation is an observation of the tested network,
+not a guarantee for later conditions.
+
+HearPort captures the Windows default output using shared-mode WASAPI Loopback
+and sends audio to the iPad. The receiver uses QUIC, local buffering, and audio
+output timing to keep playback responsive through ordinary network variation.
+
+## Diagnostics and evidence
+
+Diagnostics are stored locally. A log or exported report can contain network
+details such as a hostname, IP address, or port; review it before sharing.
+
+The validation matrix records automated, build, and observed device evidence
+separately. The short release checklist records distribution checks still to
+complete: [`docs/validation-matrix.md`](docs/validation-matrix.md) and
+[`docs/release-checklist.md`](docs/release-checklist.md).
+
+## Building release files
+
+Use Python 3.11+, Rust/Cargo, CMake and a VS 2022 x64 developer shell.
+Install `msquic:x64-windows` in vcpkg and set `VCPKG_ROOT` to that checkout.
+The separate build directory selects Release MsQuic explicitly:
 
 ```powershell
-python -m unittest discover -s tests -v
+cmake -S . -B out/build/windows-release -G "Visual Studio 17 2022" -A x64 `
+  "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
+  "-DHEARPORT_MSQUIC_LIBRARY=$env:VCPKG_ROOT/installed/x64-windows/lib/msquic.lib" `
+  "-DHEARPORT_MSQUIC_DLL=$env:VCPKG_ROOT/installed/x64-windows/bin/msquic.dll"
+cmake --build out/build/windows-release --config Release --parallel 4
+ctest --test-dir out/build/windows-release -C Release --output-on-failure
+python scripts/collect_notices.py --output-dir out/release-notices `
+  --msquic-copyright "$env:VCPKG_ROOT/installed/x64-windows/share/msquic/copyright"
+python scripts/package_release.py --build-dir out/build/windows-release --output-dir out/release `
+  --notices-dir out/release-notices --runtime-dir "$env:VCToolsRedistDir/x64/Microsoft.VC143.CRT"
 ```
 
-Native Windows builds require CMake, a C++20 compiler, Rust/Cargo for the
-maintained SPAKE2 provider, and MsQuic. The iPad package requires
-macOS/Xcode/iPadOS SDKs plus an Apple-platform build of that provider.
-Reference tests do not
-prove WASAPI capture, QUIC interoperability, iPad audio output, background
-behavior, or real Wi-Fi stability; those checks are tracked separately in
-`docs/validation-matrix.md`.
-
-## Manual v1 path
-
-The Windows sender requires both the certificate SHA-1 used by MsQuic and the
-SHA-256 hash of the current leaf certificate's DER SubjectPublicKeyInfo. The
-minimal local operator flow is:
-
-```powershell
-hearport_sender.exe --cert-sha1=<40 hex characters> `
-  --cert-spki-sha256=<64 hex characters> --open-pairing
-```
-
-The displayed six-digit PIN is entered in the iPad's “Pair new PC” form. A
-successful pair stores the receiver credential in Windows Credential Manager
-protected with DPAPI and in the iPad Keychain. Later connections use the
-remembered mode and require the pinned SPKI plus a fresh HMAC challenge.
-
-Firewall and optional discovery guidance is in `windows/installer/README.md`;
-the evidence boundary for native and real-device validation is in
-`docs/validation-matrix.md`.
+Commit the release sources before packaging. Run the existing `iOS receiver
+package tests` GitHub Actions workflow at that commit to create the unsigned
+IPA with its bundled license notices. Add `--ipa <path-to-ipa>` to the package
+command to include that exact commit's IPA in the release output. The script
+creates a portable ZIP, matching source ZIP and `SHA256SUMS.txt`; it rejects
+Debug runtime dependencies, missing runtime DLLs, mismatched versions and
+existing output files. The app-local VC runtime DLLs come from the developer
+shell's redistributable directory, not from the developer machine's System32.

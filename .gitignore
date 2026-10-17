@@ -9,3 +9,5 @@
 *.suo
 __pycache__/
 *.pyc
+
+/ios/HearPortApp/Resources/ThirdPartyNotices/
