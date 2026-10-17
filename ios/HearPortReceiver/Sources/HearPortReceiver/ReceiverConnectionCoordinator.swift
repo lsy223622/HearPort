@@ -71,6 +71,7 @@ public struct ConnectionEndpoint: Identifiable {
     private var networks: [ConnectionEndpoint] = []
     private var fallback: ConnectionEndpoint?
     private var rememberedName: String?
+    var rememberedComputerName: String? { rememberedName }
     private var policy = ConnectionSelectionPolicy()
     private var pending: [UUID: ConnectionEndpoint] = [:]
     private var activeEndpoint: ConnectionEndpoint?

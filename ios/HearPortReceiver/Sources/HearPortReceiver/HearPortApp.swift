@@ -9,7 +9,6 @@ import SwiftUI
     @AppStorage("hearport.rememberedHost") private var rememberedHost = ""
     @State private var selectedEndpoint: ConnectionEndpoint?
     @State private var host = ""
-    @State private var currentHost = ""
     @State private var connectionID = UUID()
     @State private var isConnecting = false
     @State private var activeAudioMode: AudioTransportMode = .datagram
@@ -22,6 +21,7 @@ import SwiftUI
     @State private var connectionError: String?
     @State private var connectionEstablished = false
     @State private var completedTestStatus: String?
+    @State private var testCompletedNormally = true
     @State private var receiver = HearPortReceiver()
     @StateObject private var connectionManager = ReceiverConnectionCoordinator()
     @State private var pendingControls: [UUID: ReceiverControlSession] = [:]
@@ -43,7 +43,21 @@ import SwiftUI
     @State private var showingConnectionSetup = false
     @State private var calibrationResult: CalibrationResult? = CalibrationResult.load()
     @State private var sendingReport = false
+    @State private var canvasSheet: CanvasSheet?
+    @State private var currentComputerName = ""
+    @State private var retainingConnection = false
+    @State private var qualityTracker = AudioLinkQualityTracker()
+    @State private var linkSample: AudioLinkSample?
+    @State private var musicRound: MusicTestRound?
+    @State private var roundStartedAt: TimeInterval = 0
+    @State private var roundElapsed: TimeInterval = 0
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private enum CanvasSheet: String, Identifiable {
+        case settings, playback, details
+        var id: String { rawValue }
+    }
 
     public init() {}
 
@@ -58,9 +72,7 @@ import SwiftUI
                         .font(.system(size: 32, weight: .semibold))
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    NavigationLink {
-                        settingsView
-                    } label: {
+                    Button { canvasSheet = .settings } label: {
                         Image(systemName: "gearshape")
                             .accessibilityLabel(Text("Settings"))
                     }
@@ -69,6 +81,23 @@ import SwiftUI
         }
         .background(Color(uiColor: .systemGroupedBackground))
         .tint(Color.primary)
+        .sheet(item: $canvasSheet) { sheet in
+            NavigationStack {
+                Group {
+                    switch sheet {
+                    case .settings: settingsView
+                    case .playback: playbackPreferencesView
+                    case .details: connectionDetailsView
+                    }
+                }
+                .toolbar {
+                    ToolbarItem(placement: .navigationBarTrailing) {
+                        Button("Done") { canvasSheet = nil }
+                    }
+                }
+            }
+            .tint(Color.primary)
+        }
         .sheet(isPresented: $showingConnectionSetup) {
             NavigationStack {
                 connectionSetupView
@@ -138,6 +167,16 @@ import SwiftUI
         }
         .onChange(of: scenePhase) { phase in
             if phase == .background { control?.interruptCalibration() }
+            if phase != .active { qualityTracker = AudioLinkQualityTracker(); linkSample = nil }
+        }
+        .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
+            guard scenePhase == .active else { return }
+            if audioOutput != nil && !sendingReport && completedTestStatus == nil && !isConnecting {
+                let sample = receiver.audioLinkSample()
+                linkSample = sample
+                qualityTracker.observe(sample)
+            } else { qualityTracker = AudioLinkQualityTracker(); linkSample = nil }
+            if musicRound != nil { roundElapsed = max(0, ProcessInfo.processInfo.systemUptime - roundStartedAt) }
         }
         .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.routeChangeNotification)) { _ in
             control?.interruptCalibration(forOutputChange: true)
@@ -162,193 +201,282 @@ import SwiftUI
         }
     }
 
+    private var presentationStage: ConnectionPresentationStage {
+        .resolve(completed: completedTestStatus != nil, reporting: sendingReport,
+            recovering: retainingConnection && isConnecting, connecting: isConnecting,
+            playing: audioOutput != nil,
+            testing: control?.isMusicTest == true || control?.isNetworkProbe == true)
+    }
+
+    private var showsConnections: Bool { presentationStage == .idle }
+    private var symbolConnected: Bool {
+        [.playing, .testing, .reporting, .recovering].contains(presentationStage)
+    }
+    private var canvasTitle: String {
+        switch presentationStage {
+        case .idle:
+            if connectionError != nil { return Self.localize("Connection failed") }
+            return status == Self.localize("Disconnected") ? Self.localize("Connect to a PC") : status
+        case .connecting: return Self.localize("Connecting")
+        case .recovering: return Self.localize("Restoring connection")
+        case .playing: return Self.localize("Playing")
+        case .testing:
+            if let round = musicRound {
+                return String(format: Self.localize("Music test · %d / 8"), round.index)
+            }
+            return Self.localize(control?.isEnvironmentCalibration == true ? "Environment calibration" : "Network test running")
+        case .reporting: return Self.localize("Sending report")
+        case .completed: return Self.localize(testCompletedNormally ? "Test complete" : "Test ended")
+        }
+    }
+    private var canvasSubtitle: String {
+        switch presentationStage {
+        case .idle: return connectionError ?? Self.localize("Bring Windows audio to this iPad.")
+        case .connecting: return Self.localize("Searching network and USB…")
+        case .reporting: return Self.localize("Waiting for the PC to confirm receipt.")
+        case .completed: return completedTestStatus ?? ""
+        default: return currentComputerName
+        }
+    }
+
     private var homeView: some View {
         GeometryReader { geometry in
             ScrollView {
-                VStack(alignment: .leading, spacing: 30) {
-                    if !isConnecting && audioOutput == nil &&
-                        control?.isNetworkProbe != true {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("Connect to a PC")
-                                .font(.largeTitle.weight(.bold))
-                            Text("Bring Windows audio to this iPad.")
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
+                VStack(spacing: 28) {
+                    // Keep the same symbol and heading in the hierarchy across every stage.
+                    VStack(spacing: 16) {
+                        ConnectionStatusSymbol(connected: symbolConnected, path: activePath,
+                            quality: qualityTracker.quality, recovering: presentationStage == .recovering)
+                            .frame(width: showsConnections ? 160 : 190, height: showsConnections ? 160 : 190)
+                            .padding(.top, showsConnections ? 4 : 22)
+                        Text(canvasTitle)
+                            .font(.largeTitle.weight(.bold))
+                            .multilineTextAlignment(.center)
+                            .contentTransition(.opacity)
+                            .accessibilityAddTraits(.isHeader)
+                        Text(canvasSubtitle)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                            .textSelection(.enabled)
+                        canvasLinkStatus
+                        if presentationStage == .connecting || presentationStage == .recovering || presentationStage == .reporting {
+                            ProgressView().padding(.top, 4)
                         }
                     }
+                    .frame(maxWidth: .infinity)
+                    .padding(.bottom, 10)
 
-                    statusCard
-
-                    if !isConnecting && audioOutput == nil &&
-                        control?.isNetworkProbe != true &&
-                        !lastHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("Last connection")
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                            HStack(spacing: 16) {
-                                connectionLabel(Text(lastHost), systemImage: "desktopcomputer")
-                                Spacer(minLength: 16)
-                                Button {
-                                    host = lastHost
-                                    if hasRememberedCredential && lastHost == rememberedHost {
-                                        authMode = .remembered
-                                        connect()
-                                    } else {
-                                        authMode = .oneTime
-                                        showingConnectionSetup = true
-                                    }
-                                } label: {
-                                    Text("Connect")
-                                        .foregroundStyle(Color(uiColor: .systemBackground))
-                                }
-                                .buttonStyle(.borderedProminent)
-                                .disabled(isConnecting || audioOutput != nil ||
-                                          control?.isNetworkProbe == true)
-                            }
-                            .padding(20)
-                            .background(Color(uiColor: .secondarySystemGroupedBackground),
-                                        in: RoundedRectangle(cornerRadius: 16))
-                        }
-                    }
-
-                    if !isConnecting && audioOutput == nil && control?.isNetworkProbe != true && !connectionManager.endpoints.isEmpty {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("Available connections").font(.subheadline).foregroundStyle(.secondary)
-                            ForEach(connectionManager.endpoints) { endpoint in
-                                Button {
-                                    selectedEndpoint = endpoint
-                                    if hasRememberedCredential { authMode = .remembered; connect(selected: endpoint) }
-                                    else { showingConnectionSetup = true }
-                                } label: {
-                                    connectionLabel(Text(endpoint.path == .usb ? "USB" : endpoint.host),
-                                                    systemImage: endpoint.path == .usb ? "cable.connector" : "desktopcomputer")
-                                        .frame(maxWidth: .infinity, alignment: .leading).padding(20)
-                                        .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16))
-                                }.buttonStyle(.plain)
-                            }
-                        }
-                    }
-
-                    if !isConnecting && audioOutput == nil &&
-                        control?.isNetworkProbe != true {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("Other connection options")
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                            Button {
-                                showingConnectionSetup = true
-                            } label: {
-                                connectionLabel(Text("Enter PC address"), systemImage: "plus")
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .padding(20)
-                                    .background(Color(uiColor: .secondarySystemGroupedBackground),
-                                                in: RoundedRectangle(cornerRadius: 16))
-                            }
-                            .buttonStyle(.plain)
-                            Text("Use the address shown on your Windows PC. Pairing requires its six-digit code.")
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-                        }
+                    if showsConnections {
+                        availableConnections
+                            .transition(.opacity.combined(with: .move(edge: .bottom)))
+                    } else if presentationStage == .completed {
+                        Button("Back to connections") { disconnect() }
+                            .buttonStyle(.borderedProminent)
+                            .transition(.opacity)
+                    } else {
+                        playbackSummary
+                            .transition(.opacity.combined(with: .move(edge: .bottom)))
                     }
                 }
-                .frame(maxWidth: 960)
-                .padding(.horizontal, 28)
-                .padding(.vertical, 32)
+                .frame(maxWidth: 760)
+                .padding(.horizontal, geometry.size.width < 500 ? 20 : 40)
+                .padding(.vertical, 24)
                 .frame(maxWidth: .infinity)
-                .frame(minHeight: geometry.size.height)
+                .frame(minHeight: geometry.size.height, alignment: .top)
+                .animation(reduceMotion ? nil : .easeInOut(duration: 0.45), value: presentationStage)
             }
             .background(Color(uiColor: .systemGroupedBackground))
         }
     }
 
+    @ViewBuilder private var canvasLinkStatus: some View {
+        if showsConnections {
+            if connectionManager.hasUSB {
+                Label("USB available", systemImage: "cable.connector")
+                    .font(.subheadline).foregroundStyle(.teal)
+            }
+        } else if presentationStage == .recovering {
+            Label("Searching network and USB…", systemImage: "arrow.triangle.2.circlepath")
+                .font(.subheadline).foregroundStyle(.secondary)
+        } else if presentationStage == .completed {
+            Image(systemName: "checkmark.circle.fill").foregroundStyle(.teal).accessibilityHidden(true)
+        } else if symbolConnected {
+            HStack(spacing: 8) {
+                Label(Self.localize(activePath == .usb ? "USB" : "Local network"),
+                      systemImage: activePath == .usb ? "cable.connector" : "wifi")
+                if audioOutput != nil && presentationStage != .reporting {
+                    Text("·")
+                    Text(qualityTracker.quality.title)
+                }
+            }
+            .font(.subheadline)
+            .foregroundStyle(qualityTracker.quality.color)
+        }
+    }
+
     private func connectionLabel(_ title: Text, systemImage: String) -> some View {
         HStack(spacing: 16) {
-            Image(systemName: systemImage)
-                .font(.title2)
-                .frame(width: 36)
-            title
-                .font(.headline)
-                .lineLimit(1)
-                .truncationMode(.middle)
+            Image(systemName: systemImage).font(.title2).frame(width: 36)
+            title.font(.headline).lineLimit(2).truncationMode(.middle)
         }
         .frame(minHeight: 34)
     }
 
-    private var statusCard: some View {
-        VStack(spacing: 14) {
-            Group {
-                if connectionError == nil {
-                    Image("HearPortSymbol", bundle: .main)
-                        .resizable()
-                        .scaledToFit()
-                        .frame(width: 44, height: 44)
+    private var availableConnections: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Available connections").font(.subheadline).foregroundStyle(.secondary)
+            ForEach(connectionManager.endpoints) { endpoint in
+                Button { selectConnection(endpoint) } label: {
+                    HStack(spacing: 12) {
+                        connectionLabel(Text(endpoint.path == .usb ? "USB" : endpoint.host),
+                            systemImage: endpoint.path == .usb ? "cable.connector" : "desktopcomputer")
+                        Spacer(minLength: 0)
+                        if endpoint.path == .usb {
+                            Text("Preferred").font(.caption).foregroundStyle(.secondary)
+                        }
+                        Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+                    }
+                    .padding(20).background(canvasSurface)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+            if !lastHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !lastHostIsDiscovered {
+                Button {
+                    selectedEndpoint = nil; host = lastHost
+                    if hasRememberedCredential && lastHost == rememberedHost {
+                        authMode = .remembered; connect()
+                    } else { authMode = .oneTime; showingConnectionSetup = true }
+                } label: {
+                    HStack(spacing: 12) {
+                        connectionLabel(Text(lastHost), systemImage: "desktopcomputer")
+                        Spacer(minLength: 0)
+                        Text("Last connection").font(.caption).foregroundStyle(.secondary)
+                        Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+                    }.padding(20).background(canvasSurface).contentShape(Rectangle())
+                }.buttonStyle(.plain)
+            }
+            Button {
+                selectedEndpoint = nil
+                showingConnectionSetup = true
+            } label: {
+                Label("Enter PC address", systemImage: "plus")
+                    .font(.subheadline.weight(.medium))
+                    .frame(maxWidth: .infinity).frame(minHeight: 48)
+            }
+            .buttonStyle(.plain)
+            Text("Use the address shown on your Windows PC. Pairing requires its six-digit code.")
+                .font(.footnote).foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .center).multilineTextAlignment(.center)
+        }
+    }
+
+    private var lastHostIsDiscovered: Bool {
+        connectionManager.endpoints.contains { endpoint in
+            guard endpoint.path == .network else { return false }
+            if endpoint.host == lastHost { return true }
+            // Bonjour advertises the saved credential's name, not its numeric address.
+            return hasRememberedCredential && lastHost == rememberedHost &&
+                endpoint.host == connectionManager.rememberedComputerName
+        }
+    }
+
+    private func selectConnection(_ endpoint: ConnectionEndpoint) {
+        selectedEndpoint = endpoint
+        if endpoint.path == .network { host = endpoint.host }
+        if hasRememberedCredential { authMode = .remembered; connect(selected: endpoint) }
+        else { authMode = .pair; showingConnectionSetup = true }
+    }
+
+    private var canvasSurface: some View {
+        RoundedRectangle(cornerRadius: 20, style: .continuous)
+            .fill(Color(uiColor: .secondarySystemGroupedBackground))
+    }
+
+    private var playbackSummary: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            if presentationStage == .testing {
+                if let round = musicRound {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text((round.reliable ? "Reliable stream" : "Datagram") + " · " + Self.localize(round.adaptive ? "Adaptive" : "Fixed"))
+                            .font(.headline)
+                        ProgressView(value: min(Double(round.seconds), roundElapsed), total: Double(round.seconds))
+                            .tint(.teal)
+                        Text(String(format: Self.localize("Round elapsed %.0f / %d s"), min(Double(round.seconds), roundElapsed), round.seconds))
+                            .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                    }
                 } else {
-                    Image(systemName: "exclamationmark.triangle")
-                        .font(.system(size: 34))
-                        .foregroundStyle(.red)
+                    Text(status).font(.subheadline).foregroundStyle(.secondary)
                 }
-            }
-            .frame(width: 72, height: 72)
-            .background(Color(uiColor: .tertiarySystemGroupedBackground), in: Circle())
-
-            Text(status)
-                .font(.title.weight(.semibold))
-                .multilineTextAlignment(.center)
-
-            if control != nil {
-                Text((activePath == .usb ? "USB · " : Self.localize("Network") + " · ") + currentHost)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            } else if isConnecting {
-                Text("Searching network and USB…")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            } else {
-                Text("Choose a PC below to connect.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            }
-
-            if isConnecting {
-                ProgressView()
-                    .padding(.top, 4)
-            }
-
-            if audioOutput != nil {
                 Divider()
-                    .padding(.vertical, 8)
-                HStack(spacing: 24) {
-                    VStack(spacing: 4) {
-                        Text("Transport")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Text(Self.label(for: activeAudioMode))
-                    }
-                    .frame(maxWidth: .infinity)
-                    VStack(spacing: 4) {
-                        Text("Buffer target")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Text("\(activeTargetLatencyMs) / \(activeMaximumLatencyMs) ms")
-                    }
-                    .frame(maxWidth: .infinity)
-                }
             }
-
-            if control != nil || audioOutput != nil || isConnecting {
-                Button("Disconnect", role: .destructive) {
-                    disconnect()
-                }
-                .buttonStyle(.bordered)
-                .padding(.top, 6)
+            if presentationStage == .reporting {
+                Text("The report is being prepared and transferred. Keep HearPort open.")
+                    .font(.subheadline).foregroundStyle(.secondary)
+            } else {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Playback budget").foregroundStyle(.secondary)
+                    Spacer(minLength: 12)
+                    Text("\(activeTargetLatencyMs) / \(activeMaximumLatencyMs) ms").monospacedDigit()
+                }.font(.subheadline)
+                Text("Target / maximum · configured, not measured latency")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 12) { playbackActions }
+                VStack(alignment: .leading, spacing: 12) { playbackActions }
             }
         }
-        .frame(maxWidth: .infinity)
-        .padding(28)
-        .frame(minHeight: isConnecting || audioOutput != nil ? 340 : 280)
-        .background(Color(uiColor: .secondarySystemGroupedBackground),
-                    in: RoundedRectangle(cornerRadius: 20))
+        .padding(24).background(canvasSurface)
+    }
+
+    @ViewBuilder private var playbackActions: some View {
+        Button { canvasSheet = .playback } label: {
+            Label("Playback settings", systemImage: "slider.horizontal.3").frame(minHeight: 44)
+        }
+        .disabled(presentationStage == .reporting)
+        Spacer(minLength: 0)
+        Button { canvasSheet = .details } label: {
+            Label("Connection details", systemImage: "info.circle").frame(minHeight: 44)
+        }
+        Menu {
+            Button {
+                disconnect(); selectedEndpoint = nil; showingConnectionSetup = true
+            } label: { Label("Change PC", systemImage: "desktopcomputer") }
+            Button("Disconnect", role: .destructive) { disconnect() }
+        } label: {
+            Image(systemName: "ellipsis").frame(minWidth: 44, minHeight: 44)
+        }
+        .accessibilityLabel(Text("Connection actions"))
+    }
+
+    private var connectionDetailsView: some View {
+        Form {
+            Section("Current connection") {
+                LabeledContent("Windows PC", value: currentComputerName)
+                LabeledContent("Path", value: Self.localize(activePath == .usb ? "USB" : "Local network"))
+                LabeledContent("Transport", value: (musicRound?.reliable ?? (activeAudioMode == .reliable)) ? "Reliable stream" : "Datagram")
+                if connectionEstablished && !isConnecting { Label("Identity verified", systemImage: "checkmark.shield") }
+            }
+            Section {
+                LabeledContent("Delivery quality") { Text(qualityTracker.quality.title).foregroundStyle(qualityTracker.quality.color) }
+                LabeledContent("Round-trip time", value: linkSample?.roundTripMilliseconds.map { String(format: "%.1f ms", $0) } ?? "—")
+                LabeledContent("Unavailable packets", value: Self.percentLabel(qualityTracker.missingRatio))
+                LabeledContent("Late packets", value: Self.percentLabel(qualityTracker.lateRatio))
+            } header: { Text("Recent audio delivery") } footer: {
+                Text("The indicator summarizes recent audio delivery, not Wi-Fi signal strength. Packet counts describe playout availability, not proven network loss. RTT is not end-to-end playback latency.")
+            }
+            Section("Active playback budget") {
+                LabeledContent("Normal target", value: "\(activeTargetLatencyMs) ms")
+                LabeledContent("Maximum total delay", value: "\(activeMaximumLatencyMs) ms")
+            }
+        }
+        .navigationTitle("Connection details").navigationBarTitleDisplayMode(.inline)
+    }
+
+    private static func percentLabel(_ ratio: Double?) -> String {
+        ratio.map { String(format: "%.2f%%", $0 * 100) } ?? "—"
     }
 
     private var connectionSetupView: some View {
@@ -392,12 +520,18 @@ import SwiftUI
         }
     }
 
-    private var settingsView: some View {
+    private var playbackPreferencesView: some View {
         Form {
             Section {
-                Picker("Audio transport mode", selection: $audioTransportModeRaw) {
-                    Text("Datagram").tag(AudioTransportMode.datagram.rawValue)
-                    Text("Reliable stream").tag(AudioTransportMode.reliable.rawValue)
+                NavigationLink {
+                    Form {
+                        Picker("Audio transport mode", selection: $audioTransportModeRaw) {
+                            Text("Datagram").tag(AudioTransportMode.datagram.rawValue)
+                            Text("Reliable stream").tag(AudioTransportMode.reliable.rawValue)
+                        }.pickerStyle(.inline)
+                    }.navigationTitle("Audio transport mode").navigationBarTitleDisplayMode(.inline)
+                } label: {
+                    LabeledContent("Audio transport mode", value: audioTransportModeRaw == AudioTransportMode.reliable.rawValue ? "Reliable stream" : "Datagram")
                 }
                 Stepper("Normal target: \(targetLatencyMs) ms", value: $targetLatencyMs,
                         in: 10...max(10, maximumLatencyMs), step: 10)
@@ -408,6 +542,31 @@ import SwiftUI
             } footer: {
                 Text("The target and maximum include transport, processing and output. Changes take effect on the next connection. A higher maximum can tolerate longer interruptions.")
             }
+            Section("Recommendations") { calibrationLink }
+        }
+        .navigationTitle("Playback settings")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private var calibrationLink: some View {
+        NavigationLink("Environment calibration") {
+            CalibrationResultsView(result: calibrationResult) { profile in
+                if calibrationResult?.apply(profile: profile) == true {
+                    audioTransportModeRaw = UserDefaults.standard.string(forKey: "hearport.audioTransportMode") ?? AudioTransportMode.datagram.rawValue
+                    targetLatencyMs = UserDefaults.standard.integer(forKey: "hearport.targetLatencyMs")
+                    maximumLatencyMs = UserDefaults.standard.integer(forKey: "hearport.maximumLatencyMs")
+                }
+            }
+        }
+    }
+
+    private var settingsView: some View {
+        Form {
+            Section("Playback") {
+                NavigationLink { playbackPreferencesView } label: {
+                    Label("Playback settings", systemImage: "slider.horizontal.3")
+                }
+            }
             Section {
                 Toggle("Connect on launch", isOn: $autoConnect)
                     .tint(.green)
@@ -417,19 +576,21 @@ import SwiftUI
                 Text("Uses the last connected PC when its pairing is saved.")
             }
             Section("Support") {
-                NavigationLink("Environment calibration") {
-                    CalibrationResultsView(result: calibrationResult) { profile in
-                        if calibrationResult?.apply(profile: profile) == true {
-                            audioTransportModeRaw = UserDefaults.standard.string(forKey: "hearport.audioTransportMode") ?? AudioTransportMode.datagram.rawValue
-                            targetLatencyMs = UserDefaults.standard.integer(forKey: "hearport.targetLatencyMs")
-                            maximumLatencyMs = UserDefaults.standard.integer(forKey: "hearport.maximumLatencyMs")
-                        }
-                    }
-                }
+                calibrationLink
                 NavigationLink {
                     diagnosticsView
                 } label: {
                     Label("Diagnostics", systemImage: "waveform.path.ecg")
+                }
+            }
+            Section {
+                NavigationLink("About HearPort") {
+                    Form {
+                        Section("HearPort") {
+                            LabeledContent("Version", value: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—")
+                            LabeledContent("Build", value: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—")
+                        }
+                    }.navigationTitle("About HearPort").navigationBarTitleDisplayMode(.inline)
                 }
             }
         }
@@ -489,6 +650,9 @@ import SwiftUI
             status = Self.localize("Enter the 6-digit PIN shown on Windows"); return
         }
         completedTestStatus = nil; connectionError = nil
+        sendingReport = false; retainingConnection = false
+        musicRound = nil; currentComputerName = ""
+        qualityTracker = AudioLinkQualityTracker(); linkSample = nil
         isConnecting = true; status = Self.localize("Searching network and USB…")
         connectionManager.setMaximumLatency(maximumLatencyMs)
         connectionManager.connect(manualHost: host.trimmingCharacters(in: .whitespacesAndNewlines), selected: selected)
@@ -573,7 +737,9 @@ import SwiftUI
                 guard connectionManager.authenticated(id, identity: identity, features: features) else { return }
                 connectionID = id; control = session; receiver = activeReceiver
                 pendingControls.removeValue(forKey: id)
-                currentHost = endpoint; activePath = route.path
+                activePath = route.path
+                currentComputerName = "HearPort-" + identity.prefix(6).map { String(format: "%02x", $0) }.joined()
+                qualityTracker = AudioLinkQualityTracker(); linkSample = nil; musicRound = nil
                 connectionEstablished = false; connectionError = nil; completedTestStatus = nil
                 activeAudioMode = audioMode; activeBufferTargetPackets = normalizedJitter.targetPackets
                 activeTargetLatencyMs = target; activeMaximumLatencyMs = maximum
@@ -661,9 +827,10 @@ import SwiftUI
         }
         session.onReady = { [weak session] in
             DispatchQueue.main.async {
-                guard connectionID == activeConnectionID else { return }
+                guard connectionID == activeConnectionID, completedTestStatus == nil, !sendingReport else { return }
                 isConnecting = false
                 connectionEstablished = true
+                retainingConnection = true
                 connectionError = nil
                 if requestedAuthMode == .pair {
                     authMode = .remembered
@@ -683,6 +850,8 @@ import SwiftUI
                     let output = PlatformAudioOutputController(receiver: activeReceiver)
                     try output.start()
                     audioOutput = output
+                    musicRound = session?.musicTestRound
+                    roundStartedAt = ProcessInfo.processInfo.systemUptime; roundElapsed = 0
                     status = session?.musicTestRound.map { Self.label(for: $0) } ??
                         Self.localize(session?.isMusicTest == true ? "Music test running" : "Playing")
                     diagnostics.log(
@@ -708,7 +877,9 @@ import SwiftUI
         }
         session.onMusicTestRound = { round in
             DispatchQueue.main.async {
-                guard connectionID == activeConnectionID, completedTestStatus == nil else { return }
+                guard connectionID == activeConnectionID, completedTestStatus == nil, !sendingReport else { return }
+                musicRound = round
+                roundStartedAt = ProcessInfo.processInfo.systemUptime; roundElapsed = 0
                 status = Self.label(for: round)
                 refreshDiagnostics()
             }
@@ -730,6 +901,8 @@ import SwiftUI
                     : "Test ended. Report saved on the PC.")
                 connectionManager.completed()
                 completedTestStatus = message
+                testCompletedNormally = reason == 1
+                sendingReport = false
                 connectionError = nil
                 isConnecting = false
                 try? audioOutput?.stop()
@@ -756,11 +929,13 @@ import SwiftUI
         connectionError = nil
         connectionEstablished = false
         completedTestStatus = nil
+        sendingReport = false; retainingConnection = false; musicRound = nil
+        qualityTracker = AudioLinkQualityTracker(); linkSample = nil
+        currentComputerName = ""
         control?.cancel()
         control = nil
         try? audioOutput?.stop()
         audioOutput = nil
-        currentHost = ""
         status = Self.localize("Disconnected")
         if hadActiveSession {
             diagnostics.log(
