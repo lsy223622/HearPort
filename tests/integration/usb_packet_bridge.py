@@ -40,4 +40,7 @@ async def usb_packet_bridge():
                 udp.close()
             if writer:
                 writer.close()
-                await writer.wait_closed()
+                try:
+                    await writer.wait_closed()
+                except OSError:
+                    pass
