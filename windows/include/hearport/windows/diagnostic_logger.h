@@ -16,7 +16,10 @@ namespace hearport::windows {
 
 class SenderDiagnosticLogger {
  public:
-  explicit SenderDiagnosticLogger(std::size_t capacity = 1024);
+  explicit SenderDiagnosticLogger(
+      std::size_t capacity = 1024,
+      std::size_t max_file_bytes = 4 * 1024 * 1024,
+      std::size_t max_rotated_files = 3);
   ~SenderDiagnosticLogger();
   SenderDiagnosticLogger(const SenderDiagnosticLogger&) = delete;
   SenderDiagnosticLogger& operator=(const SenderDiagnosticLogger&) = delete;
@@ -33,8 +36,14 @@ class SenderDiagnosticLogger {
   };
 
   void Writer() noexcept;
+  bool WriteFileLine(std::string_view line) noexcept;
+  bool RotateFile() noexcept;
+  void DisableFileLogging() noexcept;
 
   std::size_t capacity_;
+  std::size_t max_file_bytes_;
+  std::size_t max_rotated_files_;
+  std::size_t file_bytes_ = 0;
   std::atomic<std::uint64_t> dropped_{0};
   std::vector<QueueSlot> queue_;
   std::size_t head_ = 0;
@@ -43,6 +52,7 @@ class SenderDiagnosticLogger {
   std::mutex mutex_;
   std::condition_variable condition_;
   std::ofstream file_;
+  std::filesystem::path file_path_;
   std::thread writer_;
   bool started_ = false;
   bool stopping_ = false;

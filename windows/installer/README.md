@@ -1,40 +1,55 @@
 # Windows onboarding and firewall guidance
 
-HearPort advertises its network endpoint through the Windows DNS-SD API; iPad
-browses `_hearport._udp`. Manual hostname or IP address entry remains available
-when local network discovery is blocked or unavailable.
+HearPort for Windows is distributed as a portable Release ZIP. Unpack it and
+start `HearPort.exe`; first-use and iPad distribution steps are in the root
+[`README.md`](../../README.md).
 
-The Windows sender also discovers physically attached iPads through the Apple
-Mobile Device service. Install Apple's Windows device support, connect a data
-cable, unlock iPad and accept the system trust prompt when needed. Open the
-ordinary HearPort app on iPad. The app listens only on loopback TCP `52138` for
-usbmux; no inbound LAN TCP firewall rule is needed.
+HearPort advertises its network endpoint through Windows DNS-SD; iPad browses
+`_hearport._udp`. Select the discovered PC in the iPad app. If discovery or
+Local Network access is unavailable, enter the PC hostname or IP address
+manually.
 
-USB forwards encrypted QUIC packets to a separate loopback sender entrance.
-Existing certificate pinning and PIN/remembered authentication remain required.
-For a remembered PC, an authenticated USB connection takes priority over network
-playback. Switching rebuilds the audio stream and clock mapping and can pause
-briefly. USB loss reconnects the known network endpoint; manual stop suppresses
-automatic playback. Both apps show the physical path separately from the audio
-protocol mode. A one-time pairing does not silently become a remembered pairing.
+For first pairing, choose **Pair new iPad** in the Windows app and enter the
+shown temporary PIN on iPad using **Pair and remember**. Pairing over LAN or
+USB uses the same certificate pinning and authentication. A one-time
+connection does not create a remembered credential.
 
-Network tests and environment calibration admit the network path only. Music
-and timed diagnostics retain their starting path through report recovery; a
-lost path interrupts the run. Ordinary playback considers both paths.
+## USB connection
 
-The sender listens on UDP `52137` by default (or the explicitly configured
-port). An installer or an administrator onboarding screen may add a narrowly
-scoped inbound Windows Firewall rule for the signed HearPort sender executable
-and that UDP port. Do not open a broad TCP range, and do not treat a firewall
-allow rule as authentication.
+Install Apple's Windows device support, connect a data cable, unlock the iPad,
+and accept the iPad's trust prompt if shown. Open the ordinary HearPort app on
+iPad. It listens only on loopback TCP `52138` for usbmux; no inbound LAN TCP
+firewall rule is needed. USB forwards encrypted QUIC packets to a separate
+loopback sender entrance and does not bypass certificate pinning or pairing.
 
-The sender must also be provisioned with a certificate usable by MsQuic and
-the SHA-256 hash of its current leaf SubjectPublicKeyInfo. The release host
-must not start with a missing certificate identity, a global trust-all mode, or
-an unauthenticated audio path. `--open-pairing` is an explicit local operation;
-it creates a short-lived six-digit PIN and displays it only to the local
-operator.
+For a remembered PC, an authenticated USB connection takes priority over
+network playback. Switching rebuilds the audio stream and clock mapping and may
+pause briefly. When USB disconnects, the iPad reconnects to the known network
+endpoint; stopping playback manually suppresses automatic playback. Both apps
+show the physical path separately from the audio transport mode. If Apple
+device support or system trust is unavailable, playback and pairing can use
+the LAN route.
 
-If automatic discovery or Local Network onboarding is unavailable, direct
-endpoint entry remains supported. The endpoint, PIN, pair secret, and private
-key are never written to the diagnostic log.
+## Network and firewall
+
+The sender listens on UDP `52137` by default, or the explicitly configured
+port. If Windows Firewall blocks the connection, allow the HearPort executable
+on that UDP port for the applicable local network profile. Do not open a broad
+TCP range, and do not treat a firewall rule as authentication.
+
+Network tests and automatic parameter recommendations use the network path only. Music
+tests and timed diagnostics keep their starting path while reports are
+collected; a lost route interrupts the run. Ordinary playback considers both
+paths and prefers authenticated USB when it is available.
+
+The GUI creates and reuses its local connection certificate automatically.
+Replacing its certificate changes its identity and requires pairing again.
+
+Diagnostics are stored locally. Logs and exported reports can include network
+details such as a hostname, IP address, or port. Review an export before
+sharing it.
+
+Ordinary Windows logs retain at most 4 MiB per file plus three backups.
+Explicit diagnostic sessions retain separate local reports; remove reports you
+no longer need from the report folder. The ZIP includes the required VC runtime
+DLLs; Apple device support remains a separate prerequisite for USB.

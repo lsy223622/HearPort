@@ -69,6 +69,45 @@ int main() {
   while (std::getline(concurrent_input, line)) ++written;
   assert(written == 800);
   concurrent_input.close();
+
+  constexpr std::size_t kRotationFileBytes = 64;
+  constexpr std::size_t kRotationBackups = 3;
+  hearport::windows::SenderDiagnosticLogger rotating(
+      64, kRotationFileBytes, kRotationBackups);
+  assert(rotating.Start(path));
+  const auto enqueue_rotating = [&rotating](const std::string& entry) {
+    for (int attempt = 0; attempt < 1000; ++attempt) {
+      if (rotating.TryLog(entry)) return true;
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return false;
+  };
+  for (int index = 0; index < 40; ++index) {
+    assert(enqueue_rotating("rotation_entry_" + std::to_string(index)));
+  }
+  rotating.Stop();
+
+  std::string retained;
+  std::size_t retained_bytes = 0;
+  for (std::size_t index = 0; index <= kRotationBackups; ++index) {
+    auto retained_path = path;
+    if (index != 0) {
+      retained_path += L".";
+      retained_path += std::to_wstring(index);
+    }
+    assert(std::filesystem::exists(retained_path));
+    const auto bytes = std::filesystem::file_size(retained_path);
+    assert(bytes <= kRotationFileBytes);
+    retained_bytes += static_cast<std::size_t>(bytes);
+    std::ifstream retained_input(retained_path, std::ios::binary);
+    retained.append(std::istreambuf_iterator<char>(retained_input),
+                    std::istreambuf_iterator<char>());
+  }
+  assert(retained_bytes <= kRotationFileBytes * (kRotationBackups + 1));
+  assert(retained.find("rotation_entry_39\n") != std::string::npos);
+  assert(retained.find("rotation_entry_30\n") != std::string::npos);
+  assert(retained.find("rotation_entry_0\n") == std::string::npos);
+  assert(rotating.dropped_count() == 0);
   std::filesystem::remove_all(directory);
   return 0;
 }
