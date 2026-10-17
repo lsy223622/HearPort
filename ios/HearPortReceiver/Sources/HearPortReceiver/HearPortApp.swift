@@ -187,13 +187,7 @@ import SwiftUI
                                 .font(.subheadline)
                                 .foregroundStyle(.secondary)
                             HStack(spacing: 16) {
-                                Image(systemName: "desktopcomputer")
-                                    .font(.title2)
-                                    .frame(width: 36)
-                                Text(lastHost)
-                                    .font(.headline)
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
+                                connectionLabel(Text(lastHost), systemImage: "desktopcomputer")
                                 Spacer(minLength: 16)
                                 Button {
                                     host = lastHost
@@ -227,9 +221,9 @@ import SwiftUI
                                     if hasRememberedCredential { authMode = .remembered; connect(selected: endpoint) }
                                     else { showingConnectionSetup = true }
                                 } label: {
-                                    Label(endpoint.path == .usb ? "USB" : endpoint.host,
-                                          systemImage: endpoint.path == .usb ? "cable.connector" : "desktopcomputer")
-                                        .font(.headline).frame(maxWidth: .infinity, alignment: .leading).padding(20)
+                                    connectionLabel(Text(endpoint.path == .usb ? "USB" : endpoint.host),
+                                                    systemImage: endpoint.path == .usb ? "cable.connector" : "desktopcomputer")
+                                        .frame(maxWidth: .infinity, alignment: .leading).padding(20)
                                         .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16))
                                 }.buttonStyle(.plain)
                             }
@@ -245,8 +239,7 @@ import SwiftUI
                             Button {
                                 showingConnectionSetup = true
                             } label: {
-                                Label("Enter PC address", systemImage: "plus")
-                                    .font(.headline)
+                                connectionLabel(Text("Enter PC address"), systemImage: "plus")
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                     .padding(20)
                                     .background(Color(uiColor: .secondarySystemGroupedBackground),
@@ -267,6 +260,19 @@ import SwiftUI
             }
             .background(Color(uiColor: .systemGroupedBackground))
         }
+    }
+
+    private func connectionLabel(_ title: Text, systemImage: String) -> some View {
+        HStack(spacing: 16) {
+            Image(systemName: systemImage)
+                .font(.title2)
+                .frame(width: 36)
+            title
+                .font(.headline)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .frame(minHeight: 34)
     }
 
     private var statusCard: some View {
