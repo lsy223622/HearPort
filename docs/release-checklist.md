@@ -2,13 +2,16 @@
 
 ## Recorded evidence
 
-- [x] Windows VS 2022 x64 Release build and 22/22 CTest checks passed, with test assertions enabled.
+- [x] Windows Actions run [39052133439](https://github.com/lsy223622/HearPort/actions/runs/39052133439): Release build, 22/22 CTest checks and 6/6 package/document checks passed, with test assertions enabled.
 - [x] Python suite: 65 checks run, 3 optional checks skipped; release dependency-closure tests passed.
 - [x] Windows log rotation bounded to 4 MiB plus three backups; retry backoff and authenticated route switching inspected.
 - [x] Release DLL closure inspected: MsQuic and required VC runtime DLLs; no Debug CRT imports.
 - [x] Third-party license collection and version alignment at 0.1.0 prepared.
-- [x] GitHub Actions run [39042423876](https://github.com/lsy223622/HearPort/actions/runs/39042423876): 156 Swift package tests passed; unsigned iOS IPA archive was created and validated.
+- [x] GitHub Actions run [39052135647](https://github.com/lsy223622/HearPort/actions/runs/39052135647): 156 Swift package tests passed; unsigned iOS Release IPA build 158 was created with bundled license notices and validated.
 - [x] User-observed playback on iPad Pro 11-inch (2020) over USB, including disconnect/reconnect; repeated playback/tests on weak 2.4 GHz Wi-Fi.
+
+- [x] Both Actions artifacts use commit `35f00d8c5adfdb6e27d724daaff6677b0172abfb`; product version 0.1.0. Download checksums, Windows payload hashes and IPA build identity verified.
+- [x] Started the Windows program from the downloaded ZIP on the development PC; MsQuic and all three VC runtime DLLs loaded from the extracted package. This does not complete clean-PC acceptance.
 
 ## Distribution artifacts
 
