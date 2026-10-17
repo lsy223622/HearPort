@@ -25,6 +25,17 @@ std::vector<std::byte> EncodeUsbPacket(std::span<const std::byte> payload) {
     std::byte{1},std::byte{0},std::byte(payload.size()>>8),std::byte(payload.size()&255)};
   result.insert(result.end(),payload.begin(),payload.end()); return result;
 }
+std::vector<std::byte> EncodeUsbPeerIdentity(std::span<const std::byte> spki_sha256) {
+  if(spki_sha256.size()!=32) throw std::invalid_argument("USB peer identity length");
+  constexpr char hex[]="0123456789abcdef";
+  std::vector<std::byte> payload;
+  payload.reserve(64);
+  for(auto byte:spki_sha256) {
+    const auto value=std::to_integer<unsigned>(byte);
+    payload.push_back(std::byte(hex[value>>4])); payload.push_back(std::byte(hex[value&15]));
+  }
+  auto frame=EncodeUsbPacket(payload); frame[5]=std::byte{1}; return frame;
+}
 bool UsbPacketDecoder::Push(std::span<const std::byte> input, std::vector<std::vector<std::byte>>& out) {
   // Consume incrementally so a coalesced read cannot evade the frame memory bound.
   for(auto byte:input) {
@@ -144,6 +155,7 @@ struct UsbTunnel::Impl {
   std::atomic<bool> stop{false}; std::atomic<long long> maximum_ms{100};
   std::thread worker; std::uint16_t port=0; StatusHandler status; LogHandler log;
   std::string last_status;
+  std::vector<std::byte> peer_identity_frame;
   void ReportStatus(std::string message) {
     if(message!=last_status) {
       if(log) log("usb_tunnel_status reason="+message);
@@ -193,6 +205,8 @@ struct UsbTunnel::Impl {
   void Pump(Socket& tcp,Socket& events,std::uint32_t device) {
     Socket udp(::socket(AF_INET,SOCK_DGRAM,IPPROTO_UDP)); Nonblocking(udp.fd); auto address=Address(port);
     if(connect(udp.fd,reinterpret_cast<sockaddr*>(&address),sizeof(address))) throw std::runtime_error("USB QUIC entrance unavailable");
+    auto identity_frame=peer_identity_frame;
+    Transfer(tcp.fd,identity_frame,true);
     UsbPacketDecoder decoder; UsbPacketQueue outgoing;
     std::array<std::byte,65536> data{};
     std::optional<std::chrono::steady_clock::time_point> partial_since;
@@ -255,8 +269,9 @@ struct UsbTunnel::Impl {
 };
 UsbTunnel::UsbTunnel():impl_(std::make_unique<Impl>()) {}
 UsbTunnel::~UsbTunnel() { Stop(); }
-bool UsbTunnel::Start(std::uint16_t port,StatusHandler status,LogHandler log) {
-  if(!port || impl_->worker.joinable()) return false;
+bool UsbTunnel::Start(std::uint16_t port,std::span<const std::byte> spki_sha256,StatusHandler status,LogHandler log) {
+  if(!port || spki_sha256.size()!=32 || impl_->worker.joinable()) return false;
+  impl_->peer_identity_frame=EncodeUsbPeerIdentity(spki_sha256);
   impl_->port=port; impl_->status=std::move(status); impl_->log=std::move(log); impl_->stop=false;
   impl_->last_status.clear();
   impl_->worker=std::thread([this] { impl_->Run(); }); return true;

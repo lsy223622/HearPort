@@ -49,6 +49,8 @@ public final class ReceiverControlSession {
     private var spakeOutput: Spake2Output?
     private var connectSent = false
     private var ready = false
+    private var activeAudioStreamID: UInt32?
+    private var calibrationRequestPending = false
     private var receiverReadyNotified = false
     private var peerFeatures: UInt32 = 0
     public var preparePlayoutBudget: (() throws -> PlayoutBudget)?
@@ -167,6 +169,8 @@ public final class ReceiverControlSession {
                     }
                 }
                 self.ready = false
+                self.activeAudioStreamID = nil
+                self.calibrationRequestPending = false
                 self.connectSent = false
                 self.pairConfirmationVerified = false
                 self.rememberedResponseSent = false
@@ -200,6 +204,8 @@ public final class ReceiverControlSession {
         self.pin = pin
         self.connectSent = false
         self.ready = false
+        self.activeAudioStreamID = nil
+        self.calibrationRequestPending = false
         self.receiverReadyNotified = false
         self.peerFeatures = 0
         self.musicTestRound = nil
@@ -292,6 +298,35 @@ public final class ReceiverControlSession {
         transport.perform { [weak self] in self?.beginActivatedSession() }
     }
 
+    public func requestEnvironmentCalibration(seconds: Int, maximum: Int,
+                                               completion: @escaping @Sendable (Bool) -> Void) {
+        transport.perform { [weak self] in
+            guard let self, self.ready, !self.ending,
+                  !self.calibrationRequestPending, !self.isEnvironmentCalibration,
+                  !self.isMusicTest, !self.isNetworkProbe, self.activeDebugSessionID == nil,
+                  (self.peerFeatures & ControlFeature.timedDiagnostics) == 0,
+                  let streamID = self.activeAudioStreamID else {
+                completion(false)
+                return
+            }
+            do {
+                var request = CalibrationMessage(kind: .request, planID: streamID)
+                request.seconds = seconds
+                request.budget = CalibrationBudget(target: 0, maximum: maximum)
+                let message = ControlMessage.probeManifest(streamID: streamID, manifest: try request.encoded())
+                let payload = try ControlEnvelope(message).encoded()
+                self.calibrationRequestPending = true
+                try self.transport.sendControl(payload) { [weak self] error in
+                    if error != nil { self?.calibrationRequestPending = false }
+                    completion(error == nil)
+                }
+            } catch {
+                self.calibrationRequestPending = false
+                completion(false)
+            }
+        }
+    }
+
     private func beginActivatedSession() {
         guard ready, !activated else { return }
         activated = true
@@ -341,6 +376,8 @@ public final class ReceiverControlSession {
         )
         transport.cancel()
         ready = false
+        activeAudioStreamID = nil
+        calibrationRequestPending = false
         setNetworkProbe(false)
         connectSent = false
         pairConfirmationVerified = false
@@ -611,6 +648,7 @@ public final class ReceiverControlSession {
             onAuthenticated?(identity, features)
             if !deferActivation { beginActivatedSession() }
         case let .startStream(streamID):
+            activeAudioStreamID = nil
             if activeDebugSessionID != nil, activeDebugStreamID != streamID {
                 throw PairingSecurityError.providerFailure(-12)
             }
@@ -885,7 +923,9 @@ public final class ReceiverControlSession {
             }
             self.diagnostics.log(.info, category: .control, message: "start_stream_ack_written",
                 fields: ["event": "start_stream_ack_written", "stream_id": "\(streamID)"])
-            if !self.isNetworkProbe { _ = self.receiver.acknowledgeStartStream(streamID) }
+            if !self.isNetworkProbe, self.receiver.acknowledgeStartStream(streamID) {
+                self.activeAudioStreamID = streamID
+            }
         })
     }
 

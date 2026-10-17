@@ -50,6 +50,10 @@ struct AudioLinkQualityTracker {
             self = Self(); previous = sample; startedAt = sample.time; return
         }
         previous = sample
+        // Initial buffer fill is not an observation of steady audio delivery.
+        guard sample.time - startedAt >= 3 else {
+            intervals.removeAll(); missingRatio = nil; lateRatio = nil; return
+        }
         intervals.append(Interval(end: sample.time, received: sample.received - prior.received,
             missing: sample.missing - prior.missing, late: sample.late - prior.late,
             interrupted: sample.interrupted || sample.outputGapFrames > prior.outputGapFrames,
@@ -61,10 +65,10 @@ struct AudioLinkQualityTracker {
         let total = received + missing
         missingRatio = total > 0 ? Double(missing) / Double(total) : nil
         lateRatio = received + late > 0 ? Double(late) / Double(received + late) : nil
-        guard total + late > 0 || intervals.contains(where: { $0.interrupted }) else {
-            quality = .unknown; improvementStartedAt = nil; improvingTo = nil; return
+        guard total + late > 0 else {
+            quality = .unknown; startedAt = sample.time
+            improvementStartedAt = nil; improvingTo = nil; return
         }
-        // A real interruption is actionable even during warmup.
         let rtt = intervals.compactMap(\.rtt).max() ?? 0
         let unavailable = missingRatio ?? 0, delayed = lateRatio ?? 0
         let candidate: AudioLinkQuality
@@ -73,7 +77,6 @@ struct AudioLinkQualityTracker {
         } else if unavailable > 0.001 || delayed > 0.005 || rtt >= 80 {
             candidate = .variable
         } else { candidate = .stable }
-        guard sample.time - startedAt >= 3 || candidate == .poor else { return }
         if quality == .unknown || candidate.rawValue <= quality.rawValue {
             quality = candidate; improvementStartedAt = nil; improvingTo = nil
         } else {

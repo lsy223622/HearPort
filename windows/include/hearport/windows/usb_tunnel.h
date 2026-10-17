@@ -11,6 +11,7 @@
 
 namespace hearport::windows {
 std::vector<std::byte> EncodeUsbPacket(std::span<const std::byte> payload);
+std::vector<std::byte> EncodeUsbPeerIdentity(std::span<const std::byte> spki_sha256);
 class UsbPacketDecoder {
  public:
   bool Push(std::span<const std::byte>, std::vector<std::vector<std::byte>>&);
@@ -40,7 +41,7 @@ class UsbTunnel {
   using LogHandler = std::function<void(std::string_view)>;
   UsbTunnel();
   ~UsbTunnel();
-  bool Start(std::uint16_t quic_port, StatusHandler status, LogHandler log);
+  bool Start(std::uint16_t quic_port, std::span<const std::byte> spki_sha256, StatusHandler status, LogHandler log);
   void SetMaximumLatency(std::chrono::milliseconds);
   void Stop();
  private:

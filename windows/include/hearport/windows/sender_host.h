@@ -17,6 +17,7 @@ class SenderHost {
   SenderService& service();
   bool WaitForDebugCompletion(std::chrono::milliseconds timeout);
   void SetConnectionHandler(ConnectionHandler handler) { handler_=std::move(handler); }
+  void SetCalibrationRequestHandler(std::function<void(CalibrationOptions)> handler);
   std::string usb_status() const;
  private:
   bool Activate(unsigned index);

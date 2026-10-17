@@ -20,7 +20,7 @@ struct CalibrationChoice {
   std::uint16_t output_reserve_ms = 0;
 };
 struct CalibrationProgress { unsigned stage = 0, index = 0, count = 0, completed = 0, total = 0; };
-enum class CalibrationMessageKind : std::uint8_t { setup, round, ack, analyze, selection, progress };
+enum class CalibrationMessageKind : std::uint8_t { setup, round, ack, analyze, selection, progress, request };
 struct CalibrationMessage {
   CalibrationMessageKind kind = CalibrationMessageKind::setup;
   std::uint32_t plan_id = 0;

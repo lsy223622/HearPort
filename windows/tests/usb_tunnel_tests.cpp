@@ -1,4 +1,5 @@
 #include <cassert>
+#include <stdexcept>
 #include "hearport/windows/usb_tunnel.h"
 using namespace hearport::windows;
 int main() {
@@ -6,6 +7,14 @@ int main() {
     std::byte{1},std::byte{0},std::byte{0},std::byte{2},std::byte{7},std::byte{8}};
   const std::vector<std::byte> payload{std::byte{7}, std::byte{8}};
   assert(EncodeUsbPacket(payload) == golden);
+  std::vector<std::byte> identity(32,std::byte{0xab});
+  const auto metadata=EncodeUsbPeerIdentity(identity);
+  assert(metadata.size()==72 && metadata[4]==std::byte{1} && metadata[5]==std::byte{1});
+  assert(metadata[6]==std::byte{0} && metadata[7]==std::byte{64});
+  for(std::size_t i=8;i<metadata.size();i+=2) assert(metadata[i]==std::byte{'a'} && metadata[i+1]==std::byte{'b'});
+  bool invalid_identity=false;
+  try { EncodeUsbPeerIdentity(std::span(identity).first(31)); } catch(const std::invalid_argument&) { invalid_identity=true; }
+  assert(invalid_identity);
   UsbPacketDecoder decoder;
   std::vector<std::vector<std::byte>> packets;
   for (auto byte : golden) assert(decoder.Push({&byte,1},packets));

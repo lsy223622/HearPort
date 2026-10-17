@@ -52,6 +52,7 @@ std::vector<std::byte> EncodeCalibrationMessage(const CalibrationMessage& m) {
   Put(b, m.plan_id, 4);
   switch (m.kind) {
     case CalibrationMessageKind::setup:
+    case CalibrationMessageKind::request:
       Put(b,m.seconds,2); Put(b,m.budget.maximum_ms,2); break;
     case CalibrationMessageKind::round:
       for (unsigned v : {unsigned(m.phase),unsigned(m.index),unsigned(m.count),unsigned(m.profile_mask),unsigned(m.reliable),0u}) Put(b,v,1);
@@ -78,12 +79,13 @@ std::optional<CalibrationMessage> DecodeCalibrationMessage(std::span<const std::
     Reader r{b};
     if (r.get(1) != 4) return std::nullopt;
     const auto kind = r.get(1);
-    if (kind > 5) return std::nullopt;
+    if (kind > 6) return std::nullopt;
     CalibrationMessage m;
     m.kind = static_cast<CalibrationMessageKind>(kind); m.plan_id = static_cast<std::uint32_t>(r.get(4));
     if (!m.plan_id) return std::nullopt;
     switch (m.kind) {
       case CalibrationMessageKind::setup:
+      case CalibrationMessageKind::request:
         m.seconds = static_cast<std::uint16_t>(r.get(2)); m.budget.maximum_ms = static_cast<std::uint16_t>(r.get(2));
         if (!Seconds(m.seconds) || m.budget.maximum_ms < 20 || m.budget.maximum_ms > 2000) return std::nullopt;
         break;

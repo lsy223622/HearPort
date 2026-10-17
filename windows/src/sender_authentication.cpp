@@ -65,6 +65,12 @@ void SenderAuthentication::SetConnectionHandler(
   connection_handler_ = std::move(handler);
 }
 
+void SenderAuthentication::SetCalibrationRequestHandler(
+    std::function<void(CalibrationOptions)> handler) {
+  std::lock_guard lock(mutex_);
+  calibration_request_handler_ = std::move(handler);
+}
+
 bool SenderAuthentication::ChoosePairingPin() {
   std::array<std::byte, 4> random{};
   constexpr std::uint32_t kLimit =
@@ -432,12 +438,25 @@ bool SenderAuthentication::HandleControlPayload(
       return Send(ack);
     }
     case wire::ControlMessageType::probe_manifest: {
+      const auto message = DecodeCalibrationMessage(envelope->bytes1);
+      if (!message) return Fail(ErrorCode::protocol, "invalid calibration message");
+      if (message->kind == CalibrationMessageKind::request) {
+        if (!authenticated_ || flow_ != Flow::idle || !stream_id_ ||
+            envelope->stream_id != stream_id_ || message->plan_id != stream_id_ ||
+            service_.debug_duration() || service_.network_probe() || service_.music_test() ||
+            service_.environment_calibration() || calibration_request_pending_ ||
+            !calibration_request_handler_) {
+          return Fail(ErrorCode::protocol, "unexpected calibration request");
+        }
+        calibration_request_pending_ = true;
+        calibration_request_handler_({message->seconds, message->budget.maximum_ms});
+        return true;
+      }
       if (!authenticated_ || !service_.environment_calibration() || !peer_supports_calibration_ ||
           flow_ != Flow::debug_stream_active || envelope->stream_id != stream_id_) {
         return Fail(ErrorCode::protocol, "unexpected calibration message");
       }
-      const auto message = DecodeCalibrationMessage(envelope->bytes1);
-      if (!message || !service_.HandleCalibrationMessage(*message)) return Fail(ErrorCode::protocol, "invalid calibration state");
+      if (!service_.HandleCalibrationMessage(*message)) return Fail(ErrorCode::protocol, "invalid calibration state");
       return true;
     }
     case wire::ControlMessageType::audio_setup:
@@ -535,6 +554,7 @@ void SenderAuthentication::Reset() noexcept {
   }
   flow_ = Flow::idle;
   authenticated_ = false;
+  calibration_request_pending_ = false;
   remember_pairing_ = false;
   peer_supports_diagnostics_ = false;
   peer_supports_network_probe_ = false;

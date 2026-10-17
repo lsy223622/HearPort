@@ -27,7 +27,7 @@ func calibrationBudgets(maximum: Int, outputReserve: Int) -> [CalibrationBudget]
 }
 
 struct CalibrationMessage: Equatable, Sendable {
-    enum Kind: UInt8, Sendable { case setup, round, ack, analyze, selection, progress }
+    enum Kind: UInt8, Sendable { case setup, round, ack, analyze, selection, progress, request }
     var kind: Kind
     var planID: UInt32
     var phase = 0, index = 0, count = 0, profileMask = 0
@@ -49,7 +49,7 @@ struct CalibrationMessage: Equatable, Sendable {
         self.init(kind: kind, planID: UInt32(try r.take(4)))
         guard planID != 0 else { throw ControlMessageError.invalidMessage }
         switch kind {
-        case .setup:
+        case .setup, .request:
             seconds = Int(try r.take(2)); budget = CalibrationBudget(target: 0, maximum: Int(try r.take(2)))
             guard [30,60,120].contains(seconds), (20...2000).contains(budget.maximum) else {
                 throw ControlMessageError.invalidMessage
@@ -104,7 +104,7 @@ struct CalibrationMessage: Equatable, Sendable {
         }
         put(UInt64(planID), 4)
         switch kind {
-        case .setup: try integer(seconds,2); try integer(budget.maximum,2)
+        case .setup, .request: try integer(seconds,2); try integer(budget.maximum,2)
         case .round:
             for value in [phase,index,count,profileMask,reliable ? 1 : 0,0] { try integer(value,1) }
             for value in [seconds,budget.target,budget.maximum,outputReserve] { try integer(value,2) }
