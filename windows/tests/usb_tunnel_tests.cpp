@@ -33,5 +33,17 @@ int main() {
     <dict><key>DeviceID</key><integer>8</integer><key>Properties</key><dict><key>ConnectionType</key><string>USB</string></dict></dict>
     </array></dict></plist>)");
   assert(devices.size()==1 && devices[0]==8);
+  const auto attached=R"(<?xml version="1.0" encoding="UTF-8"?>
+    <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+    <plist version="1.0"><dict><key>MessageType</key><string>Attached</string>
+    <key>DeviceID</key><integer>8</integer><key>Properties</key><dict>
+    <key>ConnectionType</key><string>USB</string></dict></dict></plist>)";
+  assert(ParseUsbDevices(attached)==devices);
+  assert(!IsUsbDeviceChange(devices,attached)); // Listen replays devices already in ListDevices.
+  assert(IsUsbDeviceChange(std::vector<std::uint32_t>{7},attached));
+  assert(IsUsbDeviceChange(devices,R"(<plist><dict><key>MessageType</key><string>Detached</string>
+    <key>DeviceID</key><integer>8</integer></dict></plist>)"));
+  assert(!IsUsbDeviceChange(devices,R"(<plist><dict><key>MessageType</key><string>Result</string>
+    <key>Number</key><integer>0</integer></dict></plist>)"));
   assert(ParseUsbDevices("<plist><broken>").empty());
 }

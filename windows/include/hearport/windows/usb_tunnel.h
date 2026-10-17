@@ -32,6 +32,7 @@ class UsbPacketQueue {
   std::size_t bytes_ = 0;
 };
 std::vector<std::uint32_t> ParseUsbDevices(std::string_view plist);
+bool IsUsbDeviceChange(std::span<const std::uint32_t> known, std::string_view plist);
 class UsbTunnel {
  public:
   using StatusHandler = std::function<void(std::string)>;

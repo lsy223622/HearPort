@@ -111,6 +111,11 @@ std::vector<std::uint32_t> Devices(const Plist& root) {
   else add(root);
   return result;
 }
+bool DeviceChange(std::span<const std::uint32_t> known,const Plist& event) {
+  if(auto type=event.dict.find(L"MessageType"); type!=event.dict.end() && type->second.text==L"Detached") return true;
+  const auto attached=Devices(event);
+  return std::any_of(attached.begin(),attached.end(),[&](auto id) { return std::find(known.begin(),known.end(),id)==known.end(); });
+}
 struct Socket {
   SOCKET fd=INVALID_SOCKET;
   Socket()=default; explicit Socket(SOCKET value):fd(value) {}
@@ -127,9 +132,18 @@ bool Ready(SOCKET socket,bool write,int milliseconds=100) {
 }
 }
 std::vector<std::uint32_t> ParseUsbDevices(std::string_view xml) { try { return Devices(Parse(xml)); } catch(...) { return {}; } }
+bool IsUsbDeviceChange(std::span<const std::uint32_t> known,std::string_view xml) { return DeviceChange(known,Parse(xml)); }
 struct UsbTunnel::Impl {
   std::atomic<bool> stop{false}; std::atomic<long long> maximum_ms{100};
   std::thread worker; std::uint16_t port=0; StatusHandler status; LogHandler log;
+  std::string last_status;
+  void ReportStatus(std::string message) {
+    if(message!=last_status) {
+      if(log) log("usb_tunnel_status reason="+message);
+      last_status=message;
+    }
+    if(status) status(std::move(message));
+  }
   void Check() { if(stop) throw std::runtime_error("stopped"); }
   Socket Connect() {
     Socket socket(::socket(AF_INET,SOCK_STREAM,IPPROTO_TCP)); if(socket.fd==INVALID_SOCKET) throw std::runtime_error("USB socket unavailable");
@@ -164,9 +178,10 @@ struct UsbTunnel::Impl {
     Transfer(socket,std::as_writable_bytes(std::span(header)),true);
     Transfer(socket,{reinterpret_cast<std::byte*>(xml.data()),xml.size()},true); return Receive(socket);
   }
-  static void Success(const Plist& response) {
+  static void Success(const Plist& response,const char* operation) {
     auto number=response.dict.find(L"Number");
-    if(number==response.dict.end() || number->second.text!=L"0") throw std::runtime_error("Open HearPort on iPad; unlock and trust this PC if prompted");
+    if(number==response.dict.end()) throw std::runtime_error(std::string("Apple ")+operation+" response missing result");
+    if(number->second.text!=L"0") throw std::runtime_error(std::string("Apple ")+operation+" failed result="+std::to_string(std::stoul(number->second.text)));
   }
   void Pump(Socket& tcp) {
     Socket udp(::socket(AF_INET,SOCK_DGRAM,IPPROTO_UDP)); Nonblocking(udp.fd); auto address=Address(port);
@@ -174,7 +189,7 @@ struct UsbTunnel::Impl {
     UsbPacketDecoder decoder; UsbPacketQueue outgoing;
     std::array<std::byte,65536> data{};
     auto last=std::chrono::steady_clock::now();
-    if(status) status("USB available"); if(log) log("usb_tunnel_connected");
+    ReportStatus("USB available"); if(log) log("usb_tunnel_connected");
     while(!stop) {
       fd_set read,write; FD_ZERO(&read); FD_ZERO(&write); FD_SET(tcp.fd,&read); FD_SET(udp.fd,&read);
       if(!outgoing.Front().empty()) FD_SET(tcp.fd,&write);
@@ -202,26 +217,26 @@ struct UsbTunnel::Impl {
     }
   }
   void Run() {
-    WSADATA data; if(WSAStartup(MAKEWORD(2,2),&data)) { if(status) status("USB socket unavailable"); return; }
+    WSADATA data; if(WSAStartup(MAKEWORD(2,2),&data)) { ReportStatus("USB socket unavailable"); return; }
     unsigned retry=1; std::size_t rotation=0;
     while(!stop) {
       try {
         auto query=Connect(); auto devices=Devices(Request(query.fd,"<key>MessageType</key><string>ListDevices</string>"));
-        auto events=Connect(); Success(Request(events.fd,"<key>MessageType</key><string>Listen</string>"));
+        auto events=Connect(); Success(Request(events.fd,"<key>MessageType</key><string>Listen</string>"),"Listen");
         if(!devices.empty()) {
           for(std::size_t i=0;i<devices.size() && !stop;++i) {
             try {
               auto tcp=Connect(); const auto id=devices[(rotation+i)%devices.size()];
-              Success(Request(tcp.fd,"<key>MessageType</key><string>Connect</string><key>DeviceID</key><integer>"+std::to_string(id)+"</integer><key>PortNumber</key><integer>"+std::to_string(htons(52138))+"</integer>"));
+              Success(Request(tcp.fd,"<key>MessageType</key><string>Connect</string><key>DeviceID</key><integer>"+std::to_string(id)+"</integer><key>PortNumber</key><integer>"+std::to_string(htons(52138))+"</integer>"),"Connect");
               retry=1; Pump(tcp);
-            } catch(const std::exception& e) { if(!stop && status) status(e.what()); }
+            } catch(const std::exception& e) { if(!stop) ReportStatus(e.what()); }
           }
           ++rotation;
-        } else if(status) status("Waiting for USB iPad");
+        } else ReportStatus("Waiting for USB iPad");
         const auto until=std::chrono::steady_clock::now()+std::chrono::seconds(retry);
-        while(!stop && std::chrono::steady_clock::now()<until) if(Ready(events.fd,false)) { (void)Receive(events.fd); break; }
+        while(!stop && std::chrono::steady_clock::now()<until) if(Ready(events.fd,false) && DeviceChange(devices,Receive(events.fd))) break;
       } catch(const std::exception& e) {
-        if(!stop && status) status(e.what());
+        if(!stop) ReportStatus(e.what());
         for(unsigned i=0;i<retry*10 && !stop;++i) std::this_thread::sleep_for(std::chrono::milliseconds(100));
       }
       retry=std::min(10u,retry*2);
@@ -234,6 +249,7 @@ UsbTunnel::~UsbTunnel() { Stop(); }
 bool UsbTunnel::Start(std::uint16_t port,StatusHandler status,LogHandler log) {
   if(!port || impl_->worker.joinable()) return false;
   impl_->port=port; impl_->status=std::move(status); impl_->log=std::move(log); impl_->stop=false;
+  impl_->last_status.clear();
   impl_->worker=std::thread([this] { impl_->Run(); }); return true;
 }
 void UsbTunnel::SetMaximumLatency(std::chrono::milliseconds maximum) { impl_->maximum_ms=std::clamp<long long>(maximum.count(),1,60000); }

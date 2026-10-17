@@ -32,7 +32,41 @@ final class USBPacketTunnelTests: XCTestCase {
 }
 
 #if canImport(Network)
+import Network
 extension USBPacketTunnelTests {
+    func testListenerRecoversAfterPortWasOccupied() throws {
+        let parameters = NWParameters.tcp
+        parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: 52138)
+        let blocker = try NWListener(using: parameters)
+        let occupied = expectation(description: "USB port occupied")
+        blocker.stateUpdateHandler = { if case .ready = $0 { occupied.fulfill() } }
+        blocker.newConnectionHandler = { $0.cancel() }
+        blocker.start(queue: DispatchQueue(label: "usb-test-blocker"))
+        wait(for: [occupied], timeout: 3)
+
+        let tunnel = USBPacketTunnel()
+        let unavailable = expectation(description: "Listener failure reported")
+        unavailable.assertForOverFulfill = false
+        tunnel.onUnavailable = { _ in unavailable.fulfill() }
+        tunnel.start(); wait(for: [unavailable], timeout: 5)
+        blocker.cancel()
+        let recovered = expectation(description: "USB entrance recovered")
+        recovered.assertForOverFulfill = false
+        tunnel.onAvailable = { _ in recovered.fulfill() }
+        let clientQueue = DispatchQueue(label: "usb-test-client")
+        var clients: [NWConnection] = [], stoppedClients = false
+        for attempt in 0..<50 {
+            clientQueue.asyncAfter(deadline: .now() + Double(attempt) * 0.2) {
+                guard !stoppedClients else { return }
+                let client = NWConnection(host: "127.0.0.1", port: 52138, using: .tcp)
+                clients.append(client); client.start(queue: clientQueue)
+            }
+        }
+        wait(for: [recovered], timeout: 15)
+        clientQueue.sync { stoppedClients = true; clients.forEach { $0.cancel() } }
+        let stopped = expectation(description: "USB tunnel stopped")
+        tunnel.stop { stopped.fulfill() }; wait(for: [stopped], timeout: 3)
+    }
     func testEncryptedQUICControlAndBothAudioModesThroughUSB() throws {
         guard ProcessInfo.processInfo.environment["HEARPORT_QUIC_INTEGRATION"] == "1" else { throw XCTSkip("Requires the loopback QUIC peer") }
         let diagnostics = HearPortDiagnostics(directory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
