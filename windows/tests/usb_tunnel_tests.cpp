@@ -43,6 +43,11 @@ int main() {
   assert(IsUsbDeviceChange(std::vector<std::uint32_t>{7},attached));
   assert(IsUsbDeviceChange(devices,R"(<plist><dict><key>MessageType</key><string>Detached</string>
     <key>DeviceID</key><integer>8</integer></dict></plist>)"));
+  const auto detached=R"(<plist><dict><key>MessageType</key><string>Detached</string>
+    <key>DeviceID</key><integer>8</integer></dict></plist>)";
+  assert(IsUsbDeviceDetached(8,detached));
+  assert(!IsUsbDeviceDetached(7,detached));
+  assert(!IsUsbDeviceDetached(8,attached));
   assert(!IsUsbDeviceChange(devices,R"(<plist><dict><key>MessageType</key><string>Result</string>
     <key>Number</key><integer>0</integer></dict></plist>)"));
   assert(ParseUsbDevices("<plist><broken>").empty());

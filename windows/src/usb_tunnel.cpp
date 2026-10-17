@@ -13,6 +13,7 @@
 #include <atomic>
 #include <cstring>
 #include <map>
+#include <optional>
 #include <stdexcept>
 #include <thread>
 #include <utility>
@@ -116,6 +117,11 @@ bool DeviceChange(std::span<const std::uint32_t> known,const Plist& event) {
   const auto attached=Devices(event);
   return std::any_of(attached.begin(),attached.end(),[&](auto id) { return std::find(known.begin(),known.end(),id)==known.end(); });
 }
+bool DeviceDetached(std::uint32_t device,const Plist& event) {
+  const auto type=event.dict.find(L"MessageType"), id=event.dict.find(L"DeviceID");
+  return type!=event.dict.end() && type->second.text==L"Detached" &&
+      id!=event.dict.end() && id->second.text==std::to_wstring(device);
+}
 struct Socket {
   SOCKET fd=INVALID_SOCKET;
   Socket()=default; explicit Socket(SOCKET value):fd(value) {}
@@ -133,6 +139,7 @@ bool Ready(SOCKET socket,bool write,int milliseconds=100) {
 }
 std::vector<std::uint32_t> ParseUsbDevices(std::string_view xml) { try { return Devices(Parse(xml)); } catch(...) { return {}; } }
 bool IsUsbDeviceChange(std::span<const std::uint32_t> known,std::string_view xml) { return DeviceChange(known,Parse(xml)); }
+bool IsUsbDeviceDetached(std::uint32_t device,std::string_view xml) { return DeviceDetached(device,Parse(xml)); }
 struct UsbTunnel::Impl {
   std::atomic<bool> stop{false}; std::atomic<long long> maximum_ms{100};
   std::thread worker; std::uint16_t port=0; StatusHandler status; LogHandler log;
@@ -183,32 +190,34 @@ struct UsbTunnel::Impl {
     if(number==response.dict.end()) throw std::runtime_error(std::string("Apple ")+operation+" response missing result");
     if(number->second.text!=L"0") throw std::runtime_error(std::string("Apple ")+operation+" failed result="+std::to_string(std::stoul(number->second.text)));
   }
-  void Pump(Socket& tcp) {
+  void Pump(Socket& tcp,Socket& events,std::uint32_t device) {
     Socket udp(::socket(AF_INET,SOCK_DGRAM,IPPROTO_UDP)); Nonblocking(udp.fd); auto address=Address(port);
     if(connect(udp.fd,reinterpret_cast<sockaddr*>(&address),sizeof(address))) throw std::runtime_error("USB QUIC entrance unavailable");
     UsbPacketDecoder decoder; UsbPacketQueue outgoing;
     std::array<std::byte,65536> data{};
-    auto last=std::chrono::steady_clock::now();
+    std::optional<std::chrono::steady_clock::time_point> partial_since;
     ReportStatus("USB available"); if(log) log("usb_tunnel_connected");
     while(!stop) {
-      fd_set read,write; FD_ZERO(&read); FD_ZERO(&write); FD_SET(tcp.fd,&read); FD_SET(udp.fd,&read);
+      fd_set read,write; FD_ZERO(&read); FD_ZERO(&write); FD_SET(tcp.fd,&read); FD_SET(udp.fd,&read); FD_SET(events.fd,&read);
       if(!outgoing.Front().empty()) FD_SET(tcp.fd,&write);
       timeval wait{0,10000}; if(select(0,&read,&write,nullptr,&wait)<0) throw std::runtime_error("USB socket failed");
       const auto now=std::chrono::steady_clock::now();
       if(outgoing.Expired(now,std::chrono::milliseconds(maximum_ms.load()))) throw std::runtime_error("USB queue deadline exceeded");
-      if(now-last>std::chrono::seconds(15)) throw std::runtime_error("USB entrance idle; checking attached devices");
+      if(partial_since && now-*partial_since>std::chrono::seconds(15)) throw std::runtime_error("USB incomplete packet timeout");
+      // Before a user starts QUIC, a healthy USB entrance carries no packets.
+      if(FD_ISSET(events.fd,&read) && DeviceDetached(device,Receive(events.fd))) throw std::runtime_error("USB device detached");
       if(FD_ISSET(tcp.fd,&read)) {
         int n=recv(tcp.fd,reinterpret_cast<char*>(data.data()),static_cast<int>(data.size()),0);
         if(n<=0) throw std::runtime_error(decoder.Complete()?"USB disconnected":"USB truncated packet");
         std::vector<std::vector<std::byte>> packets;
         if(!decoder.Push(std::span(data).first(n),packets)) throw std::runtime_error("USB invalid packet");
+        if(decoder.Complete()) partial_since.reset();
+        else if(!partial_since || !packets.empty()) partial_since=now;
         for(const auto& packet:packets) if(send(udp.fd,reinterpret_cast<const char*>(packet.data()),static_cast<int>(packet.size()),0)!=packet.size()) throw std::runtime_error("USB UDP forwarding failed");
-        last=now;
       }
       if(FD_ISSET(udp.fd,&read)) {
         int n=recv(udp.fd,reinterpret_cast<char*>(data.data()),static_cast<int>(data.size()),0);
         if(n<=0 || !outgoing.Push(std::span(data).first(n),now)) throw std::runtime_error("USB queue overflow");
-        last=now;
       }
       if(FD_ISSET(tcp.fd,&write)) {
         auto bytes=outgoing.Front(); int n=send(tcp.fd,reinterpret_cast<const char*>(bytes.data()),static_cast<int>(bytes.size()),0);
@@ -228,7 +237,7 @@ struct UsbTunnel::Impl {
             try {
               auto tcp=Connect(); const auto id=devices[(rotation+i)%devices.size()];
               Success(Request(tcp.fd,"<key>MessageType</key><string>Connect</string><key>DeviceID</key><integer>"+std::to_string(id)+"</integer><key>PortNumber</key><integer>"+std::to_string(htons(52138))+"</integer>"),"Connect");
-              retry=1; Pump(tcp);
+              retry=1; Pump(tcp,events,id);
             } catch(const std::exception& e) { if(!stop) ReportStatus(e.what()); }
           }
           ++rotation;

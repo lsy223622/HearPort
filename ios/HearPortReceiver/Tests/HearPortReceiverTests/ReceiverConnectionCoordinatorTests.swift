@@ -2,6 +2,15 @@ import Foundation
 import XCTest
 @testable import HearPortReceiver
 final class ReceiverConnectionCoordinatorTests: XCTestCase {
+    func testUSBRemovalKeepsReconnectIntentUntilExplicitStop() {
+        var policy = ConnectionSelectionPolicy(); policy.wantsConnection = true
+        let usb = UUID()
+        XCTAssertTrue(policy.promote(usb, path: .usb, identity: Data([1])))
+        XCTAssertTrue(policy.closed(usb))
+        XCTAssertTrue(policy.wantsConnection); XCTAssertNil(policy.active)
+        XCTAssertTrue(policy.promote(UUID(), path: .network, identity: Data([1])))
+        policy.stop(); XCTAssertFalse(policy.wantsConnection)
+    }
     func testDiscoveryGetsAnAttemptAfterRememberedAddressFails() {
         var history = ConnectionAttemptHistory()
         history.started("old-ip", at: Date(timeIntervalSince1970: 1))

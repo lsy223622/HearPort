@@ -155,6 +155,7 @@ public struct ConnectionEndpoint: Identifiable {
             if wasUSB { recycleUSB() }
         }
         else { return }
+        if isWaiting { onSearching?() }
         scheduleRetry()
     }
     public func setMaximumLatency(_ ms: Int) { tunnel.setMaximumLatency(milliseconds: ms) }
