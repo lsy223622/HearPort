@@ -20,7 +20,7 @@ struct CalibrationResult: Codable, Sendable {
     var reportConfirmed = false
 
     static let storageKey = "hearport.environmentCalibration.v1"
-    var usable: Bool { reportConfirmed && validObservation }
+    var usable: Bool { validObservation }
     private var validObservation: Bool {
         version == 1 && complete && analysis != nil && !validation.isEmpty &&
         analysis!.recommendations.map(\.profile).sorted() == [1,2,4] &&
@@ -55,8 +55,11 @@ struct CalibrationResult: Codable, Sendable {
               let result = try? JSONDecoder().decode(Self.self, from: data), result.usable else { return nil }
         return result
     }
+    func canApply(profile: Int) -> Bool {
+        usable && ["observed", "provisional"].contains(validationStatus(profile: profile))
+    }
     @discardableResult func apply(profile: Int, to defaults: UserDefaults = .standard) -> Bool {
-        guard usable, let choice = analysis?.recommendations.first(where: { $0.profile == profile })?.choice else { return false }
+        guard canApply(profile: profile), let choice = analysis?.recommendations.first(where: { $0.profile == profile })?.choice else { return false }
         defaults.set(choice.reliable ? AudioTransportMode.reliable.rawValue : AudioTransportMode.datagram.rawValue,
                      forKey: "hearport.audioTransportMode")
         defaults.set(choice.budget.target, forKey: "hearport.targetLatencyMs")
@@ -95,6 +98,26 @@ struct CalibrationResult: Codable, Sendable {
 struct CalibrationProgressSnapshot: Sendable {
     let stage: String
     let index, count, completed, total: Int
+    var seconds = 30
+    var roundStartedAt: UInt64 = 0
+
+    var phaseIndex: Int { stage == "validation" ? max(0, index - 4) : index }
+    var phaseCount: Int { stage == "validation" ? max(0, count - 4) : 4 }
+    private func elapsed(at: UInt64) -> Int {
+        roundStartedAt > 0 && at >= roundStartedAt ? Int((at - roundStartedAt) / 1_000_000_000) : 0
+    }
+    func remainingRoundSeconds(at: UInt64) -> Int { max(0, seconds - elapsed(at: at)) }
+    func remainingTrafficSeconds(at: UInt64) -> ClosedRange<Int> {
+        if stage == "validation" {
+            let later = max(0, count - index)
+            let remaining = max(0, seconds + (later == 0 ? 10 : 5) - elapsed(at: at)) +
+                later * (seconds + 5) + (later > 0 ? 5 : 0)
+            return remaining...remaining
+        }
+        let remaining = index == 0 ? 4 * (seconds + 5) :
+            max(0, seconds + 5 - elapsed(at: at)) + max(0, 4 - index) * (seconds + 5)
+        return remaining...(remaining + 6 * (seconds + 5) + 5)
+    }
 }
 
 final class EnvironmentCalibrationSession: @unchecked Sendable {
@@ -110,6 +133,7 @@ final class EnvironmentCalibrationSession: @unchecked Sendable {
     private var analyzing = false
     private var retainedPackets = 0
     private var analysisCompleted = 0, analysisTotal = 0
+    private var roundStartedAt: UInt64 = 0
 
     init(setup: CalibrationMessage) { self.setup = setup }
 
@@ -132,6 +156,7 @@ final class EnvironmentCalibrationSession: @unchecked Sendable {
         }
         finishCurrent(at: at)
         current = CalibrationRoundTrace(round: round, packets: [], ticks: [], endAt: at)
+        roundStartedAt = at
         let spec = CoordinatedProbePlan.Round(payloadBytes: 992, packetsPerSecond: 400, burstPackets: 1, variant: 1,
             reliable: round.reliable, repeatIndex: 1, controller: 2, repair: 0, correctionPercent: 5)
         consumer = ProbeConsumer(round: spec, budget: try PlayoutBudget(targetMilliseconds: Double(round.budget.target),
@@ -187,7 +212,7 @@ final class EnvironmentCalibrationSession: @unchecked Sendable {
         let round = current?.round
         return CalibrationProgressSnapshot(stage: cancelled.load() != 0 ? "interrupted" : analyzing ? "analyzing" :
             (round?.phase == 1 ? "validation" : "sampling"), index: round?.index ?? 0, count: round?.count ?? 4,
-            completed: analysisCompleted, total: analysisTotal)
+            completed: analysisCompleted, total: analysisTotal, seconds: setup.seconds, roundStartedAt: roundStartedAt)
     }
 
     func analyze(at: UInt64, progress: (Int,Int) -> Void) throws -> CalibrationAnalysis {

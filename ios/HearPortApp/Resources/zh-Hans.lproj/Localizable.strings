@@ -101,16 +101,12 @@
 "Maximum total delay: %lld ms" = "总延迟上限：%lld 毫秒";
 "The target and maximum include transport, processing and output. Changes take effect on the next connection. A higher maximum can tolerate longer interruptions." = "目标和上限包含传输、处理及输出。设置在下次连接时生效。较高上限可以容纳更长的网络空窗。";
 "Selected delay budget is too small for this audio output." = "所选延迟预算不足以容纳当前音频输出。";
-"Environment calibration" = "环境校准";
 "Reliable stream" = "Reliable stream";
 "Test conditions" = "测试条件";
 "Complete observation" = "完整观测";
 "Incomplete observation; parameters cannot be applied." = "观测不完整，不能应用参数。";
 "Stability first" = "稳定优先";
-"Sampling replay" = "采样回放";
 "Applied for the next connection" = "已应用，下次连接生效";
-"Apply for the next connection" = "应用，下次连接生效";
-"No candidate met this profile's sampling target." = "没有候选达到此档位的采样目标。";
 "Sampling replay: age and gaps" = "采样回放：源年龄与缺口";
 "Candidate details" = "候选详情";
 "Fixed deadline coverage" = "固定期限覆盖曲线";
@@ -118,14 +114,11 @@
 "Limits" = "观测限制";
 "No gaps observed in this sample" = "本次样本未观察到缺口";
 "Insufficient valid data" = "有效数据不足";
-"Observed in both live repeats" = "两次实际复核已观测";
 "Provisional: live gaps worsened" = "暂定：实际复核缺口变差";
 "Live validation missed the target" = "实际复核未达目标";
-"Incomplete observation" = "观测不完整";
 "No qualifying recommendation" = "无达标推荐";
-"Analyzing calibration" = "正在分析校准";
 "Validating recommendations" = "正在复核推荐";
-"Calibration interrupted" = "校准已中断";
+"Calibration interrupted" = "自动测试已中断";
 "Sampling network" = "正在采样网络";
 "Each point replays the same recorded input within its transport. The sender used the sampling ceiling; changing its deadline may change delivery. Live validation uses new traffic." = "每个点在相同传输模式内使用同一份记录。采样发送端采用测试上限，改变发送期限可能改变到达情况。实际复核使用新的流量。";
 "Coverage uses a fixed deadline and does not simulate buffering. Missing source and output interruption are separate axes; they are never added together." = "覆盖曲线只使用固定截止时间，不模拟缓冲。源内容缺失与输出中断是两条不同时间轴，不能相加。";
@@ -134,8 +127,6 @@
 "Source age includes estimated output reserve. Audio DSP, render output and acoustic latency were not measured." = "源年龄包含估计输出预留；未测音频 DSP、实际渲染输出或声学延迟。";
 "If either live repeat misses the profile target, its status is downgraded. Worse live gaps remain provisional; network changes can explain the difference." = "任一复核未达档位目标都会降低状态。复核缺口变差时标为暂定；差异可能由网络波动造成。";
 "%lld s / round · ceiling %lld ms" = "每组 %lld 秒 · 测试上限 %lld 毫秒";
-"Target %lld ms · maximum %lld ms · output reserve %lld ms" = "目标 %lld 毫秒 · 最大 %lld 毫秒 · 输出预留 %lld 毫秒";
-"Live validation %lld" = "实际复核 %lld";
 "Source age P95: %.1f ms" = "源年龄 P95：%.1f 毫秒";
 "Gap: %.3f%% · longest %.1f ms" = "缺口：%.3f%% · 最长 %.1f 毫秒";
 "Source unavailable: %.1f ms · output interruption: %.1f ms" = "源内容缺失：%.1f 毫秒 · 输出中断：%.1f 毫秒";
@@ -146,6 +137,42 @@
 "Unavailable (%)" = "源不可用（%）";
 "Selection rules" = "选择规则";
 "Low latency: gaps ≤0.5%, longest ≤40 ms; Balanced: gaps ≤0.1%, longest ≤20 ms. Both choose the lowest qualifying source age P95. Stability first minimizes gap ratio, then longest gap, then source age within the selected ceiling." = "低延迟：缺口≤0.5%，最长≤40 毫秒；平衡：缺口≤0.1%，最长≤20 毫秒。两者均选择达标候选中最低的源年龄 P95。稳定优先在所选上限内依次减少缺口占比、最长缺口和源年龄。";
+
+"Detailed test data" = "测试详情";
+"Tested" = "测试时间";
+"Automatic testing compares three connection profiles using your PC's local network to find settings suited to your setup." = "自动测试会借助电脑的局域网比较三种连接档位，为你的使用环境找出合适的参数。";
+"Recommendations" = "推荐方案";
+"Maximum delay: %lld ms" = "最大延迟：%lld 毫秒";
+"Estimated test time: %lld–%lld seconds, plus analysis and report." = "预计测试用时：%lld–%lld 秒，另需分析和回传报告。";
+"Start automatic test" = "开始自动测试";
+"Test settings" = "测试设置";
+"The test pauses playback and sends test traffic over the PC's local network (LAN), not USB. Connect a remembered PC with a network route before starting." = "测试期间会暂停播放，并通过电脑的局域网连接发送测试流量。请先连接已保存配对且有局域网路线的电脑。";
+"Automatic test and recommendations" = "自动测试并推荐参数";
+"Reliable transport" = "Reliable stream";
+"Datagram transport" = "Datagram";
+"%@ · target %lld ms · maximum %lld ms" = "%@ · 目标 %lld 毫秒 · 上限 %lld 毫秒";
+"Live validation · worst gap %.3f%% · longest %.1f ms" = "实测复核 · 最大缺口占比 %.3f%% · 最长 %.1f 毫秒";
+"Apply parameters" = "应用参数";
+"No recommendation met this profile's target." = "此档位没有达到目标的推荐参数。";
+"Prioritizes faster audio delivery." = "优先降低音频传输延迟。";
+"Balances responsiveness and continuity." = "兼顾响应速度与播放连续性。";
+"Prioritizes fewer and shorter interruptions." = "优先减少中断次数与时长。";
+"Validated in both live repeats" = "两次实测复核均通过";
+"Incomplete test" = "测试不完整";
+"Recommendations ready" = "推荐参数已生成";
+"Review recommendations" = "查看推荐参数";
+"Recommendations are saved on this iPad. A diagnostic copy is being sent to the PC." = "推荐结果已保存在这台 iPad 上，正在向电脑发送诊断副本。";
+"Analyzing recommendations" = "正在分析推荐参数";
+"Compared %lld / %lld candidates" = "已比较 %lld / %lld 种候选参数";
+"Validation rounds will be selected after analysis." = "分析完成后会按推荐方案选择复核轮次。";
+"Round %lld / %lld" = "第 %lld / %lld 轮";
+"This round: %lld seconds remaining" = "本轮剩余 %lld 秒";
+"Finishing this round and draining queued data…" = "正在结束本轮并清空排队数据…";
+"Estimated traffic remaining: %lld seconds" = "预计剩余流量测试时间：%lld 秒";
+"Estimated traffic remaining: %lld–%lld seconds" = "预计剩余流量测试时间：%lld–%lld 秒";
+"Analysis and report transfer take additional time. Identical recommendations share validation rounds." = "分析和回传报告还需额外时间；相同的推荐方案会共用复核轮次。";
+"Choose a profile to apply its settings." = "请选择一个档位以应用对应参数。";
+"This test could not produce validated recommendations. Review the results before testing again." = "本次测试未能生成经过复核的推荐参数。请查看结果后再重新测试。";
 
 "Available connections" = "可用连接";
 
@@ -246,19 +273,13 @@
 
 "120 seconds" = "120 秒";
 
-"Calibration ceiling: %lld ms" = "校准延迟上限：%lld 毫秒";
+"Starting calibration…" = "正在启动自动测试…";
 
-"Starting calibration…" = "正在启动校准…";
+"Could not start calibration. Reconnect and try again." = "无法启动自动测试，请重新连接后重试。";
 
-"Start environment calibration" = "开始环境校准";
+"The PC did not start calibration. Reconnect and try again." = "电脑未能启动自动测试，请重新连接后重试。";
 
-"New calibration" = "新建校准";
-
-"Calibration temporarily stops playback and tests this PC's local network connection. Connect a remembered PC with a network route to start." = "校准将暂时停止播放，测试这台电脑的局域网连接。请先连接已保存配对且有网络路线的电脑。";
-
-"Could not start calibration. Reconnect and try again." = "无法启动校准，请重新连接后重试。";
-
-"The PC did not start calibration. Reconnect and try again." = "电脑未能开始校准，请重新连接后重试。";
+"Environment calibration was interrupted." = "自动测试已中断。";
 
 "Link stability" = "链路稳定性";
 
