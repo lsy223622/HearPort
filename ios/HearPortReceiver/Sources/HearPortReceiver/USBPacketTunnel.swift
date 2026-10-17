@@ -47,6 +47,9 @@ public final class USBPacketTunnel {
     public var onUnavailable: ((String) -> Void)?
     private let queue = DispatchQueue(label: "com.hearport.usb-tunnel", qos: .userInitiated)
     private var listener: NWListener?
+    private var listenerRetry: DispatchWorkItem?
+    private var listenerRetrySeconds: Double = 1
+    private var wantsListener = false
     private var udpListener: NWListener?
     private var tcp: NWConnection?
     private var udp: NWConnection?
@@ -58,10 +61,12 @@ public final class USBPacketTunnel {
     private let diagnostics: HearPortDiagnostics
     public init(diagnostics: HearPortDiagnostics = .shared) { self.diagnostics = diagnostics }
     public func start() {
-        queue.async { [weak self] in self?.startOnQueue() }
+        queue.async { [weak self] in self?.wantsListener = true; self?.startOnQueue() }
     }
     public func stop(completion: (() -> Void)? = nil) {
         queue.async { [weak self] in
+            self?.wantsListener = false
+            self?.listenerRetry?.cancel(); self?.listenerRetry = nil
             self?.listener?.cancel(); self?.listener = nil
             self?.close("USB listener stopped")
             completion?()
@@ -74,7 +79,8 @@ public final class USBPacketTunnel {
         queue.async { [weak self] in self?.close("USB session ended") }
     }
     private func startOnQueue() {
-        guard listener == nil else { return }
+        guard wantsListener, listener == nil else { return }
+        listenerRetry?.cancel(); listenerRetry = nil
         do {
             let options = NWProtocolTCP.Options(); options.noDelay = true
             let parameters = NWParameters(tls: nil, tcp: options)
@@ -82,11 +88,34 @@ public final class USBPacketTunnel {
             let server = try NWListener(using: parameters)
             listener = server
             server.newConnectionHandler = { [weak self] connection in self?.accept(connection) }
-            server.stateUpdateHandler = { [weak self] state in
-                if case .failed = state { self?.listener?.cancel(); self?.listener = nil; self?.close("USB listener unavailable") }
+            server.stateUpdateHandler = { [weak self, weak server] state in
+                guard let self, let server, self.listener === server else { return }
+                switch state {
+                case .ready:
+                    self.listenerRetrySeconds = 1
+                    self.diagnostics.log(.info, category: .transport, message: "usb_listener_ready", fields: ["port": "52138"])
+                case let .waiting(error):
+                    self.diagnostics.log(.warning, category: .transport, message: "usb_listener_waiting", fields: ["error": "\(error)"])
+                    if self.tcp == nil { self.onUnavailable?("USB listener unavailable") }
+                case let .failed(error):
+                    self.listenerFailed(error)
+                default: break
+                }
             }
             server.start(queue: queue)
-        } catch { onUnavailable?("USB listener unavailable") }
+        } catch { listenerFailed(error) }
+    }
+    private func listenerFailed(_ error: Error) {
+        diagnostics.log(.error, category: .transport, message: "usb_listener_failed", fields: ["error": "\(error)"])
+        listener?.cancel(); listener = nil
+        let connected = tcp != nil
+        close("USB listener unavailable")
+        if !connected { onUnavailable?("USB listener unavailable") }
+        guard wantsListener else { return }
+        let retry = DispatchWorkItem { [weak self] in self?.startOnQueue() }
+        listenerRetry = retry
+        queue.asyncAfter(deadline: .now() + listenerRetrySeconds, execute: retry)
+        listenerRetrySeconds = min(10, listenerRetrySeconds * 2)
     }
     private func accept(_ connection: NWConnection) {
         guard tcp == nil else { connection.cancel(); return }
@@ -183,6 +212,6 @@ public final class USBPacketTunnel {
             onUnavailable?(reason)
         }
     }
-    deinit { listener?.cancel(); tcp?.cancel(); udp?.cancel(); udpListener?.cancel(); timer?.cancel() }
+    deinit { listenerRetry?.cancel(); listener?.cancel(); tcp?.cancel(); udp?.cancel(); udpListener?.cancel(); timer?.cancel() }
 }
 #endif
