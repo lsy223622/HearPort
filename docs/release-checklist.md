@@ -10,6 +10,13 @@
 - [x] GitHub Actions run [39042423876](https://github.com/lsy223622/HearPort/actions/runs/39042423876): 156 Swift package tests passed; unsigned iOS IPA archive was created and validated.
 - [x] User-observed playback on iPad Pro 11-inch (2020) over USB, including disconnect/reconnect; repeated playback/tests on weak 2.4 GHz Wi-Fi.
 
+## Distribution artifacts
+
+Generate both release packages in GitHub Actions at the same source commit:
+`Windows Release package` → `HearPort-windows-release`, and
+`iOS receiver package tests` → `HearPort-unsigned-ipa`.
+Local build results are development verification, not the distribution source.
+
 ## Before distributing
 
 - [ ] Confirm the portable Release ZIP starts and plays on a clean Windows machine without development tools; build and package commands are in the root README.
