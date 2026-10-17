@@ -2,6 +2,30 @@ import XCTest
 @testable import HearPortReceiver
 
 final class ConnectionPresentationTests: XCTestCase {
+    func testStartupShortfallsStayUnmeasuredAndDoNotPoisonPlaybackWindow() {
+        var tracker = AudioLinkQualityTracker()
+        for second in 0...2 {
+            var point = sample(Double(second), received: second * 100, interrupted: true)
+            point.outputGapFrames = UInt64(second * 480)
+            tracker.observe(point)
+            XCTAssertEqual(tracker.quality, .unknown)
+        }
+        var clean = sample(3, received: 600)
+        clean.outputGapFrames = 960
+        tracker.observe(clean)
+        XCTAssertEqual(tracker.quality, .stable)
+    }
+
+    func testSilentSourceDoesNotMakeIdleRendererAnUnstableLink() {
+        var tracker = AudioLinkQualityTracker()
+        for second in 0...12 {
+            var point = sample(Double(second), received: 0, interrupted: true)
+            point.outputGapFrames = UInt64(second * 48_000)
+            tracker.observe(point)
+        }
+        XCTAssertEqual(tracker.quality, .unknown)
+    }
+
     func testCompletionAndReportOutrankPlaybackAndTestCallbacks() {
         XCTAssertEqual(ConnectionPresentationStage.resolve(completed: true, reporting: true,
             recovering: true, connecting: true, playing: true, testing: true), .completed)
