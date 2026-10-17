@@ -41,6 +41,7 @@ int main() {
   selection.choices = {{7, true, {50, 100}, 11}};
   if (DecodeCalibrationMessage(EncodeCalibrationMessage(selection))->choices.size() != 1) return 9;
   CalibrationExchange exchange(7, {30,100}, 11);
+  if (exchange.phase_completed() != 0 || exchange.phase_total() != 4) return 40;
   CalibrationMessage wrong;
   wrong.kind = CalibrationMessageKind::ack; wrong.plan_id = 8; wrong.index = 1;
   if (exchange.Handle(wrong)) return 10;
@@ -51,10 +52,10 @@ int main() {
     auto ack = wrong; ack.plan_id = 7; ack.index = static_cast<std::uint8_t>(i);
     if (!exchange.Handle(ack) || !exchange.CompleteRound()) return 13;
   }
-  if (!exchange.awaiting_selection()) return 14;
+  if (!exchange.awaiting_selection() || exchange.phase_completed() != 4 || exchange.phase_total() != 4) return 14;
   auto impossible = selection; impossible.choices[0].budget = {55,100};
   if (exchange.Handle(impossible)) return 15;
-  if (!exchange.Handle(selection)) return 16;
+  if (!exchange.Handle(selection) || exchange.phase_completed() != 0 || exchange.phase_total() != 2) return 16;
   for (unsigned i = 5; i <= 6; ++i) {
     const auto step = exchange.NextRound(i);
     if (!step || step->phase != 1 || step->profile_mask != 7 || step->budget != CalibrationBudget{50,100}) return 17;

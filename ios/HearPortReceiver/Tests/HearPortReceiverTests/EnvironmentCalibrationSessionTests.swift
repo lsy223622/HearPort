@@ -74,7 +74,10 @@ final class EnvironmentCalibrationSessionTests: XCTestCase {
         }
         let result = CalibrationResult(version: 1, planID: 7, testedAt: Date(), seconds: 30, maximum: 100,
             analysis: analysis, validation: [first,second], complete: true, warnings: [])
-        XCTAssertFalse(result.save(to: defaults))
+        XCTAssertTrue(result.save(to: defaults))
+        XCTAssertFalse(result.reportConfirmed)
+        XCTAssertTrue(CalibrationResult.load(from: defaults)?.canApply(profile: 2) == true)
+        XCTAssertTrue(result.apply(profile: 2, to: defaults))
         var confirmed = result
         confirmed.reportConfirmed = true
         XCTAssertTrue(confirmed.save(to: defaults))
@@ -90,6 +93,9 @@ final class EnvironmentCalibrationSessionTests: XCTestCase {
         worse.reportConfirmed = true
         XCTAssertEqual(worse.validationStatus(profile: 2), "not_met")
         XCTAssertEqual(worse.validationStatus(profile: 1), "provisional")
+        XCTAssertFalse(worse.canApply(profile: 2))
+        XCTAssertFalse(worse.apply(profile: 2, to: defaults))
+        XCTAssertTrue(worse.canApply(profile: 1))
         let unknown = CalibrationResult(version: 2, planID: 7, testedAt: Date(), seconds: 30, maximum: 100,
             analysis: analysis, validation: [first,second], complete: true, warnings: [])
         XCTAssertFalse(unknown.save(to: defaults))
@@ -109,6 +115,26 @@ final class EnvironmentCalibrationSessionTests: XCTestCase {
         XCTAssertNil(session.confirm(result, planID: 8))
         session.cancel()
         XCTAssertNil(session.confirm(result, planID: 7))
+    }
+
+    func testProgressKeepsPhaseCountsAndDoesNotRestartDuringDrain() throws {
+        let session = EnvironmentCalibrationSession(setup: setup())
+        _ = try session.beginRound(round(1), at: 1_000_000_000)
+        let progress = session.progress()
+        XCTAssertEqual(progress.phaseIndex, 1)
+        XCTAssertEqual(progress.phaseCount, 4)
+        XCTAssertEqual(progress.remainingRoundSeconds(at: 11_000_000_000), 20)
+        XCTAssertEqual(progress.remainingRoundSeconds(at: 32_000_000_000), 0)
+        XCTAssertEqual(progress.remainingTrafficSeconds(at: 11_000_000_000), 130...345)
+        XCTAssertEqual(session.progress().index, 1)
+        let validation = CalibrationProgressSnapshot(stage: "validation", index: 5, count: 6,
+            completed: 0, total: 0, seconds: 30, roundStartedAt: 1_000_000_000)
+        XCTAssertEqual(validation.phaseIndex, 1)
+        XCTAssertEqual(validation.phaseCount, 2)
+        XCTAssertEqual(validation.remainingTrafficSeconds(at: 11_000_000_000), 65...65)
+        let last = CalibrationProgressSnapshot(stage: "validation", index: 6, count: 6,
+            completed: 0, total: 0, seconds: 30, roundStartedAt: 1_000_000_000)
+        XCTAssertEqual(last.remainingTrafficSeconds(at: 36_000_000_000), 5...5)
     }
 
 }

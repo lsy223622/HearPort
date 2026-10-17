@@ -42,6 +42,9 @@ import SwiftUI
     @State private var showingClearConfirmation = false
     @State private var showingConnectionSetup = false
     @State private var calibrationResult: CalibrationResult? = CalibrationResult.load()
+    @State private var calibrationRunResult: CalibrationResult?
+    @State private var calibrationProgress: CalibrationProgressSnapshot?
+    @State private var calibrationNow: UInt64 = 0
     @State private var sendingReport = false
     @State private var canvasSheet: CanvasSheet?
     @State private var currentComputerName = ""
@@ -59,7 +62,7 @@ import SwiftUI
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private enum CanvasSheet: String, Identifiable {
-        case settings, details
+        case settings, details, recommendations
         var id: String { rawValue }
     }
 
@@ -91,6 +94,7 @@ import SwiftUI
                     switch sheet {
                     case .settings: settingsView
                     case .details: connectionDetailsView
+                    case .recommendations: calibrationResults
                     }
                 }
                 .toolbar {
@@ -179,6 +183,7 @@ import SwiftUI
                 linkSample = sample
                 qualityTracker.observe(sample)
             } else { qualityTracker = LinkStabilityTracker(); linkSample = nil }
+            if calibrationProgress != nil { calibrationNow = DispatchTime.now().uptimeNanoseconds }
             if musicRound != nil { roundElapsed = max(0, ProcessInfo.processInfo.systemUptime - roundStartedAt) }
         }
         .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.routeChangeNotification)) { _ in
@@ -218,9 +223,13 @@ import SwiftUI
             if let round = musicRound {
                 return String(format: Self.localize("Music test · %d / 8"), round.index)
             }
-            return Self.localize(control?.isEnvironmentCalibration == true ? "Environment calibration" : "Network test running")
+            return Self.localize(control?.isEnvironmentCalibration == true ? "Automatic test and recommendations" : "Network test running")
         case .reporting: return Self.localize("Sending report")
-        case .completed: return Self.localize(testCompletedNormally ? "Test complete" : "Test ended")
+        case .completed:
+            if let result = calibrationRunResult {
+                return Self.localize(result.usable ? "Recommendations ready" : "Test ended")
+            }
+            return Self.localize(testCompletedNormally ? "Test complete" : "Test ended")
         }
     }
     private var canvasSubtitle: String {
@@ -265,9 +274,26 @@ import SwiftUI
                         availableConnections
                             .transition(.opacity.combined(with: .move(edge: .bottom)))
                     } else if presentationStage == .completed {
-                        Button("Back to connections") { disconnect() }
-                            .buttonStyle(.borderedProminent)
-                            .transition(.opacity)
+                        if calibrationRunResult != nil {
+                            Button { canvasSheet = .recommendations } label: {
+                                Text("Review recommendations").font(.headline)
+                                    .padding(.horizontal, 24).padding(.vertical, 14)
+                                    .foregroundStyle(Color(uiColor: .systemBackground))
+                                    .background(Color.primary, in: RoundedRectangle(cornerRadius: 12))
+                            }.buttonStyle(.plain)
+                            if sendingReport {
+                                Text("Recommendations are saved on this iPad. A diagnostic copy is being sent to the PC.")
+                                    .font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                            }
+                            Button("Back to connections") { disconnect() }
+                        } else {
+                            Button { disconnect() } label: {
+                                Text("Back to connections").font(.headline)
+                                    .padding(.horizontal, 24).padding(.vertical, 14)
+                                    .foregroundStyle(Color(uiColor: .systemBackground))
+                                    .background(Color.primary, in: RoundedRectangle(cornerRadius: 12))
+                            }.buttonStyle(.plain)
+                        }
                     } else {
                         playbackSummary
                             .transition(.opacity.combined(with: .move(edge: .bottom)))
@@ -410,6 +436,8 @@ import SwiftUI
                         Text(String(format: Self.localize("Round elapsed %.0f / %d s"), min(Double(round.seconds), roundElapsed), round.seconds))
                             .font(.caption).foregroundStyle(.secondary).monospacedDigit()
                     }
+                } else if let progress = calibrationProgress {
+                    calibrationProgressView(progress)
                 } else {
                     Text(status).font(.subheadline).foregroundStyle(.secondary)
                 }
@@ -418,7 +446,7 @@ import SwiftUI
             if presentationStage == .reporting {
                 Text("The report is being prepared and transferred. Keep HearPort open.")
                     .font(.subheadline).foregroundStyle(.secondary)
-            } else {
+            } else if calibrationProgress == nil {
                 HStack(alignment: .firstTextBaseline) {
                     Text("Playback budget").foregroundStyle(.secondary)
                     Spacer(minLength: 12)
@@ -538,16 +566,52 @@ import SwiftUI
     }
 
     private var calibrationLink: some View {
-        NavigationLink("Environment calibration") {
-            CalibrationResultsView(result: calibrationResult, apply: { profile in
-                if calibrationResult?.apply(profile: profile) == true {
-                    audioTransportModeRaw = UserDefaults.standard.string(forKey: "hearport.audioTransportMode") ?? AudioTransportMode.datagram.rawValue
-                    targetLatencyMs = UserDefaults.standard.integer(forKey: "hearport.targetLatencyMs")
-                    maximumLatencyMs = UserDefaults.standard.integer(forKey: "hearport.maximumLatencyMs")
+        NavigationLink("Automatic test and recommendations") { calibrationResults }
+    }
+
+    private var calibrationResults: some View {
+        CalibrationResultsView(result: calibrationRunResult ?? calibrationResult, apply: { profile in
+            if (calibrationRunResult ?? calibrationResult)?.apply(profile: profile) == true {
+                audioTransportModeRaw = UserDefaults.standard.string(forKey: "hearport.audioTransportMode") ?? AudioTransportMode.datagram.rawValue
+                targetLatencyMs = UserDefaults.standard.integer(forKey: "hearport.targetLatencyMs")
+                maximumLatencyMs = UserDefaults.standard.integer(forKey: "hearport.maximumLatencyMs")
+            }
+        }, canStart: canStartCalibration, starting: calibrationRequestID != nil,
+           startStatus: calibrationStartStatus, start: startCalibration)
+    }
+
+    @ViewBuilder private func calibrationProgressView(_ progress: CalibrationProgressSnapshot) -> some View {
+        if progress.stage == "analyzing" {
+            Text("Analyzing recommendations").font(.headline)
+            if progress.total > 0 {
+                ProgressView(value: Double(progress.completed), total: Double(progress.total)).tint(.teal)
+                Text("Compared \(progress.completed) / \(progress.total) candidates")
+                    .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+            } else { ProgressView() }
+            Text("Validation rounds will be selected after analysis.").font(.footnote).foregroundStyle(.secondary)
+        } else if progress.stage == "interrupted" {
+            Text("Calibration interrupted")
+        } else if progress.index > 0 {
+            let remaining = progress.remainingRoundSeconds(at: calibrationNow)
+            Text(progress.stage == "validation" ? "Validating recommendations" : "Sampling network").font(.headline)
+            Text("Round \(progress.phaseIndex) / \(progress.phaseCount)").font(.subheadline)
+            ProgressView(value: Double(progress.seconds - remaining), total: Double(progress.seconds)).tint(.teal)
+            if remaining > 0 {
+                Text("This round: \(remaining) seconds remaining").monospacedDigit()
+            } else { Text("Finishing this round and draining queued data…") }
+            let range = progress.remainingTrafficSeconds(at: calibrationNow)
+            if range.upperBound > 0 {
+                if range.lowerBound == range.upperBound {
+                    Text("Estimated traffic remaining: \(range.upperBound) seconds")
+                        .font(.footnote).foregroundStyle(.secondary).monospacedDigit()
+                } else {
+                    Text("Estimated traffic remaining: \(range.lowerBound)–\(range.upperBound) seconds")
+                        .font(.footnote).foregroundStyle(.secondary).monospacedDigit()
                 }
-            }, canStart: canStartCalibration, starting: calibrationRequestID != nil,
-               startStatus: calibrationStartStatus, start: startCalibration)
-        }
+            }
+            Text("Analysis and report transfer take additional time. Identical recommendations share validation rounds.")
+                .font(.caption).foregroundStyle(.secondary)
+        } else { Text("Starting calibration…") }
     }
 
     private var canStartCalibration: Bool {
@@ -562,6 +626,7 @@ import SwiftUI
         guard canStartCalibration, let control else { return }
         let id = UUID()
         calibrationRequestID = id; calibrationStartStatus = nil
+        calibrationRunResult = nil; calibrationProgress = nil
         testRunning = true
         control.requestEnvironmentCalibration(seconds: seconds, maximum: maximum) { accepted in
             DispatchQueue.main.async {
@@ -673,6 +738,7 @@ import SwiftUI
             status = Self.localize("Enter the 6-digit PIN shown on Windows"); return
         }
         completedTestStatus = nil; connectionError = nil
+        calibrationRunResult = nil; calibrationProgress = nil
         sendingReport = false; retainingConnection = false
         calibrationRequestID = nil; calibrationStartStatus = nil
         musicRound = nil; testRunning = false; currentComputerName = ""
@@ -769,6 +835,7 @@ import SwiftUI
                     calibrationRequestID = nil; calibrationStartStatus = nil
                 }
                 qualityTracker = LinkStabilityTracker(); linkSample = nil; musicRound = nil; testRunning = false
+                calibrationProgress = nil; calibrationRunResult = nil
                 connectionEstablished = false; connectionError = nil; completedTestStatus = nil
                 activeAudioMode = audioMode; activeBufferTargetPackets = normalizedJitter.targetPackets
                 activeTargetLatencyMs = target; activeMaximumLatencyMs = maximum
@@ -805,16 +872,24 @@ import SwiftUI
         session.onCalibrationProgress = { progress in
             DispatchQueue.main.async {
                 guard connectionID == activeConnectionID, completedTestStatus == nil, !sendingReport else { return }
-                let stage = Self.localize(progress.stage == "analyzing" ? "Analyzing calibration" : progress.stage == "validation" ?
+                calibrationProgress = progress
+                calibrationNow = DispatchTime.now().uptimeNanoseconds
+                status = Self.localize(progress.stage == "analyzing" ? "Analyzing recommendations" : progress.stage == "validation" ?
                     "Validating recommendations" : progress.stage == "interrupted" ? "Calibration interrupted" : "Sampling network")
-                status = stage + (progress.stage == "analyzing" ? " · \(progress.completed)/\(progress.total)" : " · \(progress.index)/\(progress.count)")
             }
         }
         session.onCalibrationResult = { result in
             DispatchQueue.main.async {
                 guard connectionID == activeConnectionID else { return }
+                let firstResult = calibrationRunResult == nil
+                calibrationRunResult = result
+                connectionManager.completed()
                 if result.save() { calibrationResult = result }
-                else if calibrationResult == nil { calibrationResult = result }
+                completedTestStatus = Self.localize(result.usable ? "Choose a profile to apply its settings." :
+                    "This test could not produce validated recommendations. Review the results before testing again.")
+                testCompletedNormally = result.complete
+                testRunning = false; isConnecting = false
+                if firstResult { canvasSheet = .recommendations }
             }
         }
         session.onTransportState = { newState in
@@ -855,7 +930,7 @@ import SwiftUI
                 }
                 connectionManager.ended(id)
                 guard connectionID == activeConnectionID else { return }
-                guard completedTestStatus == nil else { return }
+                guard completedTestStatus == nil else { sendingReport = false; return }
                 let reportInterrupted = sendingReport
                 sendingReport = false; testRunning = false
                 try? audioOutput?.stop(); audioOutput = nil
@@ -942,7 +1017,7 @@ import SwiftUI
         session.onDiagnosticReportReceived = { reason in
             DispatchQueue.main.async {
                 guard connectionID == activeConnectionID else { return }
-                let message = Self.localize(reason == 1
+                let message = calibrationRunResult != nil ? (completedTestStatus ?? "") : Self.localize(reason == 1
                     ? "Test complete. Report saved on the PC."
                     : "Test ended. Report saved on the PC.")
                 connectionManager.completed()
@@ -976,6 +1051,7 @@ import SwiftUI
         connectionError = nil
         connectionEstablished = false
         completedTestStatus = nil
+        calibrationRunResult = nil; calibrationProgress = nil
         sendingReport = false; retainingConnection = false; musicRound = nil; testRunning = false
         qualityTracker = LinkStabilityTracker(); linkSample = nil
         currentComputerName = ""

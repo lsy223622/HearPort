@@ -19,7 +19,11 @@ struct CalibrationChoice {
   CalibrationBudget budget;
   std::uint16_t output_reserve_ms = 0;
 };
-struct CalibrationProgress { unsigned stage = 0, index = 0, count = 0, completed = 0, total = 0; };
+struct CalibrationProgress {
+  unsigned stage = 0, index = 0, count = 0, completed = 0, total = 0;
+  unsigned completed_rounds = 0, elapsed_seconds = 0, remaining_seconds = 0;
+  bool round_pending = false, round_started = false;
+};
 enum class CalibrationMessageKind : std::uint8_t { setup, round, ack, analyze, selection, progress, request };
 struct CalibrationMessage {
   CalibrationMessageKind kind = CalibrationMessageKind::setup;
@@ -64,6 +68,8 @@ class CalibrationExchange {
   bool finished() const { return selected_ && completed_ == 4 + validation_.size(); }
   unsigned completed() const { return completed_; }
   unsigned total() const { return selected_ ? 4 + static_cast<unsigned>(validation_.size()) : 10; }
+  unsigned phase_completed() const { return selected_ ? completed_ - 4 : completed_; }
+  unsigned phase_total() const { return selected_ ? static_cast<unsigned>(validation_.size()) : 4; }
   unsigned analysis_completed() const { return analysis_completed_; }
   unsigned analysis_total() const { return analysis_total_; }
  private:

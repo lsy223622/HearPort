@@ -863,6 +863,9 @@ public final class ReceiverControlSession {
                         reason: endReason,
                         diagnostics: self.diagnostics
                     )
+                    if let result = self.debugSessionDiagnostics.completedCalibration() {
+                        self.onCalibrationResult?(result)
+                    }
                     guard let report = try self.debugReportTransfer.pendingReport(),
                           report.sessionID == sessionID else {
                         throw DebugReportTransferError.noPendingReport

@@ -213,6 +213,9 @@ class SenderService {
   mutable std::mutex calibration_mutex_;
   std::condition_variable calibration_condition_;
   std::unique_ptr<CalibrationExchange> calibration_exchange_;
+  std::optional<CalibrationMessage> calibration_display_round_;
+  std::optional<std::chrono::steady_clock::time_point> calibration_round_started_at_;
+  bool calibration_round_pending_ = false;
   std::atomic<bool> calibration_round_active_ = false;
   std::atomic<unsigned> calibration_stage_ = 0;
   RepairWindow probe_repair_window_;

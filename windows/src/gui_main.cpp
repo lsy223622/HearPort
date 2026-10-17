@@ -11,6 +11,7 @@
 #include <shlobj.h>
 #include <uxtheme.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdint>
@@ -579,7 +580,7 @@ class Application {
     diagnostic_status_ = Control(1, L"STATIC", L"", SS_LEFT, 0);
     Control(1, L"BUTTON", Tr(L"Open sender log", L"打开运行日志"), WS_TABSTOP | BS_PUSHBUTTON, kLog);
     Control(1, L"BUTTON", Tr(L"Open report folder", L"打开报告文件夹"), WS_TABSTOP | BS_PUSHBUTTON, kReports);
-    Control(1, L"BUTTON", Tr(L"Calibration results", L"校准结果"), WS_TABSTOP | BS_PUSHBUTTON, kCalibrationResults);
+    Control(1, L"BUTTON", Tr(L"Recommendation results", L"推荐结果"), WS_TABSTOP | BS_PUSHBUTTON, kCalibrationResults);
 
     Control(2, L"STATIC", Tr(L"Connection settings", L"连接设置"), SS_LEFT, 0);
     certificate_ = Control(2, L"STATIC", L"", SS_LEFT, 0);
@@ -834,24 +835,63 @@ class Application {
       }
     } else if (running_ && network_probe_active_ && service_->environment_calibration()) {
       const auto progress = service_->calibration_progress();
-      heading = !connected_ ? Tr(L"Calibration ready", L"环境校准待连接") :
-          progress.stage == 2 ? Tr(L"Analyzing calibration", L"正在分析校准") :
-          progress.stage >= 4 ? Tr(L"Calibration ended", L"校准已结束") :
-          progress.stage == 3 ? Tr(L"Validating recommendations", L"正在复核推荐") : Tr(L"Sampling network", L"正在采样网络");
+      heading = !connected_ ? Tr(L"Automatic test and parameter recommendations ready", L"自动测试并推荐参数待连接") :
+          progress.stage == 2 ? Tr(L"Analyzing recommendations", L"正在分析推荐参数") :
+          progress.stage >= 4 ? Tr(L"Automatic test ended", L"自动测试已结束") :
+          progress.stage == 3 ? Tr(L"Validating recommendations", L"正在复核推荐参数") : Tr(L"Sampling network", L"正在采样网络");
+      const auto estimate = [&](unsigned minimum, unsigned maximum, const std::wstring& extra) {
+        detail += L"\n" + Tr(L"Estimated remaining traffic: ",L"预计剩余传输：") +
+            std::to_wstring(minimum) + (minimum == maximum ? L"" : L"–" + std::to_wstring(maximum)) +
+            Tr(L" s; ",L" 秒；") + extra;
+      };
       if (progress.stage >= 4) detail = Tr(L"Preparing and receiving the iPad report.", L"正在准备并回收 iPad 报告。");
-      else if (progress.stage == 2) detail = std::to_wstring(progress.completed) + L" / " + std::to_wstring(progress.total);
-      else if (connected_ && progress.index) {
-        const unsigned seconds = service_->network_probe_packets_processed() / 400;
-        const auto elapsed = seconds % calibration_seconds_;
-        detail = std::to_wstring(progress.index) + L" / " + std::to_wstring(progress.count) +
-            Tr(L" rounds · ",L" 组 · ") + std::to_wstring(elapsed) + L" / " + std::to_wstring(calibration_seconds_) + Tr(L" s",L" 秒");
+      else if (progress.stage == 2) {
+        detail = std::to_wstring(progress.completed) + L" / " + std::to_wstring(progress.total);
+        estimate(0, 6 * (calibration_seconds_ + 5) + 5,
+            Tr(L"0–6 validation rounds, plus remaining analysis and report upload.", L"后续复核 0–6 组；另加剩余分析与报告回传。"));
+      } else if (connected_) {
+        if (progress.index && progress.count) {
+          detail = std::to_wstring(progress.index) + L" / " + std::to_wstring(progress.count) +
+              Tr(L" rounds",L" 组");
+          if (progress.round_pending && !progress.round_started)
+            detail += Tr(L" · waiting for the iPad",L" · 等待 iPad 开始");
+          else if (progress.round_pending && progress.remaining_seconds)
+            detail += Tr(L" · current round remaining ",L" · 本组剩余 ") +
+                std::to_wstring(progress.remaining_seconds) + Tr(L" s",L" 秒");
+          else if (progress.round_pending)
+            detail += Tr(L" · draining queued data",L" · 正在排空队列");
+          else detail += Tr(L" · preparing next round",L" · 正在准备下一组");
+        } else {
+          detail = Tr(L"Preparing the automatic test.", L"正在准备自动测试。");
+        }
+        if (progress.stage == 1) {
+          const unsigned completed_sampling = std::min(progress.completed_rounds, 4u);
+          const unsigned remaining_sampling = progress.round_pending ?
+              (progress.count - progress.index + 1) : (4 - completed_sampling);
+          const unsigned sampling_seconds = progress.round_pending ?
+              (progress.elapsed_seconds >= calibration_seconds_ + 5 ? 0 :
+               calibration_seconds_ + 5 - progress.elapsed_seconds) +
+                  (progress.count - progress.index) * (calibration_seconds_ + 5) :
+              remaining_sampling * (calibration_seconds_ + 5);
+          estimate(sampling_seconds, sampling_seconds + 6 * (calibration_seconds_ + 5) + 5,
+              Tr(L"sampling plus 0–6 future validation rounds; analysis and report upload extra.",
+                 L"含采样及后续复核 0–6 组；另加分析与报告回传。"));
+        } else if (progress.stage == 3) {
+          const unsigned completed_validation = progress.completed_rounds > 4 ?
+              progress.completed_rounds - 4 : 0;
+          const unsigned remaining_validation = progress.round_pending ?
+              (progress.count - progress.index + 1) :
+              (progress.count - std::min(completed_validation, progress.count));
+          const unsigned later_validation = progress.round_pending ? progress.count - progress.index : 0;
+          const unsigned validation_seconds = progress.round_pending ?
+              (progress.elapsed_seconds >= calibration_seconds_ + (later_validation ? 5 : 10) ? 0 :
+               calibration_seconds_ + (later_validation ? 5 : 10) - progress.elapsed_seconds) +
+                  later_validation * (calibration_seconds_ + 5) + (later_validation ? 5 : 0) :
+              remaining_validation * (calibration_seconds_ + 5) + (remaining_validation ? 5 : 0);
+          estimate(validation_seconds, validation_seconds,
+              Tr(L"known validation rounds, plus report upload.",L"已知数量的复核组，另加报告回传。"));
+        }
       } else detail = Tr(L"Connect the iPad; sampling and validation run automatically.", L"连接 iPad 后自动完成采样与复核。");
-      if (progress.stage < 4 && connected_) {
-        const unsigned count = progress.count ? progress.count : 10;
-        detail += L"\n" + Tr(L"Estimated traffic: ",L"预计传输：") +
-            std::to_wstring(count * calibration_seconds_ + (count - 1) * 5 + 10) +
-            Tr(L" s + analysis/upload",L" 秒，另加分析与回传");
-      }
       audio_label = Tr(L"Random data · 992 B · 400 packets/s · no audio", L"随机数据 · 992 字节 · 400 包/秒 · 不播放音频");
     } else if (running_ && network_probe_active_ && connected_) {
       const std::uint32_t processed = service_->network_probe_packets_processed();
@@ -1232,8 +1272,8 @@ class Application {
     const auto explanation = kind == kMusicTest ?
         Tr(L"The same excerpt plays in 8 rounds: Datagram/Reliable × fixed/adaptive, repeated in reverse. Each round is 120 seconds by default, with 5 seconds between rounds.",
            L"同一片段自动运行 8 组：Datagram／Reliable × 固定／自适应，再反序重复。默认每组 120 秒，组间间隔 5 秒。") :
-        kind == kNetworkProbe ? Tr(L"Calibration samples both transports, replays identical input, then validates recommendations twice. Existing transport comparisons remain available. No audio playback.",
-           L"环境校准采样两种传输，以同一轨迹比较预算，再对推荐参数复核两次。也可选择原传输对比测试。全程不播放音频。") :
+        kind == kNetworkProbe ? Tr(L"Automatic recommendation samples both transports, replays identical input, then validates recommendations twice. Existing transport comparisons remain available. No audio playback.",
+           L"自动测试并推荐参数会采样两种传输，以同一轨迹比较预算，再对推荐参数复核两次。也可选择原传输对比测试。全程不播放音频。") :
         Tr(L"Capture the PC's current audio output. The iPad report is returned automatically when the chosen duration ends.",
            L"采集电脑当前输出声音，指定时长结束后自动回传 iPad 诊断报告。");
     control(L"STATIC",explanation,SS_LEFT,0,20,18,430,64);
@@ -1249,17 +1289,17 @@ class Application {
     } else if (kind == kNetworkProbe) {
       control(L"STATIC",Tr(L"Purpose",L"测试用途"),SS_LEFT | SS_CENTERIMAGE,0,20,94,150,29);
       settings_purpose_ = control(WC_COMBOBOX,L"",CBS_DROPDOWNLIST | WS_TABSTOP,0,180,94,260,100);
-      SendMessageW(settings_purpose_,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(Tr(L"Environment calibration",L"当前环境校准").c_str()));
+      SendMessageW(settings_purpose_,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(Tr(L"Automatic test and parameter recommendations",L"自动测试并推荐参数").c_str()));
       SendMessageW(settings_purpose_,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(Tr(L"Transport comparison (12 rounds)",L"传输组合对比（12 组）").c_str()));
       SendMessageW(settings_purpose_,CB_SETCURSEL,calibration_selected_ ? 0 : 1,0);
-      control(L"STATIC",Tr(L"Calibration ceiling (ms)",L"校准总延迟上限（毫秒）"),SS_LEFT | SS_CENTERIMAGE,0,20,137,205,29);
+      control(L"STATIC",Tr(L"Maximum delay (ms)",L"最大延迟上限（毫秒）"),SS_LEFT | SS_CENTERIMAGE,0,20,137,205,29);
       settings_maximum_ = edit(std::to_wstring(calibration_maximum_),ES_NUMBER,240,137,100);
-      control(L"STATIC",Tr(L"Calibration round (seconds)",L"校准每组时长（秒）"),SS_LEFT | SS_CENTERIMAGE,0,20,180,205,29);
+      control(L"STATIC",Tr(L"Round duration (seconds)",L"每组时长（秒）"),SS_LEFT | SS_CENTERIMAGE,0,20,180,205,29);
       settings_duration_ = control(WC_COMBOBOX,L"",CBS_DROPDOWNLIST | WS_TABSTOP,0,240,180,100,120);
       for (const auto* seconds : {L"30",L"60",L"120"}) SendMessageW(settings_duration_,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(seconds));
       SendMessageW(settings_duration_,CB_SETCURSEL,calibration_seconds_ == 30 ? 0 : calibration_seconds_ == 60 ? 1 : 2,0);
-      control(L"STATIC",Tr(L"Calibration: 4 sampling + up to 6 validation rounds, with 5-second gaps. Default: up to 5 min 55 s, plus analysis and report transfer. Transport comparison: fixed 7 min 5 s.",
-          L"校准：4 组采样，最多 6 组复核，组间 5 秒。默认最多 5 分 55 秒，另加分析与回传；时长随组数变化。原传输对比固定 7 分 5 秒。"),SS_LEFT,0,20,223,430,62);
+      control(L"STATIC",Tr(L"Automatic recommendation: 4 sampling + up to 6 validation rounds, with 5-second gaps. Default: up to 5 min 55 s, plus analysis and report transfer. Transport comparison: fixed 7 min 5 s.",
+          L"自动测试并推荐参数：4 组采样，最多 6 组复核，组间 5 秒。默认最多 5 分 55 秒，另加分析与回传；时长随组数变化。原传输对比固定 7 分 5 秒。"),SS_LEFT,0,20,223,430,62);
     } else if (kind == kDiagnostics) {
       control(L"STATIC",Tr(L"Duration (seconds)",L"时长（秒）"),SS_LEFT | SS_CENTERIMAGE,0,20,94,150,29);
       settings_duration_ = edit(live_seconds_,ES_NUMBER,180,94,100);
@@ -1347,8 +1387,8 @@ class Application {
       }
     }
     if (!calibration_report_) {
-      MessageBoxW(hwnd_,Tr(L"No calibration report is available. Select Environment calibration in Network test settings.",
-          L"尚无校准报告，请在网络测试设置中选择当前环境校准。").c_str(),L"HearPort",MB_OK); return;
+      MessageBoxW(hwnd_,Tr(L"No recommendation report is available. Select Automatic test and parameter recommendations in Network test settings.",
+          L"尚无推荐参数报告，请在网络测试设置中选择“自动测试并推荐参数”。").c_str(),L"HearPort",MB_OK); return;
     }
     const auto& report = *calibration_report_;
     std::wostringstream text; text << std::fixed << std::setprecision(3);
@@ -1376,11 +1416,11 @@ class Application {
     }
     text << Tr(L"Sampling curve details (each configuration uses identical input within its transport):\r\n",L"采样曲线详情（各传输模式内，各配置使用相同输入）：\r\n");
     for (const auto& point : report.curve) { measurement(point); if (!point.valid) text << Tr(L"Insufficient valid data\r\n",L"有效数据不足\r\n"); }
-    text << Tr(L"\r\nApply profiles in the iPad's Settings > Environment calibration for the next connection.\r\nFinite observation only. Zero observed gaps do not guarantee future stability. Replay is conditional on sampling sender behavior; live validation uses new traffic, so differences may be network fluctuation. Source age includes estimated output reserve; audio DSP/render/acoustic latency was not measured. Source and output gaps are different axes and are not added.\r\n",
-        L"\r\n请在 iPad 设置→环境校准中选择档位，下次连接生效。\r\n仅为有限样本观测。零缺口不是未来保证。回放依赖采样时的发送行为；实际复核使用新流量，差异可能来自网络波动。源年龄含估计输出预留，未测音频 DSP、实际输出或声学延迟。源缺失与输出中断是两条时间轴，不能相加。\r\n");
+    text << Tr(L"\r\nApply profiles in the iPad's Settings > Automatic test and recommendations for the next connection.\r\nFinite observation only. Zero observed gaps do not guarantee future stability. Replay is conditional on sampling sender behavior; live validation uses new traffic, so differences may be network fluctuation. Source age includes estimated output reserve; audio DSP/render/acoustic latency was not measured. Source and output gaps are different axes and are not added.\r\n",
+        L"\r\n请在 iPad 设置→自动测试并推荐参数中选择档位，下次连接生效。\r\n仅为有限样本观测。零缺口不是未来保证。回放依赖采样时的发送行为；实际复核使用新流量，差异可能来自网络波动。源年龄含估计输出预留，未测音频 DSP、实际输出或声学延迟。源缺失与输出中断是两条时间轴，不能相加。\r\n");
     WNDCLASSEXW type{sizeof(type)}; type.lpfnWndProc = CalibrationResultsProc; type.hInstance = instance_;
     type.hCursor = LoadCursorW(nullptr,IDC_ARROW); type.lpszClassName = L"HearPortCalibrationResults"; RegisterClassExW(&type);
-    calibration_window_ = CreateWindowExW(0,type.lpszClassName,Tr(L"Environment calibration",L"环境校准结果").c_str(),
+    calibration_window_ = CreateWindowExW(0,type.lpszClassName,Tr(L"Automatic test and parameter recommendations",L"自动测试并推荐参数结果").c_str(),
         WS_OVERLAPPEDWINDOW, CW_USEDEFAULT,CW_USEDEFAULT,900,820,hwnd_,nullptr,instance_,this);
     if (!calibration_window_) return;
     const auto edit = CreateWindowExW(WS_EX_CLIENTEDGE,L"EDIT",text.str().c_str(),WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL,

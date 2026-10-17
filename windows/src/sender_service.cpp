@@ -392,10 +392,28 @@ CalibrationProgress SenderService::calibration_progress() const {
   CalibrationProgress message;
   message.stage = calibration_stage_.load();
   if (calibration_exchange_) {
-    message.index = calibration_exchange_->completed() + 1;
-    message.count = calibration_exchange_->total();
+    message.completed_rounds = calibration_exchange_->completed();
     message.completed = calibration_exchange_->analysis_completed();
     message.total = calibration_exchange_->analysis_total();
+    if (calibration_round_pending_ && calibration_display_round_) {
+      const auto& round = *calibration_display_round_;
+      message.round_pending = true;
+      message.index = round.phase == 0 ? round.index : round.index - 4;
+      message.count = calibration_exchange_->phase_total();
+      if (calibration_round_started_at_) {
+        const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::steady_clock::now() - *calibration_round_started_at_).count();
+        message.round_started = true;
+        message.elapsed_seconds = static_cast<unsigned>(std::max<std::int64_t>(elapsed, 0));
+        message.remaining_seconds = elapsed >= calibration_options_->seconds ? 0 :
+            calibration_options_->seconds - static_cast<unsigned>(std::max<std::int64_t>(elapsed, 0));
+      } else {
+        message.remaining_seconds = calibration_options_->seconds;
+      }
+    } else if (message.stage == 1 || message.stage == 3) {
+      message.count = calibration_exchange_->phase_total();
+      message.index = std::min(calibration_exchange_->phase_completed() + 1, message.count);
+    }
   }
   return message;
 }
@@ -524,6 +542,9 @@ void SenderService::CalibrationWorker(std::uint32_t stream_id) {
     std::lock_guard lock(calibration_mutex_);
     calibration_exchange_ = std::make_unique<CalibrationExchange>(stream_id, options,
         static_cast<std::uint16_t>(output_reserve_ms_.load()));
+    calibration_display_round_.reset();
+    calibration_round_started_at_.reset();
+    calibration_round_pending_ = false;
   }
   const auto close_timer = [](HANDLE handle) { CloseHandle(handle); };
   std::unique_ptr<void, decltype(close_timer)> timer(CreateWaitableTimerExW(nullptr, nullptr,
@@ -591,6 +612,11 @@ void SenderService::CalibrationWorker(std::uint32_t stream_id) {
     {
       std::lock_guard lock(calibration_mutex_);
       round = calibration_exchange_->NextRound(generation);
+      if (round) {
+        calibration_display_round_ = *round;
+        calibration_round_started_at_.reset();
+        calibration_round_pending_ = true;
+      }
     }
     if (!round) { LogDiagnostic("calibration_round_invalid"); finish(false); return; }
     calibration_stage_.store(round->phase == 0 ? 1 : 3);
@@ -613,9 +639,13 @@ void SenderService::CalibrationWorker(std::uint32_t stream_id) {
         reliable_lag_.Begin(stream_id,generation,Clock::now(),std::chrono::milliseconds(
             round->budget.maximum_ms - round->output_reserve_ms));
       }
-      calibration_round_active_.store(true);
     }
     const auto began = Clock::now();
+    {
+      std::lock_guard lock(calibration_mutex_);
+      calibration_round_started_at_ = began;
+    }
+    calibration_round_active_.store(true);
     LogDiagnostic("calibration_round_start round=" + std::to_string(round->index) + " phase=" + std::to_string(round->phase) +
         " transport=" + (round->reliable ? std::string("reliable_stream") : std::string("datagram")) +
         " target_ms=" + std::to_string(round->budget.target_ms) + " maximum_ms=" + std::to_string(round->budget.maximum_ms) +
@@ -658,6 +688,12 @@ void SenderService::CalibrationWorker(std::uint32_t stream_id) {
     }
     // Retain the current receiver and feedback during the bounded drain interval.
     if (!wait_until(Clock::now() + std::chrono::seconds(finished ? 10 : 5))) return;
+    {
+      std::lock_guard lock(calibration_mutex_);
+      calibration_round_pending_ = false;
+      calibration_display_round_.reset();
+      calibration_round_started_at_.reset();
+    }
   }
   finish(true);
 }
