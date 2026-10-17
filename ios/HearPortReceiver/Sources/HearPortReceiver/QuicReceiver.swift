@@ -19,8 +19,7 @@ public final class HearPortReceiver {
     private var lastReceivedSequence: UInt32?
     private var clockMapping = ClockMapping()
     private var observedRoundTrip: (at: UInt64, duration: UInt64)?
-    private var presentationEpoch: UInt64 = 0
-    private let presentationOutputGapFrames = AtomicUInt64()
+    private var connectionTimingEpoch: UInt64 = 0
     private var playoutController: PlayoutController?
     private var reliableSourceFloor: UInt64 = 0
     private var playoutAdaptive = true
@@ -100,17 +99,14 @@ public final class HearPortReceiver {
         return jitter?.stats
     }
 
-    func audioLinkSample(at now: UInt64 = DispatchTime.now().uptimeNanoseconds) -> AudioLinkSample {
+    func linkTimingSample(at now: UInt64 = DispatchTime.now().uptimeNanoseconds) -> LinkTimingSample {
         lock.lock(); defer { lock.unlock() }
-        let stats = jitter?.stats
         let rtt = observedRoundTrip.flatMap { observation -> Double? in
             guard now >= observation.at, now - observation.at <= 6_000_000_000 else { return nil }
             return Double(observation.duration) / 1_000_000
         }
-        return AudioLinkSample(epoch: presentationEpoch, time: Double(now) / 1_000_000_000,
-            received: stats?.insertedPackets ?? 0, missing: stats?.lostPackets ?? 0,
-            late: stats?.latePackets ?? 0, roundTripMilliseconds: rtt,
-            interrupted: isConcealing, outputGapFrames: presentationOutputGapFrames.load())
+        return LinkTimingSample(epoch: connectionTimingEpoch, time: Double(now) / 1_000_000_000,
+            roundTripMilliseconds: rtt, roundTripObservedAt: observedRoundTrip?.at)
     }
 
     public func recordRenderCallback(requestedFrames: Int,
@@ -165,7 +161,7 @@ public final class HearPortReceiver {
         session.resetForConnection()
         clockMapping = ClockMapping()
         observedRoundTrip = nil
-        presentationEpoch &+= 1
+        connectionTimingEpoch &+= 1
         playoutController = nil
         playoutBudget = nil
         timedPackets.removeAll(keepingCapacity: true)
@@ -199,7 +195,6 @@ public final class HearPortReceiver {
         let accepted = session.beginStream(streamID)
         if accepted {
             reliableSourceFloor = 0
-            presentationEpoch &+= 1
             playoutAdaptive = true; playoutMaximumCorrection = 0.05
             if let budget = playoutBudget {
                 playoutController = PlayoutController(budget: budget,
@@ -248,7 +243,6 @@ public final class HearPortReceiver {
             reliableSourceFloor = max(reliableSourceFloor, source)
         }
         let preserveOutput = playoutBudget != nil && renderRing.fillFrames > 0
-        presentationEpoch &+= 1
         jitter = JitterBuffer(streamID: streamID, targetPackets: jitterTargetPackets,
             maximumPackets: max(256, Int(ceil((playoutBudget?.maximumMilliseconds ?? 100) / 2.5))))
         timedPackets.removeAll(keepingCapacity: true)
@@ -305,7 +299,6 @@ public final class HearPortReceiver {
             lock.unlock(); return false
         }
         reliableSourceFloor = UInt64(round.firstSequence) * 120
-        presentationEpoch &+= 1
         timedPackets.removeAll(keepingCapacity: true)
         sourceAnchor = nil
         jitter = JitterBuffer(streamID: streamID, targetPackets: jitterTargetPackets,
@@ -621,9 +614,6 @@ public final class HearPortReceiver {
         guard frameCount > 0 else { return [] }
         let startedAt = DispatchTime.now().uptimeNanoseconds
         let output = renderRing.pop(frames: frameCount)
-        if output.renderedFrames < frameCount {
-            presentationOutputGapFrames.increment(by: UInt64(frameCount - output.renderedFrames))
-        }
         renderRequestFramesAtomic.store(UInt64(frameCount))
         renderStartedAtAtomic.storeReleasing(startedAt)
         realtimeMetrics.recordRenderBuffer(

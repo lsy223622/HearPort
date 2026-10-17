@@ -49,8 +49,8 @@ import SwiftUI
     @State private var calibrationRequestID: UUID?
     @State private var calibrationStartStatus: String?
     @State private var retainingConnection = false
-    @State private var qualityTracker = AudioLinkQualityTracker()
-    @State private var linkSample: AudioLinkSample?
+    @State private var qualityTracker = LinkStabilityTracker()
+    @State private var linkSample: LinkTimingSample?
     @State private var musicRound: MusicTestRound?
     @State private var testRunning = false
     @State private var roundStartedAt: TimeInterval = 0
@@ -170,15 +170,15 @@ import SwiftUI
         }
         .onChange(of: scenePhase) { phase in
             if phase == .background { control?.interruptCalibration() }
-            if phase != .active { qualityTracker = AudioLinkQualityTracker(); linkSample = nil }
+            if phase != .active { qualityTracker = LinkStabilityTracker(); linkSample = nil }
         }
         .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
             guard scenePhase == .active else { return }
-            if audioOutput != nil && !sendingReport && completedTestStatus == nil && !isConnecting {
-                let sample = receiver.audioLinkSample()
+            if connectionEstablished && control != nil && !sendingReport && completedTestStatus == nil && !isConnecting {
+                let sample = receiver.linkTimingSample()
                 linkSample = sample
                 qualityTracker.observe(sample)
-            } else { qualityTracker = AudioLinkQualityTracker(); linkSample = nil }
+            } else { qualityTracker = LinkStabilityTracker(); linkSample = nil }
             if musicRound != nil { roundElapsed = max(0, ProcessInfo.processInfo.systemUptime - roundStartedAt) }
         }
         .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.routeChangeNotification)) { _ in
@@ -458,12 +458,12 @@ import SwiftUI
                 if connectionEstablished && !isConnecting { Label("Identity verified", systemImage: "checkmark.shield") }
             }
             Section {
-                LabeledContent("Delivery quality") { Text(qualityTracker.quality.title).foregroundStyle(qualityTracker.quality.color) }
+                LabeledContent("Link stability") { Text(qualityTracker.quality.title).foregroundStyle(qualityTracker.quality.color) }
                 LabeledContent("Round-trip time", value: linkSample?.roundTripMilliseconds.map { String(format: "%.1f ms", $0) } ?? "—")
-                LabeledContent("Unavailable packets", value: Self.percentLabel(qualityTracker.missingRatio))
-                LabeledContent("Late packets", value: Self.percentLabel(qualityTracker.lateRatio))
-            } header: { Text("Recent audio delivery") } footer: {
-                Text("The indicator summarizes recent audio delivery, not Wi-Fi signal strength. Packet counts describe playout availability, not proven network loss. RTT is not end-to-end playback latency.")
+                LabeledContent("Delay variation", value: qualityTracker.variationMilliseconds.map { String(format: "%.1f ms", $0) } ?? "—")
+                LabeledContent("Probe samples", value: "\(qualityTracker.sampleCount)")
+            } header: { Text("Recent link timing") } footer: {
+                Text("Stability uses the absolute RTT variation of recent independent probes, including during silence. Variation is the P90–P10 difference over 12 seconds. Missing probe responses also lower stability. A steady high RTT can be stable; RTT is not end-to-end playback latency.")
             }
             Section("Active playback budget") {
                 LabeledContent("Normal target", value: "\(activeTargetLatencyMs) ms")
@@ -471,10 +471,6 @@ import SwiftUI
             }
         }
         .navigationTitle("Connection details").navigationBarTitleDisplayMode(.inline)
-    }
-
-    private static func percentLabel(_ ratio: Double?) -> String {
-        ratio.map { String(format: "%.2f%%", $0 * 100) } ?? "—"
     }
 
     private var connectionSetupView: some View {
@@ -680,7 +676,7 @@ import SwiftUI
         sendingReport = false; retainingConnection = false
         calibrationRequestID = nil; calibrationStartStatus = nil
         musicRound = nil; testRunning = false; currentComputerName = ""
-        qualityTracker = AudioLinkQualityTracker(); linkSample = nil
+        qualityTracker = LinkStabilityTracker(); linkSample = nil
         isConnecting = true; status = Self.localize("Searching network and USB…")
         connectionManager.setMaximumLatency(maximumLatencyMs)
         connectionManager.connect(manualHost: host.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -772,7 +768,7 @@ import SwiftUI
                 if features & ControlFeature.environmentCalibration != 0 {
                     calibrationRequestID = nil; calibrationStartStatus = nil
                 }
-                qualityTracker = AudioLinkQualityTracker(); linkSample = nil; musicRound = nil; testRunning = false
+                qualityTracker = LinkStabilityTracker(); linkSample = nil; musicRound = nil; testRunning = false
                 connectionEstablished = false; connectionError = nil; completedTestStatus = nil
                 activeAudioMode = audioMode; activeBufferTargetPackets = normalizedJitter.targetPackets
                 activeTargetLatencyMs = target; activeMaximumLatencyMs = maximum
@@ -981,7 +977,7 @@ import SwiftUI
         connectionEstablished = false
         completedTestStatus = nil
         sendingReport = false; retainingConnection = false; musicRound = nil; testRunning = false
-        qualityTracker = AudioLinkQualityTracker(); linkSample = nil
+        qualityTracker = LinkStabilityTracker(); linkSample = nil
         currentComputerName = ""
         currentComputerIdentity = ""; calibrationRequestID = nil; calibrationStartStatus = nil
         control?.cancel()

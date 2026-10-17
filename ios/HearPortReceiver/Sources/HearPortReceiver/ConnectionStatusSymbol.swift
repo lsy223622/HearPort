@@ -4,7 +4,7 @@ import SwiftUI
 struct ConnectionStatusSymbol: View {
     let connected: Bool
     let path: ConnectionPath
-    let quality: AudioLinkQuality
+    let quality: LinkStability
     let recovering: Bool
     let connecting: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -98,11 +98,11 @@ private struct ConnectionMark: Shape {
     }
 }
 
-extension AudioLinkQuality {
+extension LinkStability {
     var title: LocalizedStringKey {
         switch self {
         case .unknown: return "Assessing link"
-        case .stable: return "Stable"
+        case .stable: return "Stable timing"
         case .variable: return "Fluctuating"
         case .poor: return "Unstable"
         }
