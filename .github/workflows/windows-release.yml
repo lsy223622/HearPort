@@ -1,0 +1,85 @@
+name: Windows Release package
+
+on:
+  push:
+    paths:
+      - "CMakeLists.txt"
+      - "cmake/**"
+      - "core/**"
+      - "security/**"
+      - "windows/**"
+      - "scripts/**"
+      - "tests/test_release_package.py"
+      - "THIRD_PARTY_NOTICES.md"
+      - "LICENSE"
+      - ".github/workflows/windows-release.yml"
+  pull_request:
+    paths:
+      - "CMakeLists.txt"
+      - "cmake/**"
+      - "core/**"
+      - "security/**"
+      - "windows/**"
+      - "scripts/**"
+      - "tests/test_release_package.py"
+      - "THIRD_PARTY_NOTICES.md"
+      - "LICENSE"
+      - ".github/workflows/windows-release.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-release:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    env:
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/out/vcpkg-cache
+      VCPKG_DISABLE_METRICS: "1"
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Check out pinned vcpkg
+        uses: actions/checkout@v5
+        with:
+          repository: microsoft/vcpkg
+          ref: 5f96cd15fd745122cf27e0524606d6c1efc5fd07
+          path: out/vcpkg
+      - uses: actions/cache@v4
+        with:
+          path: out/vcpkg-cache
+          key: windows-2022-msquic-5f96cd15-x64
+      - name: Build, test and package Release
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $vswhere = "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe"
+          $visualStudio = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          & "$visualStudio/Common7/Tools/Launch-VsDevShell.ps1" -Arch amd64 -HostArch amd64 -SkipAutomaticLocation
+          New-Item -ItemType Directory -Force $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+          & ./out/vcpkg/bootstrap-vcpkg.bat -disableMetrics
+          & ./out/vcpkg/vcpkg.exe install msquic:x64-windows
+          $vcpkg = (Resolve-Path out/vcpkg).Path
+          cmake -S . -B out/build/windows-release -G 'Visual Studio 17 2022' -A x64 `
+            "-DCMAKE_TOOLCHAIN_FILE=$vcpkg/scripts/buildsystems/vcpkg.cmake" `
+            "-DHEARPORT_MSQUIC_LIBRARY=$vcpkg/installed/x64-windows/lib/msquic.lib" `
+            "-DHEARPORT_MSQUIC_DLL=$vcpkg/installed/x64-windows/bin/msquic.dll"
+          cmake --build out/build/windows-release --config Release --parallel 4
+          ctest --test-dir out/build/windows-release -C Release --output-on-failure
+          python -m unittest tests.test_release_package tests.reference.test_validation_matrix -v
+          python scripts/collect_notices.py --output-dir out/release-notices `
+            --msquic-copyright "$vcpkg/installed/x64-windows/share/msquic/copyright"
+          python scripts/package_release.py --build-dir out/build/windows-release --output-dir out/release `
+            --notices-dir out/release-notices --runtime-dir "$env:VCToolsRedistDir/x64/Microsoft.VC143.CRT"
+      - name: Upload Windows release files
+        uses: actions/upload-artifact@v6
+        with:
+          name: HearPort-windows-release
+          if-no-files-found: error
+          path: out/release/*

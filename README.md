@@ -58,7 +58,17 @@ separately. The short release checklist records distribution checks still to
 complete: [`docs/validation-matrix.md`](docs/validation-matrix.md) and
 [`docs/release-checklist.md`](docs/release-checklist.md).
 
-## Building release files
+## Release builds in GitHub Actions
+
+The `Windows Release package` workflow builds and tests Release on Windows,
+collects dependency notices and produces `HearPort-windows-release` containing
+the portable ZIP, matching source ZIP and SHA-256 manifest. Its vcpkg revision
+is pinned. The `iOS receiver package tests` workflow builds and tests the iPad
+app and uploads `HearPort-unsigned-ipa`. Run both workflows at the same commit
+when preparing a release; download these artifacts as the distribution files.
+Both workflows also support manual runs from the Actions page.
+
+## Local development verification
 
 Use Python 3.11+, Rust/Cargo, CMake and a VS 2022 x64 developer shell.
 Install `msquic:x64-windows` in vcpkg and set `VCPKG_ROOT` to that checkout.
@@ -77,7 +87,7 @@ python scripts/package_release.py --build-dir out/build/windows-release --output
   --notices-dir out/release-notices --runtime-dir "$env:VCToolsRedistDir/x64/Microsoft.VC143.CRT"
 ```
 
-Commit the release sources before packaging. Run the existing `iOS receiver
+Local packages are for development verification. Commit the sources before packaging. Run the existing `iOS receiver
 package tests` GitHub Actions workflow at that commit to create the unsigned
 IPA with its bundled license notices. Add `--ipa <path-to-ipa>` to the package
 command to include that exact commit's IPA in the release output. The script
