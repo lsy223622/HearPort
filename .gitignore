@@ -5,6 +5,8 @@
 /.vs/
 /.swiftpm/
 /security/spake2-provider/target/
+/ios/HearPortReceiver/Vendor/opus/
+/ios/HearPortApp/ThirdParty/opus/
 *.user
 *.suo
 __pycache__/

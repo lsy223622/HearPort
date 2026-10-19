@@ -58,6 +58,10 @@ separately. The short release checklist records distribution checks still to
 complete: [`docs/validation-matrix.md`](docs/validation-matrix.md) and
 [`docs/release-checklist.md`](docs/release-checklist.md).
 
+The diagnostic panel also provides synthetic compression-load comparisons and
+real PCM/Opus music comparisons. The matrices, timings and paired analysis are
+documented in [`docs/compression-tests.md`](docs/compression-tests.md).
+
 ## Release builds in GitHub Actions
 
 The `Windows Release package` workflow builds and tests Release on Windows,
@@ -75,6 +79,7 @@ Install `msquic:x64-windows` in vcpkg and set `VCPKG_ROOT` to that checkout.
 The separate build directory selects Release MsQuic explicitly:
 
 ```powershell
+python scripts/fetch_opus.py
 cmake -S . -B out/build/windows-release -G "Visual Studio 17 2022" -A x64 `
   "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
   "-DHEARPORT_MSQUIC_LIBRARY=$env:VCPKG_ROOT/installed/x64-windows/lib/msquic.lib" `

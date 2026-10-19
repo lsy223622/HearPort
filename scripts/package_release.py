@@ -56,8 +56,8 @@ def sha256(path):
 
 
 def validate_notices(directory):
-    required = ("THIRD_PARTY_NOTICES.md", "rust-dependencies.md",
-                "licenses/hearport/LICENSE", "licenses/msquic/copyright")
+    required = ("THIRD_PARTY_NOTICES.md", "rust-dependencies.md", "opus-dependencies.md",
+                "licenses/hearport/LICENSE", "licenses/msquic/copyright", "licenses/opus/COPYING")
     if any(not (directory / name).is_file() for name in required):
         raise ValueError("Missing generated Windows dependency license notices")
     inventory = (directory / "rust-dependencies.md").read_text(encoding="utf-8")

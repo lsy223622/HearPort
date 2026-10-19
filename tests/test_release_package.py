@@ -7,6 +7,18 @@ from scripts.package_release import collect_runtime, validate_notices
 
 
 class ReleasePackageTests(unittest.TestCase):
+    def test_opus_license_is_required_for_static_linked_release(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in ("THIRD_PARTY_NOTICES.md", "rust-dependencies.md",
+                         "licenses/hearport/LICENSE", "licenses/msquic/copyright",
+                         "licenses/rust/example/LICENSE"):
+                file = root / name
+                file.parent.mkdir(parents=True, exist_ok=True)
+                file.write_text("x86_64-pc-windows-msvc `licenses/rust/example/LICENSE`")
+            with self.assertRaisesRegex(ValueError, "Missing"):
+                validate_notices(root)
+
     def test_unrelated_folder_cannot_substitute_for_dependency_notices(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

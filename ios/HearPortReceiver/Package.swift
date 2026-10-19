@@ -16,10 +16,24 @@ let package = Package(
             path: "Sources/HearPortAtomics",
             publicHeadersPath: "include"
         ),
-        .target(name: "HearPortReceiver", dependencies: ["HearPortAtomics"]),
+        .target(
+            name: "HearPortOpusBridge",
+            path: "Sources/HearPortOpusBridge",
+            publicHeadersPath: "include",
+            cSettings: [
+                .headerSearchPath("../../Vendor/opus/include")
+            ],
+            linkerSettings: [
+                .linkedLibrary("opus")
+            ]
+        ),
+        .target(
+            name: "HearPortReceiver",
+            dependencies: ["HearPortAtomics", "HearPortOpusBridge"]
+        ),
         .testTarget(
             name: "HearPortReceiverTests",
-            dependencies: ["HearPortReceiver"]
+            dependencies: ["HearPortReceiver", "HearPortOpusBridge"]
         )
     ]
 )

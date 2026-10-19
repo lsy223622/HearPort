@@ -36,8 +36,10 @@ targets:
         LIBRARY_SEARCH_PATHS:
           - "$(inherited)"
           - "$(SRCROOT)/ThirdParty"
+          - "$(SRCROOT)/ThirdParty/opus/lib"
         OTHER_LDFLAGS:
           - "$(inherited)"
+          - "-lopus"
           - "-force_load"
           - "$(SRCROOT)/ThirdParty/libhearport_spake2_provider.a"
         IPHONEOS_DEPLOYMENT_TARGET: 16.0

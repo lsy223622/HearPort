@@ -1,3 +1,5 @@
+include(HearPortOpus)
+
 add_library(hearport_windows_audio STATIC
   src/packetizer.cpp
   src/pcm_normalizer.cpp
@@ -38,7 +40,7 @@ add_library(hearport_windows_platform STATIC
   src/wasapi_capture.cpp
 )
 target_include_directories(hearport_windows_platform PUBLIC include)
-target_link_libraries(hearport_windows_platform PUBLIC hearport_windows_audio hearport_security)
+target_link_libraries(hearport_windows_platform PUBLIC hearport_windows_audio hearport_security hearport_opus_bridge)
 target_compile_features(hearport_windows_platform PUBLIC cxx_std_20)
 
 if(HEARPORT_MSQUIC_INCLUDE_DIR AND HEARPORT_MSQUIC_LIBRARY)
@@ -92,6 +94,9 @@ if(HEARPORT_MSQUIC_INCLUDE_DIR AND HEARPORT_MSQUIC_LIBRARY)
 endif()
 
 if(BUILD_TESTING)
+  add_executable(hearport_opus_codec_tests tests/opus_codec_tests.cpp)
+  target_link_libraries(hearport_opus_codec_tests PRIVATE hearport_opus_bridge)
+  add_test(NAME hearport_opus_codec_tests COMMAND hearport_opus_codec_tests)
   add_executable(hearport_shared_pairing_tests tests/shared_pairing_tests.cpp)
   target_link_libraries(hearport_shared_pairing_tests PRIVATE hearport_windows_platform)
   add_test(NAME hearport_shared_pairing_tests COMMAND hearport_shared_pairing_tests)

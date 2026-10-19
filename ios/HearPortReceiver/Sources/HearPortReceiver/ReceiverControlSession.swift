@@ -119,7 +119,10 @@ public final class ReceiverControlSession {
         }
         self.transport.onAudioDatagram = { [weak self] data in
             guard let self else { return }
-            if (self.peerFeatures & ControlFeature.coordinatedAudio) != 0 {
+            if self.musicTestRound?.isCompressionTest == true {
+                guard let record = try? TimedAudioRecord(encoded: data) else { return }
+                self.receiver.receiveMusicRecord(record)
+            } else if (self.peerFeatures & ControlFeature.coordinatedAudio) != 0 {
                 guard let record = try? TimedAudioRecord(encoded: data) else { return }
                 _ = self.receiver.receiveTimedRecord(record)
             } else {
@@ -145,6 +148,9 @@ public final class ReceiverControlSession {
         }
         self.transport.onStateChange = { [weak self] state in
             guard let self else { return }
+            if state == .closed || state == .failed {
+                self.receiver.endMusicRound(reason: "transport_\(state)")
+            }
             self.diagnostics.log(
                 .info,
                 category: .transport,
@@ -366,6 +372,7 @@ public final class ReceiverControlSession {
 
     public func cancel() {
         ending = false
+        receiver.endMusicRound(reason: "session_cancelled")
         calibration?.cancel()
         stopClockUpdates()
         diagnostics.log(
@@ -391,6 +398,7 @@ public final class ReceiverControlSession {
         let peerID = credential?.peerID ?? Data()
         let features = ControlFeature.diagnosticsUpload | ControlFeature.networkProbe |
             ControlFeature.networkProbeRepeat | ControlFeature.coordinatedAudio | ControlFeature.musicTest | ControlFeature.environmentCalibration |
+            ControlFeature.compressionMusic |
             (audioMode == .reliable ? ControlFeature.reliableAudio : 0)
         let envelope = ControlEnvelope(.connectRequest(authMode: mode,
                                                        peerID: peerID,
@@ -801,6 +809,11 @@ public final class ReceiverControlSession {
                     throw ControlMessageError.invalidMessage
                 }
                 let round = try MusicTestRound(encoded: manifest)
+                if round.isCompressionTest && (peerFeatures & ControlFeature.compressionMusic) == 0 {
+                    transport.cancel()
+                    onError?("Compression music tests need the current HearPort Windows app. Update it and retry.")
+                    return
+                }
                 guard receiver.beginMusicRound(streamID: streamID, round: round) else {
                     throw ControlMessageError.invalidMessage
                 }
@@ -832,7 +845,8 @@ public final class ReceiverControlSession {
                 durationSeconds: durationSeconds,
                 networkProbe: isNetworkProbe,
                 networkProbeRepeat: isNetworkProbe &&
-                    (peerFeatures & ControlFeature.networkProbeRepeat) != 0
+                    (peerFeatures & ControlFeature.networkProbeRepeat) != 0,
+                compressionMusic: isMusicTest
             )
             activeDebugSessionID = sessionID
             activeDebugStreamID = streamID
@@ -853,6 +867,8 @@ public final class ReceiverControlSession {
             }
             activeDebugStreamID = nil
             debugEndReason = reason
+            receiver.endMusicRound(reason: "diagnostics_end")
+            _ = diagnostics.flushAsync(timeout: 2.0)
             if reason != 1 { calibration?.cancel() }
             onDiagnosticReportSending?()
             let endReason = reason == 1 ? "duration_expired" : "sender_reason_\(reason)"

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Collect Rust and MsQuic license notices for a HearPort release bundle."""
+"""Collect third-party dependency licenses for a HearPort release bundle."""
 
 from __future__ import annotations
 
@@ -15,6 +15,10 @@ from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PROVIDER_MANIFEST = PROJECT_ROOT / "security" / "spake2-provider" / "Cargo.toml"
+OPUS_COPYING = PROJECT_ROOT / "ios" / "HearPortReceiver" / "Vendor" / "opus" / "COPYING"
+OPUS_VERSION = "1.6.1"
+OPUS_URL = "https://downloads.xiph.org/releases/opus/opus-1.6.1.tar.gz"
+OPUS_SHA256 = "6ffcb593207be92584df15b32466ed64bbec99109f007c82205f0194572411a1"
 RELEASE_TARGET = "x86_64-pc-windows-msvc"
 LICENSE_PREFIXES = ("license", "copying", "notice")
 
@@ -159,6 +163,10 @@ def collect(
     """Write a self-contained notice bundle to ``output_dir``."""
     if not PROVIDER_MANIFEST.is_file():
         raise NoticeCollectionError(f"Provider manifest not found: {PROVIDER_MANIFEST}")
+    if not OPUS_COPYING.is_file():
+        raise NoticeCollectionError(
+            f"Opus license not found: {OPUS_COPYING}; run scripts/fetch_opus.py first"
+        )
     if msquic_copyright is not None and not msquic_copyright.is_file():
         raise NoticeCollectionError("MsQuic copyright file not found")
 
@@ -241,10 +249,13 @@ def collect(
     shutil.copyfile(summary, output_dir / "THIRD_PARTY_NOTICES.md")
     project_license_copy = output_dir / "licenses" / "hearport" / "LICENSE"
     msquic_copy = output_dir / "licenses" / "msquic" / "copyright"
+    opus_copy = output_dir / "licenses" / "opus" / "COPYING"
     project_license_copy.parent.mkdir(parents=True, exist_ok=True)
+    opus_copy.parent.mkdir(parents=True, exist_ok=True)
     if msquic_copyright is not None:
         msquic_copy.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(project_license, project_license_copy)
+    shutil.copyfile(OPUS_COPYING, opus_copy)
     if msquic_copyright is not None:
         shutil.copyfile(msquic_copyright, msquic_copy)
     for destinations in package_files.values():
@@ -254,6 +265,20 @@ def collect(
             shutil.copyfile(source, destination)
     (output_dir / "rust-dependencies.md").write_text(
         "\n".join(markdown), encoding="utf-8", newline="\n"
+    )
+    (output_dir / "opus-dependencies.md").write_text(
+        "\n".join(
+            [
+                "# Opus dependency inventory",
+                "",
+                "| Dependency | Version | Source archive | SHA-256 | License |",
+                "|---|---:|---|---|---|",
+                f"| Opus | `{OPUS_VERSION}` | `{OPUS_URL}` | `{OPUS_SHA256}` | `licenses/opus/COPYING` |",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+        newline="\n",
     )
 
 

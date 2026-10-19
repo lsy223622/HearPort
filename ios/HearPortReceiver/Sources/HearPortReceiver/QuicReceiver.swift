@@ -10,6 +10,7 @@ public final class HearPortReceiver {
     private var jitter: JitterBuffer?
     private let renderRing: RenderRingBuffer
     private let lock = NSLock()
+    private let compressionAdmissionLock = NSLock()
     private let jitterFillFramesAtomic = AtomicUInt64()
     private let renderActiveAtomic = AtomicUInt64()
     private let pumpQueue = DispatchQueue(label: "com.hearport.receiver.pump", qos: .userInitiated)
@@ -22,6 +23,10 @@ public final class HearPortReceiver {
     private var connectionTimingEpoch: UInt64 = 0
     private var playoutController: PlayoutController?
     private var reliableSourceFloor: UInt64 = 0
+    private var compressionMusicDecoder: CompressionMusicDecoder?
+    private var compressionMusicRound: MusicTestRound?
+    private var compressionSourceFramesPrepared = 0
+    private var compressionExpiredFramesAtStart: UInt64 = 0
     private var playoutAdaptive = true
     private var playoutMaximumCorrection = 0.05
     private var timedPackets: [UInt32: (record: TimedAudioRecord, capturedAt: UInt64, uncertainty: UInt64)] = [:]
@@ -157,6 +162,7 @@ public final class HearPortReceiver {
     }
 
     public func resetForConnection() {
+        endMusicRound(reason: "connection_reset")
         lock.lock()
         session.resetForConnection()
         clockMapping = ClockMapping()
@@ -191,6 +197,7 @@ public final class HearPortReceiver {
 
     @discardableResult
     public func beginStream(_ streamID: UInt32) -> Bool {
+        endMusicRound(reason: "stream_replaced")
         lock.lock()
         let accepted = session.beginStream(streamID)
         if accepted {
@@ -298,7 +305,42 @@ public final class HearPortReceiver {
         guard session.activeStreamID == streamID, let budget = playoutBudget else {
             lock.unlock(); return false
         }
+        lock.unlock()
+        endMusicRound(reason: "next_round")
+
+        let newDecoder: CompressionMusicDecoder?
+        if round.isCompressionTest {
+            do {
+                newDecoder = try CompressionMusicDecoder(round: round, streamID: streamID,
+                    budget: budget, diagnostics: diagnostics,
+                    currentTargetMilliseconds: { [weak self] in
+                        self?.compressionDecodeTargetMilliseconds ?? budget.targetMilliseconds
+                    },
+                    recordSummary: { [weak self] fields in
+                        self?.debugSessionDiagnostics.recordCompressionSummary(fields: fields)
+                    },
+                    onDecoded: { [weak self] record in
+                        self?.receiveDecodedMusicRecord(record, streamID: streamID,
+                                                        generation: round.generation) ?? false
+                    })
+            } catch {
+                diagnostics.log(.error, category: .audio, message: "compression_decoder_create_failed",
+                    fields: ["event": "compression_decoder_create_failed",
+                             "round": "\(round.index)", "error": "\(error)"])
+                return false
+            }
+        } else {
+            newDecoder = nil
+        }
+
+        lock.lock()
+        guard session.activeStreamID == streamID, playoutBudget != nil else {
+            lock.unlock()
+            newDecoder?.finish(reason: "round_rejected")
+            return false
+        }
         reliableSourceFloor = UInt64(round.firstSequence) * 120
+        compressionSourceFramesPrepared = 0
         timedPackets.removeAll(keepingCapacity: true)
         sourceAnchor = nil
         jitter = JitterBuffer(streamID: streamID, targetPackets: jitterTargetPackets,
@@ -311,10 +353,69 @@ public final class HearPortReceiver {
         concealingAtomic.store(0); dynamicCorrectionAtomic.store(Double(0).bitPattern)
         renderActiveAtomic.store(0); jitterFillFramesAtomic.store(0)
         renderRing.requestReset()
+        compressionExpiredFramesAtStart = renderRing.expiredFrames
         lifecycle.enterSilentRebuffer(); session.enterSilentRebuffer()
         lastReceivedSequence = nil; loggedFirstAudioDatagram = false
+        compressionMusicDecoder = newDecoder
+        compressionMusicRound = round.isCompressionTest ? round : nil
         lock.unlock()
         return true
+    }
+
+    func receiveMusicRecord(_ record: TimedAudioRecord,
+                            receivedAt: UInt64 = DispatchTime.now().uptimeNanoseconds) {
+        lock.lock()
+        guard compressionMusicRound?.version == 4, let decoder = compressionMusicDecoder else {
+            lock.unlock(); return
+        }
+        lock.unlock()
+        let mapped = mappedCapture(record, at: receivedAt)
+        decoder.receive(record, mappedCapturedAt: mapped?.0,
+                        uncertainty: mapped?.1 ?? .max, receivedAt: receivedAt)
+    }
+
+    private func receiveDecodedMusicRecord(_ record: TimedAudioRecord,
+                                           streamID: UInt32,
+                                           generation: UInt32) -> Bool {
+        compressionAdmissionLock.lock()
+        defer { compressionAdmissionLock.unlock() }
+        lock.lock()
+        let isCurrentRound = compressionMusicRound?.generation == generation &&
+            session.activeStreamID == streamID
+        lock.unlock()
+        guard isCurrentRound else { return false }
+        return receiveTimedRecord(record) == .accepted
+    }
+
+    private var compressionDecodeTargetMilliseconds: Double {
+        lock.lock()
+        defer { lock.unlock() }
+        return playoutController?.targetMilliseconds ?? playoutBudget?.targetMilliseconds ?? 0
+    }
+
+    func endMusicRound(reason: String = "round_end") {
+        compressionAdmissionLock.lock()
+        lock.lock()
+        let decoder = compressionMusicDecoder
+        let round = compressionMusicRound
+        let sourceFramesPrepared = compressionSourceFramesPrepared
+        let expiredFrames = max(0, Int(clamping: renderRing.expiredFrames &- compressionExpiredFramesAtStart))
+        let firstSourceFrame = round.map { UInt64($0.firstSequence) * 120 } ?? 0
+        let playedSourceEnd = renderRing.lastSourceFrame
+        let playoutSourceFrames: Int
+        if let playedSourceEnd, playedSourceEnd >= firstSourceFrame, let round {
+            playoutSourceFrames = Int(min(UInt64(round.seconds * 48_000), playedSourceEnd - firstSourceFrame))
+        } else {
+            playoutSourceFrames = 0
+        }
+        compressionMusicDecoder = nil
+        compressionMusicRound = nil
+        compressionSourceFramesPrepared = 0
+        lock.unlock()
+        compressionAdmissionLock.unlock()
+        decoder?.finish(reason: reason, sourceFramesPrepared: sourceFramesPrepared,
+                        playoutExpiredOutputFrames: expiredFrames,
+                        playoutSourceFrames: playoutSourceFrames)
     }
 
     @discardableResult
@@ -762,6 +863,15 @@ public final class HearPortReceiver {
                 // Uniform source labels can be newer than a splice's oldest contributing sample.
                 let spliceMargin = UInt64(abs(Int(sourceEnd - position) - samples.count / 2)) * 1_000_000_000 / 48_000
                 renderDeadline = renderDeadline > spliceMargin ? renderDeadline - spliceMargin : 0
+                if let round = compressionMusicRound {
+                    let roundStart = UInt64(round.firstSequence) * 120
+                    let roundEnd = roundStart + UInt64(round.seconds * 48_000)
+                    let clippedStart = max(position, roundStart)
+                    let clippedEnd = min(sourceEnd, roundEnd)
+                    if clippedEnd > clippedStart {
+                        compressionSourceFramesPrepared += Int(clippedEnd - clippedStart)
+                    }
+                }
                 concealingAtomic.store(0)
                 renderRing.pushTimed(concealment.accept(samples), sourceBegin: position,
                                       sourceEnd: sourceEnd, capturedAt: captured, deadline: renderDeadline)
@@ -943,6 +1053,7 @@ public final class HearPortQuicTransport {
     public var onAudioDatagram: DataHandler?
     public var audioProgressTiming: (() -> AudioProgressTiming?)?
     public var onProbePacket: (@Sendable (Data, UInt64, Int, Int) -> Void)?
+    public var onMusicRoundEnded: ((UInt32) -> Void)?
     public var onProbeTick: (@Sendable (UInt64) -> Void)?
     public var onProbeHeartbeat: (@Sendable (UInt64, UInt64) -> Void)?
     public var onReliableAudioGeneration: ((UInt32, UInt32) -> Bool)?
@@ -962,6 +1073,7 @@ public final class HearPortQuicTransport {
     private var networkProbe = false
     private var musicTest = false
     private var musicReliable = false
+    private var musicFramed = false
     private var musicGeneration: UInt32 = 0
     private var probeTimer: DispatchSourceTimer?
     private var probeHeartbeatScheduledAt: UInt64 = 0
@@ -1143,7 +1255,7 @@ public final class HearPortQuicTransport {
                 connection.cancel()
                 return
             }
-            if self.networkProbe {
+            if self.networkProbe || (self.musicTest && self.musicFramed) {
                 self.receiveProbe(on: connection,
                                   records: ReliableProbeRecords(expectedStreamID: streamID),
                                   connectionGroup: connectionGroup)
@@ -1229,7 +1341,7 @@ public final class HearPortQuicTransport {
         reliableAccepted = false
         coordinatedAudio = false
         networkProbe = false
-        musicTest = false; musicReliable = false; musicGeneration = 0
+        musicTest = false; musicReliable = false; musicFramed = false; musicGeneration = 0
         controlStream?.cancel()
         group?.cancel()
         controlStream = nil
@@ -1256,6 +1368,7 @@ public final class HearPortQuicTransport {
         audioStream?.cancel(); audioStream = nil
         progressTimer?.cancel(); progressTimer = nil; progressInFlight = false
         musicReliable = round.reliable
+        musicFramed = round.isCompressionTest
         musicGeneration = round.generation
         audioGeneration = 0
     }
@@ -1322,21 +1435,33 @@ public final class HearPortQuicTransport {
                    SequenceNumber.isBefore(generation, self.musicGeneration) {
                     stream.cancel(); return
                 }
+                if self.musicTest, self.musicFramed, let generation = records.generation,
+                   generation != self.musicGeneration {
+                    stream.cancel(); return
+                }
                 if let generation = records.generation, (self.audioGeneration == 0 || SequenceNumber.isBefore(self.audioGeneration, generation) ||
                     (self.audioGeneration == generation && self.audioStream == nil)) {
                     self.audioStream?.cancel()
                     self.audioStream = stream
                     self.audioGeneration = generation
+                    if self.musicTest && self.musicFramed { self.startProgressTimer() }
                 }
                 guard self.audioStream === stream || records.generation == nil else {
                     stream.cancel()
                     return
                 }
                 for packet in packets {
-                    self.onProbePacket?(packet, receivedAt, data?.count ?? 0, packets.count)
+                    if self.musicTest && self.musicFramed {
+                        self.onAudioDatagram?(packet)
+                    } else {
+                        self.onProbePacket?(packet, receivedAt, data?.count ?? 0, packets.count)
+                    }
                 }
                 if isComplete || error != nil {
                     try records.finish()
+                    if self.musicTest && self.musicFramed, let generation = records.generation {
+                        self.onMusicRoundEnded?(generation)
+                    }
                     if self.audioStream === stream { self.audioStream = nil }
                     stream.cancel()
                     return

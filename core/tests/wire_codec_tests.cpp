@@ -52,5 +52,18 @@ int main() {
   auto broken = timestamped;
   broken[7] = std::byte{0};
   assert(!hearport::wire::DecodeTimedAudioRecord(broken));
+  timed.kind = static_cast<hearport::wire::AudioRecordKind>(5);
+  timed.frame_count = 480;
+  timed.payload.assign(320, std::byte{0x44});
+  const auto opus = hearport::wire::EncodeTimedAudioRecord(timed);
+  assert(opus.size() == 352);
+  assert(hearport::wire::DecodeTimedAudioRecord(opus)->frame_count == 480);
+  auto invalid_opus = opus;
+  invalid_opus[13] = std::byte{121};
+  assert(!hearport::wire::DecodeTimedAudioRecord(invalid_opus));
+  timed.kind = static_cast<hearport::wire::AudioRecordKind>(6);
+  timed.frame_count = 120;
+  timed.payload.assign(480, std::byte{0x33});
+  assert(hearport::wire::DecodeTimedAudioRecord(hearport::wire::EncodeTimedAudioRecord(timed)));
   return 0;
 }

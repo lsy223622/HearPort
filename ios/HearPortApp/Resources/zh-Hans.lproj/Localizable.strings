@@ -19,6 +19,13 @@
 "Network test running" = "正在进行网络测试";
 "Music test running" = "正在进行音乐测试";
 "Music test %d/8 · %@ · %@" = "音乐测试 %d/8 · %@ · %@";
+"Compression music tests need the current HearPort Windows app. Update it and retry." = "压缩音乐测试需要最新版 HearPort Windows 应用，请更新后重试。";
+"Compression test · %d / %d" = "压缩测试 · %d / %d";
+"Compression %d/%d · repeat %d/2 · %@ · %@ · %@" = "压缩测试 %d/%d · 第 %d/2 次 · %@ · %@ · %@";
+"Round remaining %.0f s" = "本组剩余 %.0f 秒";
+"Float PCM" = "浮点 PCM";
+"PCM16" = "PCM16";
+"Opus · %d kbps" = "Opus · %d kbps";
 "Adaptive" = "自适应";
 "Fixed" = "固定";
 "Audio output unavailable" = "音频输出不可用";

@@ -93,7 +93,7 @@ final class ReceiverCoreTests: XCTestCase {
     }
 
     func testNetworkProbeDurationRoundTrips() throws {
-        for seconds in [UInt32(610), 3600] {
+        for seconds in [UInt32(610), 3600, 86_400] {
             let message = ControlEnvelope(.diagnosticsStart(
                 sessionID: Data(repeating: 0x11, count: 16), streamID: 7,
                 durationSeconds: seconds
@@ -102,7 +102,7 @@ final class ReceiverCoreTests: XCTestCase {
         }
         let excessive = ControlEnvelope(.diagnosticsStart(
             sessionID: Data(repeating: 0x11, count: 16), streamID: 7,
-            durationSeconds: 3601
+            durationSeconds: 86_401
         ))
         XCTAssertThrowsError(try excessive.encoded())
     }

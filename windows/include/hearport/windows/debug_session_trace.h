@@ -33,7 +33,7 @@ class DebugSessionTrace {
 
   explicit DebugSessionTrace(std::size_t capacity = kMaximumPackets);
   bool Begin(std::span<const std::byte> session_id,
-             std::uint32_t stream_id);
+             std::uint32_t stream_id, std::uint32_t sequence_stride = 1);
   bool RecordPacket(std::uint32_t sequence, std::int64_t captured_at_ns,
                     std::int64_t queued_at_ns, std::int64_t send_at_ns,
                     bool send_accepted,
@@ -71,6 +71,7 @@ class DebugSessionTrace {
   mutable std::mutex mutex_;
   std::array<std::byte, 16> session_id_{};
   std::uint32_t stream_id_ = 0;
+  std::uint32_t sequence_stride_ = 1;
   std::size_t packet_count_ = 0;
   std::uint64_t generation_ = 0;
   std::atomic<std::uint64_t> dropped_records_{0};

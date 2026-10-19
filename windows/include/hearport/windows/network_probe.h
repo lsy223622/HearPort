@@ -50,7 +50,23 @@ std::array<NetworkProbeRound, kNetworkProbeRoundCount> MakeNetworkProbeRounds(
 
 std::vector<NetworkProbeRound> MakeCoordinatedProbeRounds(std::uint32_t stream_id);
 std::vector<std::byte> EncodeProbeManifest(const std::vector<NetworkProbeRound>& rounds);
-inline constexpr std::uint32_t kCoordinatedProbeRoundCount = 12;
+// Profile IDs: 0 float PCM, 1 PCM16, 2-4 Opus 256 kb/s at 400/200/100
+// packets per second, 5-7 Opus 192 kb/s at 400/200/100 pps, and 8-9
+// 112-byte frequency controls at 200/100 pps. Wire sizes include the 32-byte
+// timed-record header.
+inline constexpr std::array<NetworkProbeRound, 10> kCoordinatedProbeProfiles{{
+    {992, 400, 1, 0, false, 1, 2, 0, 5},
+    {512, 400, 1, 1, false, 1, 2, 0, 5},
+    {112, 400, 1, 2, false, 1, 2, 0, 5},
+    {192, 200, 1, 3, false, 1, 2, 0, 5},
+    {352, 100, 1, 4, false, 1, 2, 0, 5},
+    {92, 400, 1, 5, false, 1, 2, 0, 5},
+    {152, 200, 1, 6, false, 1, 2, 0, 5},
+    {272, 100, 1, 7, false, 1, 2, 0, 5},
+    {112, 200, 1, 8, false, 1, 2, 0, 5},
+    {112, 100, 1, 9, false, 1, 2, 0, 5},
+}};
+inline constexpr std::uint32_t kCoordinatedProbeRoundCount = 40;
 inline constexpr std::uint32_t kCoordinatedProbeRecoverySeconds = 5;
 inline constexpr std::uint32_t kCoordinatedProbeDurationSeconds =
     kCoordinatedProbeRoundCount * kNetworkProbeSecondsPerRound +

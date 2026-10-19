@@ -1,6 +1,7 @@
 #include "hearport/windows/network_probe.h"
 
 #include <algorithm>
+#include <array>
 #include <stdexcept>
 
 namespace hearport::windows {
@@ -78,25 +79,23 @@ std::vector<std::byte> MakeNetworkProbeDatagram(std::uint32_t stream_id,
 
 std::vector<NetworkProbeRound> MakeCoordinatedProbeRounds(std::uint32_t stream_id) {
   std::vector<NetworkProbeRound> candidates;
-  auto add = [&](std::size_t variant, bool reliable, std::uint8_t controller, std::uint8_t repair = 0) {
-    auto round = kNetworkProbeVariants[variant];
-    round.payload_bytes += 24;
-    round.reliable = reliable;
-    round.controller = controller;
-    round.repair = repair;
-    round.correction_percent = controller == 3 ? 10 : 5;
-    candidates.push_back(round);
-  };
-  for (bool reliable : {false, true}) {
-    add(4, reliable, 0);
-    add(4, reliable, 2);
-    add(1, reliable, 2);
-  }
+  candidates.reserve(kCoordinatedProbeRoundCount / 2);
   std::uint32_t state = stream_id ^ 0xa5a55a5au;
   if (state == 0) state = 1;
-  for (std::size_t remaining = candidates.size(); remaining > 1; --remaining) {
+  std::array<std::uint8_t, kCoordinatedProbeProfiles.size()> order{};
+  for (std::size_t index = 0; index < order.size(); ++index) {
+    order[index] = static_cast<std::uint8_t>(index);
+  }
+  for (std::size_t remaining = order.size(); remaining > 1; --remaining) {
     state ^= state << 13; state ^= state >> 17; state ^= state << 5;
-    std::swap(candidates[remaining - 1], candidates[state % remaining]);
+    std::swap(order[remaining - 1], order[state % remaining]);
+  }
+  for (const auto variant : order) {
+    for (const bool reliable : {false, true}) {
+      auto round = kCoordinatedProbeProfiles[variant];
+      round.reliable = reliable;
+      candidates.push_back(round);
+    }
   }
   auto rounds = candidates;
   for (auto item = candidates.rbegin(); item != candidates.rend(); ++item) {
@@ -106,8 +105,30 @@ std::vector<NetworkProbeRound> MakeCoordinatedProbeRounds(std::uint32_t stream_i
 }
 
 std::vector<std::byte> EncodeProbeManifest(const std::vector<NetworkProbeRound>& rounds) {
-  if (rounds.empty() || rounds.size() > 100) throw std::invalid_argument("invalid probe plan");
-  std::vector<std::byte> bytes{std::byte{2}, std::byte(rounds.size()), std::byte{30}, std::byte{kCoordinatedProbeRecoverySeconds}};
+  if (rounds.size() != kCoordinatedProbeRoundCount) {
+    throw std::invalid_argument("invalid compression probe matrix size");
+  }
+  std::array<std::array<std::array<bool, 2>, kCoordinatedProbeProfiles.size()>, 2> seen{};
+  for (const auto& round : rounds) {
+    if (round.variant >= kCoordinatedProbeProfiles.size() ||
+        round.payload_bytes != kCoordinatedProbeProfiles[round.variant].payload_bytes ||
+        round.packets_per_second != kCoordinatedProbeProfiles[round.variant].packets_per_second ||
+        round.burst_packets != 1 || (round.repeat != 1 && round.repeat != 2) ||
+        round.controller != 2 || round.repair != 0 || round.correction_percent != 5) {
+      throw std::invalid_argument("invalid compression probe profile");
+    }
+    auto& entry = seen[round.repeat - 1][round.variant][round.reliable ? 1 : 0];
+    if (entry) throw std::invalid_argument("duplicate compression probe profile");
+    entry = true;
+  }
+  for (const auto& repeat : seen) {
+    for (const auto& profile : repeat) {
+      if (!profile[0] || !profile[1]) {
+        throw std::invalid_argument("incomplete compression probe matrix");
+      }
+    }
+  }
+  std::vector<std::byte> bytes{std::byte{3}, std::byte(rounds.size()), std::byte{30}, std::byte{kCoordinatedProbeRecoverySeconds}};
   for (const auto& round : rounds) {
     bytes.push_back(std::byte(round.payload_bytes >> 8));
     bytes.push_back(std::byte(round.payload_bytes & 255));

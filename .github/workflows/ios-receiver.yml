@@ -10,6 +10,7 @@ on:
       - "tests/integration/**"
       - ".github/workflows/ios-receiver.yml"
       - "scripts/collect_notices.py"
+      - "scripts/fetch_opus.py"
       - "THIRD_PARTY_NOTICES.md"
       - "LICENSE"
   pull_request:
@@ -21,6 +22,7 @@ on:
       - "tests/integration/**"
       - ".github/workflows/ios-receiver.yml"
       - "scripts/collect_notices.py"
+      - "scripts/fetch_opus.py"
       - "THIRD_PARTY_NOTICES.md"
       - "LICENSE"
   workflow_dispatch:
@@ -31,6 +33,26 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v5
+
+      - name: Fetch pinned Opus source
+        run: python3 scripts/fetch_opus.py
+
+      - name: Build host Opus for Swift package tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          prefix="$RUNNER_TEMP/opus-host"
+          cmake -S ios/HearPortReceiver/Vendor/opus -B "$RUNNER_TEMP/opus-host-build" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$prefix" \
+            -DOPUS_BUILD_SHARED_LIBRARY=OFF \
+            -DOPUS_BUILD_TESTING=OFF \
+            -DBUILD_TESTING=OFF \
+            -DOPUS_BUILD_PROGRAMS=OFF \
+            -DOPUS_DRED=OFF \
+            -DOPUS_OSCE=OFF
+          cmake --build "$RUNNER_TEMP/opus-host-build" --config Release --parallel 4
+          cmake --install "$RUNNER_TEMP/opus-host-build"
 
       - name: Run Swift package tests with QUIC interoperability
         shell: bash
@@ -57,7 +79,8 @@ jobs:
             diagnostics/offline_clock.swift -o "$RUNNER_TEMP/offline-clock"
           "$RUNNER_TEMP/offline-clock"
           cd ios/HearPortReceiver
-          HEARPORT_QUIC_INTEGRATION=1 swift test
+          LIBRARY_PATH="$RUNNER_TEMP/opus-host/lib${LIBRARY_PATH:+:$LIBRARY_PATH}" \
+            HEARPORT_QUIC_INTEGRATION=1 swift test -Xlinker -L -Xlinker "$RUNNER_TEMP/opus-host/lib"
 
   ios-unsigned-ipa:
     needs: swift-package
@@ -65,6 +88,31 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v5
+
+      - name: Fetch pinned Opus source
+        run: python3 scripts/fetch_opus.py
+
+      - name: Build iOS Opus static library
+        shell: bash
+        run: |
+          set -euo pipefail
+          prefix="$GITHUB_WORKSPACE/ios/HearPortApp/ThirdParty/opus"
+          cmake -S ios/HearPortReceiver/Vendor/opus -B out/opus/ios-arm64 \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_SYSROOT=iphoneos \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=16.0 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$prefix" \
+            -DCMAKE_INSTALL_LIBDIR=lib \
+            -DOPUS_BUILD_SHARED_LIBRARY=OFF \
+            -DOPUS_BUILD_TESTING=OFF \
+            -DBUILD_TESTING=OFF \
+            -DOPUS_BUILD_PROGRAMS=OFF \
+            -DOPUS_DRED=OFF \
+            -DOPUS_OSCE=OFF
+          cmake --build out/opus/ios-arm64 --config Release --parallel 4
+          cmake --install out/opus/ios-arm64
 
       - name: Install XcodeGen
         run: brew install xcodegen

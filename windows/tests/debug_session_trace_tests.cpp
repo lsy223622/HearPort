@@ -57,6 +57,34 @@ int main() {
   assert(report.find("\"pending_reliable_sends\":128") != std::string::npos);
   assert(report.find("pcm") == std::string::npos);
   assert(!trace.IsActive());
+  assert(!trace.Begin(session_id, 77, 0));
+  assert(!trace.IsActive());
+
+  DebugSessionTrace sampled(2);
+  assert(sampled.Begin(session_id, 78, 4));
+  assert(sampled.RecordPacket(0, 10, 20, 30, true));
+  assert(!sampled.RecordPacket(1, 10, 20, 30, true));
+  assert(!sampled.RecordSendState(78, 1, DebugSendState::acknowledged, 40));
+  assert(!sampled.RecordSendComplete(78, 1, false, 50));
+  assert(sampled.RecordSendState(78, 4, DebugSendState::acknowledged, 40));
+  assert(sampled.RecordSendComplete(78, 4, false, 50));
+  assert(sampled.RecordPacket(4, 10, 20, 30, true,
+      hearport::windows::ProbeSendOutcome{hearport::windows::ProbeSendStatus::accepted, 1}));
+  assert(sampled.dropped_records() == 0);
+  assert(!sampled.RecordPacket(8, 10, 20, 30, true));
+  assert(sampled.dropped_records() == 1);
+  const auto sampled_report = sampled.Finish("test");
+  assert(sampled_report.find("\"sequence_stride\":4") != std::string::npos);
+  assert(sampled_report.find("\"record_count\":2") != std::string::npos);
+  assert(sampled_report.find("\"sequence\":4") != std::string::npos);
+  assert(sampled_report.find("\"sequence\":1") == std::string::npos);
+  assert(sampled_report.find("\"send_completed_at_ns\":50") != std::string::npos);
+  assert(sampled.Begin(session_id, 79));
+  assert(sampled.RecordPacket(1, 10, 20, 30, true));
+  const auto reset_report = sampled.Finish("test");
+  assert(reset_report.find("\"sequence_stride\":1") != std::string::npos);
+  assert(reset_report.find("\"record_count\":1") != std::string::npos);
+  assert(reset_report.find("\"sequence\":4") == std::string::npos);
   assert(hearport::windows::DebugSendStateName(DebugSendState::lost_suspect) ==
          "lost_suspect");
   assert(hearport::windows::DebugSendStateName(DebugSendState::canceled) ==

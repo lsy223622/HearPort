@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -19,6 +20,7 @@
 #include "hearport/wire/control_framing.h"
 #include "hearport/windows/network_probe.h"
 #include "hearport/windows/audio_deadline.h"
+#include "HearPortOpusBridge.h"
 
 namespace hearport::windows {
 
@@ -66,7 +68,7 @@ bool SenderService::Start() {
   }
 
   QuicServerCallbacks callbacks;
-  options_.network_probe = network_probe_;
+  options_.network_probe = network_probe_ || music_test();
   callbacks.on_probe_send_complete = [this](std::uint32_t stream_id,
                                             std::uint32_t sequence, bool canceled) {
     debug_trace_.RecordSendComplete(stream_id, sequence, canceled, MonotonicNanoseconds());
@@ -337,7 +339,13 @@ bool SenderService::MarkStartStreamAckWritten(std::uint32_t stream_id) {
   }
   std::lock_guard debug_lock(debug_mutex_);
   if (pending_debug_session_) {
-    if (!debug_trace_.Begin(pending_debug_session_id_, stream_id)) {
+    std::uint32_t trace_stride = 1;
+    if (music_clip_) {
+      const auto source_units = std::uint64_t(kMusicTestRoundCount) * music_clip_->duration_seconds * 400;
+      while ((source_units + trace_stride - 1) / trace_stride > DebugSessionTrace::kMaximumPackets)
+        trace_stride *= 2;
+    }
+    if (!debug_trace_.Begin(pending_debug_session_id_, stream_id, trace_stride)) {
       (void)session_.EndStream(stream_id);
       return false;
     }
@@ -361,7 +369,14 @@ bool SenderService::MarkStartStreamAckWritten(std::uint32_t stream_id) {
         *debug_duration_;
     stop_music_.store(false);
     music_frames_processed_.store(0);
-    music_thread_ = std::thread([this] { MusicWorker(); });
+    music_thread_ = std::thread([this] {
+      try { MusicWorker(); }
+      catch (const std::exception& error) {
+        LogDiagnostic(std::string("music_test_failed error=") + error.what());
+        std::lock_guard lock(debug_mutex_);
+        debug_end_pending_ = true; debug_end_reason_ = 3;
+      }
+    });
   }
   return true;
 }
@@ -429,8 +444,8 @@ void SenderService::ConfigureMusicTest(MusicExcerpt clip) {
       clip.samples.size() != std::size_t(clip.duration_seconds) * 48'000 * 2) {
     throw std::invalid_argument("Invalid music test configuration");
   }
-  ConfigureDebugDuration(std::chrono::seconds(clip.duration_seconds * kMusicTestPolicies.size() +
-      (kMusicTestPolicies.size() - 1) * kMusicRecoverySeconds + 55));
+  ConfigureDebugDuration(std::chrono::seconds(clip.duration_seconds * kMusicTestRoundCount +
+      (kMusicTestRoundCount - 1) * kMusicRecoverySeconds + kMusicTestRoundCount * 5 + 30));
   music_clip_ = std::move(clip);
 }
 
@@ -457,6 +472,7 @@ void SenderService::MusicWorker() {
   };
   const auto fail = [&](std::string_view reason) {
     LogDiagnostic(reason);
+    stop_music_.store(true);
     std::lock_guard lock(debug_mutex_);
     debug_end_pending_ = true; debug_end_reason_ = 3;
   };
@@ -465,14 +481,33 @@ void SenderService::MusicWorker() {
   LogDiagnostic("music_test_start file=" + std::string(path.begin(), path.end()) +
       " start_seconds=" + std::to_string(music_clip_->start_seconds) +
       " round_seconds=" + std::to_string(music_clip_->duration_seconds) +
-      " rounds=8 sample_rate=48000 channels=2 packet_frames=120");
+      " rounds=32 sample_rate=48000 channels=2 opus_version=" + hp_opus_version());
   const auto samples = std::span<const float>(music_clip_->samples);
   std::uint32_t stream_id = 0;
-  { std::lock_guard lock(debug_mutex_); stream_id = active_debug_stream_id_; }
-  for (std::size_t index = 0; index < kMusicTestPolicies.size(); ++index) {
+  std::string session_id;
+  { std::lock_guard lock(debug_mutex_); stream_id = active_debug_stream_id_;
+    session_id = SessionHex(active_debug_session_id_); }
+  const auto summary_directory = debug_session_directory();
+  std::filesystem::create_directories(summary_directory);
+  std::ofstream summary_file(summary_directory / "compression-summary.jsonl", std::ios::binary | std::ios::trunc);
+  if (!summary_file) { fail("compression_summary_file_create_failed"); return; }
+  const auto policies = MakeMusicTestPolicies(stream_id);
+  for (std::size_t index = 0; index < policies.size(); ++index) {
     if (index && !wait_until(MonotonicNanoseconds() + kMusicRecoverySeconds * 1'000'000'000ll)) return;
-    const auto policy = kMusicTestPolicies[index];
-    std::uint32_t generation = 0, first_sequence = 0;
+    const auto policy = policies[index];
+    int opus_error = 0;
+    const auto create_at = MonotonicNanoseconds();
+    std::unique_ptr<void, decltype(&hp_opus_encoder_destroy)> encoder(
+        policy.profile >= 2 ? hp_opus_encoder_create(policy.bitrate_kbps * 1000, &opus_error) : nullptr,
+        hp_opus_encoder_destroy);
+    const auto create_ns = MonotonicNanoseconds() - create_at;
+    if (policy.profile >= 2 && (!encoder || opus_error != 0)) {
+      fail("compression_encoder_create_failed"); return;
+    }
+    const auto lookahead = static_cast<std::uint16_t>(encoder ? hp_opus_lookahead(encoder.get()) : 0);
+    if (lookahead > 960) { fail("compression_lookahead_invalid"); return; }
+    std::uint32_t generation = 0;
+    const auto first_sequence = static_cast<std::uint32_t>(index) * music_clip_->duration_seconds * 400;
     {
       std::lock_guard capture_lock(capture_mutex_);
       std::lock_guard send_lock(audio_send_mutex_);
@@ -482,7 +517,8 @@ void SenderService::MusicWorker() {
       generation = reliable_generation_ == UINT32_MAX ? 1 : reliable_generation_ + 1;
       reliable_generation_ = generation;
       reliable_mode_.store(policy.reliable);
-      first_sequence = packetizer_.next_sequence();
+      music_policy_.store(policy.profile | (std::uint32_t(policy.repeat) << 8) |
+                          (policy.reliable ? 0x10000u : 0));
       music_round_.store(static_cast<std::uint32_t>(index + 1));
       music_frames_processed_.store(0);
       reliable_lag_.Begin(stream_id, generation, ReliableAudioLag::Clock::now(),
@@ -492,7 +528,7 @@ void SenderService::MusicWorker() {
     round.type = wire::ControlMessageType::probe_manifest;
     round.stream_id = stream_id;
     round.bytes1 = EncodeMusicTestRound(static_cast<std::uint32_t>(index + 1),
-        music_clip_->duration_seconds, first_sequence, generation);
+        music_clip_->duration_seconds, first_sequence, generation, policy, lookahead);
     { std::lock_guard lock(music_mutex_); music_round_pending_ = true; }
     if (!SendControlPayload(wire::EncodeControlEnvelope(round))) { fail("music_test_round_send_failed"); return; }
     {
@@ -508,26 +544,109 @@ void SenderService::MusicWorker() {
       if (!quic_->StartReliableAudio(stream_id, generation)) { fail("music_test_stream_start_failed"); return; }
     }
     const auto began = MonotonicNanoseconds();
-    LogDiagnostic("music_test_round_start round=" + std::to_string(index + 1) +
+    const auto codec = policy.profile == 0 ? "float_pcm" : policy.profile == 1 ? "pcm16" : "opus";
+    const auto identity = " source=real side=sender stream_id=" + std::to_string(stream_id) +
+        " session_id=" + session_id + " connection_id=" + session_id +
+        " path_id=" + (options_.loopback_only ? "usb" : "network") +
+        " round=" + std::to_string(index + 1) + " profile=" + std::to_string(policy.profile) +
+        " repeat=" + std::to_string(policy.repeat) +
+        " transport=" + (policy.reliable ? "reliable_stream" : "datagram") +
+        " codec=" + codec + " bitrate=" + std::to_string(policy.bitrate_kbps * 1000) +
+        " frame_count=" + std::to_string(policy.frames) +
+        " duration_seconds=" + std::to_string(music_clip_->duration_seconds) +
+        " target_ms=" + std::to_string(target_ms_.load()) +
+        " maximum_ms=" + std::to_string(maximum_ms_.load()) +
+        " output_reserve_ms=" + std::to_string(output_reserve_ms_.load()) +
+        " sample_rate=48000";
+    LogDiagnostic("compression_round" + identity +
         " at_ns=" + std::to_string(began) + " first_sequence=" + std::to_string(first_sequence) +
         " generation=" + std::to_string(generation) +
-        " transport=" + (policy.reliable ? "reliable_stream" : "datagram") +
-        " controller=" + (policy.adaptive ? "adaptive_5" : "fixed") +
-        " duration_seconds=" + std::to_string(music_clip_->duration_seconds) +
-        " target_ms=" + std::to_string(target_ms_.load()) + " maximum_ms=" + std::to_string(maximum_ms_.load()) +
+        " encoder_create_ns=" + std::to_string(create_ns) +
+        " codec_lookahead_frames=" + std::to_string(lookahead) +
         " output_reserve_ms=" + std::to_string(output_reserve_ms_.load()));
-    for (std::size_t offset = 0; offset < samples.size(); offset += 240) {
-      const auto captured = began + static_cast<std::int64_t>(offset / 2) * 1'000'000'000 / 48'000;
-      if (!wait_until(captured)) return;
-      HandleCapturePacket(std::as_bytes(samples.subspan(offset, 240)),
-                          PcmFormat{}, static_cast<std::uint64_t>(captured));
-      music_frames_processed_.store(static_cast<std::uint32_t>((offset + 240) / 2));
+    std::vector<std::int64_t> encode_times;
+    encode_times.reserve(samples.size() / (2 * policy.frames));
+    std::uint64_t wire_bytes = 0, accepted_bytes = 0;
+    std::array<std::uint32_t, 8> outcomes{};
+    std::int64_t first_encode_ns = 0, total_encode_ns = 0, source_age_max_ns = 0;
+    const auto summary = [&](bool complete) {
+      auto sorted = encode_times;
+      std::sort(sorted.begin(), sorted.end());
+      const auto percentile = [&](double p) { return sorted.empty() ? std::int64_t{0} :
+          sorted[std::min(sorted.size() - 1, static_cast<std::size_t>(std::ceil(p * sorted.size()) - 1))]; };
+      const auto line = "compression_summary" + identity + " complete=" + (complete ? "1" : "0") +
+          " packets=" + std::to_string(encode_times.size()) +
+          " accepted=" + std::to_string(outcomes[0]) +
+          " wire_bytes=" + std::to_string(wire_bytes) + " accepted_bytes=" + std::to_string(accepted_bytes) +
+          " encode_ns=" + std::to_string(total_encode_ns) +
+          " encoder_create_ns=" + std::to_string(create_ns) +
+          " first_encode_ns=" + std::to_string(first_encode_ns) +
+          " encode_p50_ns=" + std::to_string(percentile(.50)) +
+          " encode_p95_ns=" + std::to_string(percentile(.95)) +
+          " encode_p99_ns=" + std::to_string(percentile(.99)) +
+          " encode_max_ns=" + std::to_string(sorted.empty() ? 0 : sorted.back()) +
+          " source_age_max_ns=" + std::to_string(source_age_max_ns) +
+          " expired_before_send=" + std::to_string(outcomes[7]) +
+          " reject_pending_limit=" + std::to_string(outcomes[3]) +
+          " reject_transport=" + std::to_string(outcomes[6]);
+      LogDiagnostic(line);
+      summary_file << "{\"message\":\"" << line << "\"}\n";
+      summary_file.flush();
+      if (!summary_file) fail("compression_summary_file_write_failed");
+    };
+    for (std::size_t offset = 0; offset < samples.size(); offset += 2 * policy.frames) {
+      const auto captured = began + (static_cast<std::int64_t>(offset / 2) - lookahead) * 1'000'000'000 / 48'000;
+      const auto collected_at = began + static_cast<std::int64_t>(offset / 2 + policy.frames) * 1'000'000'000 / 48'000;
+      if (!wait_until(collected_at)) { summary(false); return; }
+      const auto sequence = first_sequence + static_cast<std::uint32_t>(offset / 240);
+      wire::TimedAudioRecord record{stream_id, generation, sequence, policy.frames,
+          policy.profile == 0 ? wire::AudioRecordKind::audio : policy.profile == 1 ? wire::AudioRecordKind::pcm16 : wire::AudioRecordKind::opus,
+          static_cast<std::uint64_t>(captured), std::uint64_t(sequence) * 120, {}};
+      const auto encode_at = MonotonicNanoseconds();
+      if (encoder) {
+        record.payload.resize(992);
+        const auto count = hp_opus_encode(encoder.get(), samples.data() + offset, policy.frames,
+            reinterpret_cast<unsigned char*>(record.payload.data()), static_cast<int>(record.payload.size()));
+        if (count <= 0) { summary(false); fail("compression_encode_failed"); return; }
+        record.payload.resize(static_cast<std::size_t>(count));
+      } else if (policy.profile == 1) {
+        record.payload.reserve(480);
+        for (const auto value : samples.subspan(offset, 240)) {
+          const auto sample = std::isfinite(value) ? std::clamp(value, -1.0f, 1.0f) : 0.0f;
+          const auto quantized = static_cast<std::int16_t>(std::clamp(std::lround(sample * 32768.0f), -32768l, 32767l));
+          record.payload.push_back(std::byte(static_cast<std::uint16_t>(quantized) & 255));
+          record.payload.push_back(std::byte(static_cast<std::uint16_t>(quantized) >> 8));
+        }
+      } else {
+        const auto pcm = std::as_bytes(samples.subspan(offset, 240));
+        record.payload.assign(pcm.begin(), pcm.end());
+      }
+      const auto encoded_ns = MonotonicNanoseconds() - encode_at;
+      if (encode_times.empty()) first_encode_ns = encoded_ns;
+      encode_times.push_back(encoded_ns); total_encode_ns += encoded_ns;
+      const auto bytes = wire::EncodeTimedAudioRecord(record);
+      std::lock_guard send_lock(audio_send_mutex_);
+      bool trace_active = false;
+      {
+        std::lock_guard debug_lock(debug_mutex_);
+        trace_active = debug_trace_.IsActive() && !debug_ending_;
+        if (trace_active) ++outstanding_debug_sends_;
+      }
+      if (!trace_active) { summary(false); return; }
+      const auto send_at = MonotonicNanoseconds();
+      source_age_max_ns = std::max(source_age_max_ns, send_at - captured);
+      const auto outcome = AudioDeadline(maximum_ms_.load(), output_reserve_ms_.load()).Expired(captured, send_at)
+          ? ProbeSendOutcome{ProbeSendStatus::expired} : quic_->SendProbe(bytes, stream_id, sequence, policy.reliable);
+      ++outcomes[static_cast<std::size_t>(outcome.status)];
+      wire_bytes += bytes.size() + (policy.reliable ? 2 : 0);
+      const auto sent = outcome.status == ProbeSendStatus::accepted;
+      if (sent) accepted_bytes += bytes.size() + (policy.reliable ? 2 : 0);
+      debug_trace_.RecordPacket(sequence, captured, encode_at, send_at, sent, outcome);
+      if (!sent) CompleteDebugSend(stream_id);
+      music_frames_processed_.store(static_cast<std::uint32_t>(offset / 2 + policy.frames));
     }
     if (!wait_until(began + music_clip_->duration_seconds * 1'000'000'000ll)) return;
-    LogDiagnostic("music_test_round_end round=" + std::to_string(index + 1) +
-        " at_ns=" + std::to_string(MonotonicNanoseconds()) +
-        " next_sequence=" + std::to_string(packetizer_.next_sequence()) +
-        " processed_frames=" + std::to_string(music_frames_processed_.load()));
+    summary(true);
   }
   if (!wait_until(MonotonicNanoseconds() + 10'000'000'000ll)) return;
   std::lock_guard lock(debug_mutex_);
@@ -948,6 +1067,12 @@ bool SenderService::ObserveAudioProgress(
     std::optional<std::uint64_t> played_source, std::uint32_t buffered_ms) {
   std::unique_lock send_lock(audio_send_mutex_);
   if (calibration_options_ && !calibration_round_active_.load()) return true;
+  if (music_test()) {
+    std::lock_guard reliable_lock(reliable_mutex_);
+    if (generation == reliable_generation_ && latest_received && reliable_mode_.load())
+      quic_->ConfirmReliableReceived(stream_id, generation, *latest_received);
+    return true;
+  }
   if (network_probe_) {
     if (stream_id != probe_stream_id_.load() || generation != reliable_generation_) return true;
     const auto stamp = static_cast<std::uint64_t>(MonotonicNanoseconds());
@@ -1063,8 +1188,8 @@ void SenderService::ConfigureDebugDuration(
     std::optional<std::chrono::seconds> duration) {
   if (duration.has_value() &&
       (*duration < std::chrono::seconds(60) ||
-       *duration > std::chrono::seconds(3600))) {
-    throw std::invalid_argument("debug duration must be from 60 to 3600 seconds");
+       *duration > std::chrono::seconds(86400))) {
+    throw std::invalid_argument("debug duration must be from 60 to 86400 seconds");
   }
   std::lock_guard lock(debug_mutex_);
   debug_duration_ = duration;
@@ -1362,6 +1487,7 @@ void SenderService::EndDebugSession(std::uint32_t reason) {
     std::lock_guard lock(debug_mutex_);
     if (!debug_trace_.IsActive() || debug_ending_) return;
     debug_ending_ = true;
+    debug_end_reason_ = reason;
     debug_end_pending_ = false;
     debug_deadline_.reset();
     session_id = active_debug_session_id_;

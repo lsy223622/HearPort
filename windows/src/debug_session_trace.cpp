@@ -60,8 +60,9 @@ DebugSessionTrace::DebugSessionTrace(std::size_t capacity)
     : capacity_(capacity), records_(capacity) {}
 
 bool DebugSessionTrace::Begin(std::span<const std::byte> session_id,
-                              std::uint32_t stream_id) {
-  if (session_id.size() != session_id_.size() || stream_id == 0) return false;
+                              std::uint32_t stream_id,
+                              std::uint32_t sequence_stride) {
+  if (session_id.size() != session_id_.size() || stream_id == 0 || sequence_stride == 0) return false;
   std::lock_guard lock(mutex_);
   if (active_.load(std::memory_order_relaxed)) return false;
   ++generation_;
@@ -71,6 +72,7 @@ bool DebugSessionTrace::Begin(std::span<const std::byte> session_id,
   }
   std::copy(session_id.begin(), session_id.end(), session_id_.begin());
   stream_id_ = stream_id;
+  sequence_stride_ = sequence_stride;
   packet_count_ = 0;
   dropped_records_.store(0, std::memory_order_relaxed);
   active_.store(true, std::memory_order_release);
@@ -86,11 +88,13 @@ bool DebugSessionTrace::RecordPacket(std::uint32_t sequence,
   if (!IsActive()) return false;
   std::lock_guard lock(mutex_);
   if (!active_.load(std::memory_order_relaxed)) return false;
-  if (sequence >= capacity_) {
+  if (sequence % sequence_stride_ != 0) return false;
+  const auto slot = sequence / sequence_stride_;
+  if (slot >= capacity_) {
     dropped_records_.fetch_add(1, std::memory_order_relaxed);
     return false;
   }
-  auto& record = records_[sequence];
+  auto& record = records_[slot];
   if (record.generation != generation_) {
     record = PacketRecord{};
     record.generation = generation_;
@@ -119,11 +123,13 @@ bool DebugSessionTrace::RecordSendState(std::uint32_t stream_id,
   if (!active_.load(std::memory_order_relaxed) || stream_id != stream_id_) {
     return false;
   }
-  if (sequence >= capacity_) {
+  if (sequence % sequence_stride_ != 0) return false;
+  const auto slot = sequence / sequence_stride_;
+  if (slot >= capacity_) {
     dropped_records_.fetch_add(1, std::memory_order_relaxed);
     return false;
   }
-  auto& record = records_[sequence];
+  auto& record = records_[slot];
   if (record.generation != generation_) {
     record = PacketRecord{};
     record.generation = generation_;
@@ -148,11 +154,13 @@ bool DebugSessionTrace::RecordSendComplete(std::uint32_t stream_id,
   if (!IsActive()) return false;
   std::lock_guard lock(mutex_);
   if (!active_.load(std::memory_order_relaxed) || stream_id != stream_id_) return false;
-  if (sequence >= capacity_) {
+  if (sequence % sequence_stride_ != 0) return false;
+  const auto slot = sequence / sequence_stride_;
+  if (slot >= capacity_) {
     dropped_records_.fetch_add(1, std::memory_order_relaxed);
     return false;
   }
-  auto& record = records_[sequence];
+  auto& record = records_[slot];
   if (record.generation != generation_) {
     record = PacketRecord{};
     record.generation = generation_;
@@ -182,6 +190,7 @@ std::string DebugSessionTrace::Finish(std::string_view reason) {
   }
   const auto session_id = session_id_;
   const auto stream_id = stream_id_;
+  const auto sequence_stride = sequence_stride_;
   const auto dropped = dropped_records_.load(std::memory_order_relaxed);
   lock.unlock();
 
@@ -190,6 +199,7 @@ std::string DebugSessionTrace::Finish(std::string_view reason) {
          << ",\"session_id\":\""
          << SessionHex(session_id)
          << "\",\"stream_id\":" << stream_id
+         << ",\"sequence_stride\":" << sequence_stride
          << ",\"record_count\":" << snapshot.size()
          << ",\"dropped_records\":"
          << dropped

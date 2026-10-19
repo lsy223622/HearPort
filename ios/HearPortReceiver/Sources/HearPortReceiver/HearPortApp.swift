@@ -221,6 +221,10 @@ import SwiftUI
         case .testing:
             if calibrationRequestID != nil { return Self.localize("Starting calibration…") }
             if let round = musicRound {
+                if round.isCompressionTest {
+                    return String(format: Self.localize("Compression test · %d / %d"),
+                                  round.index, round.roundCount)
+                }
                 return String(format: Self.localize("Music test · %d / 8"), round.index)
             }
             return Self.localize(control?.isEnvironmentCalibration == true ? "Automatic test and recommendations" : "Network test running")
@@ -429,11 +433,24 @@ import SwiftUI
             if presentationStage == .testing {
                 if let round = musicRound {
                     VStack(alignment: .leading, spacing: 10) {
-                        Text((round.reliable ? "Reliable stream" : "Datagram") + " · " + Self.localize(round.adaptive ? "Adaptive" : "Fixed"))
-                            .font(.headline)
+                        if round.isCompressionTest {
+                            Text(Self.label(for: round)).font(.headline)
+                        } else {
+                            Text(Self.localize(round.reliable ? "Reliable stream" : "Datagram") +
+                                 " · " + Self.localize(round.adaptive ? "Adaptive" : "Fixed"))
+                                .font(.headline)
+                        }
                         ProgressView(value: min(Double(round.seconds), roundElapsed), total: Double(round.seconds))
                             .tint(.teal)
-                        Text(String(format: Self.localize("Round elapsed %.0f / %d s"), min(Double(round.seconds), roundElapsed), round.seconds))
+                        let roundTimeText: String
+                        if round.isCompressionTest {
+                            roundTimeText = String(format: Self.localize("Round remaining %.0f s"),
+                                max(0, Double(round.seconds) - roundElapsed))
+                        } else {
+                            roundTimeText = String(format: Self.localize("Round elapsed %.0f / %d s"),
+                                min(Double(round.seconds), roundElapsed), round.seconds)
+                        }
+                        Text(roundTimeText)
                             .font(.caption).foregroundStyle(.secondary).monospacedDigit()
                     }
                 } else if let progress = calibrationProgress {
@@ -1115,7 +1132,19 @@ import SwiftUI
     }
 
     private static func label(for round: MusicTestRound) -> String {
-        String(format: localize("Music test %d/8 · %@ · %@"), round.index,
+        if round.isCompressionTest {
+            let codec: String
+            switch round.profile {
+            case 0: codec = localize("Float PCM")
+            case 1: codec = localize("PCM16")
+            default: codec = String(format: localize("Opus · %d kbps"), round.bitrateKbps)
+            }
+            return String(format: localize("Compression %d/%d · repeat %d/2 · %@ · %@ · %@"),
+                round.index, round.roundCount, round.repeatIndex, codec,
+                localize(round.reliable ? "Reliable stream" : "Datagram"),
+                localize(round.adaptive ? "Adaptive" : "Fixed"))
+        }
+        return String(format: localize("Music test %d/8 · %@ · %@"), round.index,
                round.reliable ? "Reliable" : "Datagram",
                localize(round.adaptive ? "Adaptive" : "Fixed"))
     }

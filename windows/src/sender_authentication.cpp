@@ -133,6 +133,7 @@ bool SenderAuthentication::HandleConnect(
   peer_wants_reliable_ =
       (envelope.feature_bits & wire::kFeatureReliableAudio) != 0;
   peer_supports_music_test_ = (envelope.feature_bits & wire::kFeatureMusicTest) != 0;
+  peer_supports_compression_ = (envelope.feature_bits & wire::kFeatureCompressionMusic) != 0;
   peer_supports_calibration_ = (envelope.feature_bits & wire::kFeatureEnvironmentCalibration) != 0;
   peer_coordinated_audio_ = (envelope.feature_bits & wire::kFeatureCoordinatedAudio) != 0;
   service_.ConfigureCoordinatedAudio(peer_coordinated_audio_);
@@ -248,7 +249,7 @@ bool SenderAuthentication::CompleteAuthentication(bool remember) {
   if (!service_.MarkAuthenticated()) {
     return Fail(ErrorCode::protocol, "session authentication state rejected");
   }
-  if (service_.music_test() && (!peer_coordinated_audio_ || !peer_supports_music_test_)) {
+  if (service_.music_test() && (!peer_coordinated_audio_ || !peer_supports_music_test_ || !peer_supports_compression_)) {
     return Fail(ErrorCode::protocol, "Update HearPort on iPad to use automatic music tests.");
   }
   if (service_.environment_calibration() && (!peer_coordinated_audio_ || !peer_supports_calibration_)) {
@@ -265,6 +266,10 @@ bool SenderAuthentication::CompleteAuthentication(bool remember) {
     return Fail(ErrorCode::protocol,
                 "Update HearPort on iPad to use the network test.");
   }
+  if (service_.network_probe() && peer_coordinated_audio_ &&
+      !service_.environment_calibration() && !peer_supports_compression_) {
+    return Fail(ErrorCode::protocol, "Update HearPort on iPad to use compression traffic tests.");
+  }
   wire::ControlEnvelope ready;
   ready.type = wire::ControlMessageType::session_ready;
   ready.feature_bits = peer_supports_diagnostics_
@@ -274,6 +279,7 @@ bool SenderAuthentication::CompleteAuthentication(bool remember) {
   if (peer_wants_reliable_) ready.feature_bits |= wire::kFeatureReliableAudio;
   if (peer_coordinated_audio_) ready.feature_bits |= wire::kFeatureCoordinatedAudio;
   if (service_.music_test()) ready.feature_bits |= wire::kFeatureMusicTest;
+  if (service_.music_test()) ready.feature_bits |= wire::kFeatureCompressionMusic;
   if (service_.environment_calibration()) ready.feature_bits |= wire::kFeatureEnvironmentCalibration;
   if (service_.network_probe()) {
     ready.feature_bits |=

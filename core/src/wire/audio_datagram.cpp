@@ -55,10 +55,12 @@ std::vector<std::byte> EncodeTimedAudioRecord(const TimedAudioRecord& record) {
   const auto kind = static_cast<std::uint16_t>(record.kind);
   const bool pcm = kind == 0;
   if (record.stream_id == 0 || record.generation == 0 || record.captured_at_ns == 0 ||
-      record.frame_count == 0 || kind > 4 || record.payload.empty() ||
+      record.frame_count == 0 || kind > 6 || record.payload.empty() ||
       record.payload.size() > 992 ||
       (record.source_frame > UINT64_MAX - record.frame_count) ||
-      (pcm && (record.frame_count != 120 || record.payload.size() != 960))) {
+      (pcm && (record.frame_count != 120 || record.payload.size() != 960)) ||
+      (kind == 5 && record.frame_count != 120 && record.frame_count != 240 && record.frame_count != 480) ||
+      (kind == 6 && (record.frame_count != 120 || record.payload.size() != 480))) {
     throw std::invalid_argument("invalid timed audio record");
   }
   std::vector<std::byte> bytes(32 + record.payload.size());
@@ -95,9 +97,11 @@ std::optional<TimedAudioRecord> DecodeTimedAudioRecord(std::span<const std::byte
   const auto kind = static_cast<unsigned>(record.kind);
   const bool pcm = kind == 0;
   if (record.stream_id == 0 || record.generation == 0 || record.captured_at_ns == 0 ||
-      record.frame_count == 0 || kind > 4 ||
+      record.frame_count == 0 || kind > 6 ||
       (record.source_frame > UINT64_MAX - record.frame_count) ||
-      (pcm && (record.frame_count != 120 || record.payload.size() != 960))) return std::nullopt;
+      (pcm && (record.frame_count != 120 || record.payload.size() != 960)) ||
+      (kind == 5 && record.frame_count != 120 && record.frame_count != 240 && record.frame_count != 480) ||
+      (kind == 6 && (record.frame_count != 120 || record.payload.size() != 480))) return std::nullopt;
   return record;
 }
 

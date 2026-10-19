@@ -6,8 +6,18 @@ jobs:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v5
+      - name: Build pinned host Opus
+        run: |
+          python3 scripts/fetch_opus.py
+          cmake -S ios/HearPortReceiver/Vendor/opus -B "$RUNNER_TEMP/opus-build" \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/opus" \
+            -DBUILD_SHARED_LIBS=OFF -DOPUS_BUILD_SHARED_LIBRARY=OFF \
+            -DBUILD_TESTING=OFF -DOPUS_BUILD_TESTING=OFF -DOPUS_BUILD_PROGRAMS=OFF \
+            -DOPUS_DRED=OFF -DOPUS_OSCE=OFF
+          cmake --build "$RUNNER_TEMP/opus-build" --parallel 4
+          cmake --install "$RUNNER_TEMP/opus-build"
       - name: Run calibration and existing consumer contracts
         working-directory: ios/HearPortReceiver
         run: |
-          swift test -c release --filter EnvironmentCalibration
-          swift test -c release --filter CoordinatedProbeTests
+          swift test -c release -Xlinker -L -Xlinker "$RUNNER_TEMP/opus/lib" --filter EnvironmentCalibration
+          swift test -c release -Xlinker -L -Xlinker "$RUNNER_TEMP/opus/lib" --filter CoordinatedProbeTests

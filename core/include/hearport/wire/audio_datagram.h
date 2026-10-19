@@ -26,7 +26,7 @@ EncodedAudioDatagram EncodeAudioDatagram(const AudioDatagram& packet);
 std::optional<AudioDatagram> DecodeAudioDatagram(
     std::span<const std::byte> bytes);
 
-enum class AudioRecordKind : std::uint16_t { audio, fec, retransmission, repeated, probe };
+enum class AudioRecordKind : std::uint16_t { audio, fec, retransmission, repeated, probe, opus, pcm16 };
 
 struct TimedAudioRecord {
   std::uint32_t stream_id = 0;

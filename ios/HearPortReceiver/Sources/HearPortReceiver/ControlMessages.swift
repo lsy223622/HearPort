@@ -29,6 +29,7 @@ public enum ControlFeature {
     public static let musicTest: UInt32 = 32
     public static let timedDiagnostics: UInt32 = 128
     public static let environmentCalibration: UInt32 = 64
+    public static let compressionMusic: UInt32 = 256
 }
 
 public struct AudioProgressTiming: Equatable, Sendable {
@@ -199,7 +200,7 @@ public struct ControlEnvelope: Equatable, Sendable {
             field = 32
         case let .diagnosticsStart(sessionID, streamID, durationSeconds):
             guard sessionID.count == 16, streamID != 0,
-                  (60...3600).contains(durationSeconds) else {
+                  (60...86_400).contains(durationSeconds) else {
                 throw ControlMessageError.invalidMessage
             }
             var writer = ProtoWriter()
@@ -506,7 +507,7 @@ public struct ControlEnvelope: Equatable, Sendable {
         guard case let .bytes(sessionID)? = fields[1], sessionID.count == 16,
               case let .varint(streamID)? = fields[2], streamID != 0,
               case let .varint(durationSeconds)? = fields[3],
-              (60...3600).contains(durationSeconds) else {
+              (60...86_400).contains(durationSeconds) else {
             throw ControlMessageError.invalidMessage
         }
         return .diagnosticsStart(sessionID: sessionID, streamID: streamID,

@@ -158,13 +158,13 @@ int main() {
               network_probe_start,
           "network probe duration round-trips");
   const auto maximum_duration_start = Envelope(
-      33, Join({BytesField(1, session_id), VarintField(2, 7), VarintField(3, 3600)}));
+      33, Join({BytesField(1, session_id), VarintField(2, 7), VarintField(3, 86400)}));
   Require(hearport::wire::DecodeControlEnvelope(maximum_duration_start).has_value(),
-          "one-hour diagnostic duration is accepted");
+          "one-day diagnostic duration is accepted");
   const auto excessive_duration_start = Envelope(
-      33, Join({BytesField(1, session_id), VarintField(2, 7), VarintField(3, 3601)}));
+      33, Join({BytesField(1, session_id), VarintField(2, 7), VarintField(3, 86401)}));
   Require(!hearport::wire::DecodeControlEnvelope(excessive_duration_start).has_value(),
-          "diagnostic duration over one hour is rejected");
+          "diagnostic duration over one day is rejected");
   const auto decoded_connect_features =
       hearport::wire::DecodeControlEnvelope(connect_features);
   Require(decoded_connect_features.has_value(), "ConnectRequest features decode");
