@@ -35,3 +35,26 @@ and pairing still establish the peer identity.
 ### Receiver-initiated environment calibration
 
 On an authenticated ordinary audio stream, a receiver may send a ProbeManifest containing calibration version 4, kind 6, the current stream ID (u32 big endian), seconds (u16, 30/60/120), and ceiling milliseconds (u16, 20..2000). The manifest envelope stream ID must match. Diagnostic sessions and duplicate requests are rejected. The GUI schedules a restart into the existing LAN calibration mode; a receiver with saved pairing reconnects and uses the ordinary calibration handshake. A sent request is not a completed calibration.
+
+### Compression diagnostics
+
+Feature bit `256` negotiates compression tests. Music manifests use version `4`
+and 24 bytes: version/index/count/flags (four bytes), seconds (u16), profile and
+repeat (one byte each), first logical sequence and generation (u32 each), frames,
+bitrate in kbps, codec lookahead frames and reserved zero (u16 each). Integers
+are big endian. Count is 32; flags are 2 (adaptive Datagram) or 3 (adaptive
+Reliable). Profiles 0/1 are Float32/PCM16 at 120 frames; profiles 2–4 and 5–7
+are Opus 192/256 kbps at 120/240/480 frames respectively. Each profile/transport
+occurs once in each of two repetitions.
+
+Timed records retain their 32-byte header. Kinds 5 and 6 identify Opus and
+PCM16. Opus has 120/240/480 frames and a variable payload up to 992 bytes;
+PCM16 is 120 stereo frames in 480 little-endian bytes. The sequence coordinate
+is still 120 frames: a 480-frame packet advances it by four. Reliable music
+v4 uses the stream/generation preface followed by u16 length-prefixed timed
+records. It does not use ordinary fixed-size reliable audio records.
+
+Synthetic compression manifests use version 3, 40 rounds and the exact
+payload/rate profiles in `network_probe.h` and `CoordinatedProbePlan`.
+`DiagnosticsStart` permits 60–86400 seconds so long finite comparisons fit.
+Neither extension changes ordinary PCM playback defaults.

@@ -33,7 +33,7 @@ struct MusicTestRound: Equatable, Sendable {
 
     init(encoded: Data) throws {
         if encoded.count == 16, encoded[0] == 3 {
-            try self.init(legacy: encoded)
+            self = try MusicTestRound(legacy: encoded)
             return
         }
         guard encoded.count == 24, encoded[0] == 4, (1...32).contains(encoded[1]),
