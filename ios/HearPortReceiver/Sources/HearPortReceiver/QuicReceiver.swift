@@ -25,7 +25,7 @@ public final class HearPortReceiver {
     private var reliableSourceFloor: UInt64 = 0
     private var compressionMusicDecoder: CompressionMusicDecoder?
     private var compressionMusicRound: MusicTestRound?
-    private var compressionSourceFramesPrepared = 0
+    private var compressionSourceCoverage: CompressionSourceCoverage?
     private var compressionExpiredFramesAtStart: UInt64 = 0
     private var playoutAdaptive = true
     private var playoutMaximumCorrection = 0.05
@@ -340,7 +340,9 @@ public final class HearPortReceiver {
             return false
         }
         reliableSourceFloor = UInt64(round.firstSequence) * 120
-        compressionSourceFramesPrepared = 0
+        compressionSourceCoverage = round.isCompressionTest ? CompressionSourceCoverage(
+            sourceBegin: UInt64(round.firstSequence) * 120,
+            sourceEnd: UInt64(round.firstSequence) * 120 + UInt64(round.seconds * 48_000)) : nil
         timedPackets.removeAll(keepingCapacity: true)
         sourceAnchor = nil
         jitter = JitterBuffer(streamID: streamID, targetPackets: jitterTargetPackets,
@@ -370,6 +372,15 @@ public final class HearPortReceiver {
         }
         lock.unlock()
         let mapped = mappedCapture(record, at: receivedAt)
+        if let mapped, decoder.valid(record) {
+            lock.lock()
+            guard compressionMusicDecoder === decoder, session.activeStreamID == record.streamID else {
+                lock.unlock(); return
+            }
+            playoutController?.observeArrival(sourceFrame: record.sourceFrame,
+                capturedAt: mapped.0, receivedAt: receivedAt)
+            lock.unlock()
+        }
         decoder.receive(record, mappedCapturedAt: mapped?.0,
                         uncertainty: mapped?.1 ?? .max, receivedAt: receivedAt)
     }
@@ -398,7 +409,8 @@ public final class HearPortReceiver {
         lock.lock()
         let decoder = compressionMusicDecoder
         let round = compressionMusicRound
-        let sourceFramesPrepared = compressionSourceFramesPrepared
+        let sourceFramesPrepared = compressionSourceCoverage?.preparedFrames ?? 0
+        let longestMissingSourceFrames = compressionSourceCoverage?.longestMissingSourceFrames ?? 0
         let expiredFrames = max(0, Int(clamping: renderRing.expiredFrames &- compressionExpiredFramesAtStart))
         let firstSourceFrame = round.map { UInt64($0.firstSequence) * 120 } ?? 0
         let playedSourceEnd = renderRing.lastSourceFrame
@@ -410,10 +422,11 @@ public final class HearPortReceiver {
         }
         compressionMusicDecoder = nil
         compressionMusicRound = nil
-        compressionSourceFramesPrepared = 0
+        compressionSourceCoverage = nil
         lock.unlock()
         compressionAdmissionLock.unlock()
         decoder?.finish(reason: reason, sourceFramesPrepared: sourceFramesPrepared,
+                        longestMissingSourceFrames: longestMissingSourceFrames,
                         playoutExpiredOutputFrames: expiredFrames,
                         playoutSourceFrames: playoutSourceFrames)
     }
@@ -571,7 +584,8 @@ public final class HearPortReceiver {
                         clockMapping.uncertainty(at: receivedAt, remoteNanoseconds: timedRecord.capturedAt))
                     if sourceAnchor == nil { sourceAnchor = (packet.sequence, timedRecord.sourceFrame) }
                 }
-                if insertResult == .inserted || insertResult == .late, let timedRecord, let captured {
+                if compressionMusicRound == nil,
+                   insertResult == .inserted || insertResult == .late, let timedRecord, let captured {
                     playoutController?.observeArrival(sourceFrame: timedRecord.sourceFrame,
                         capturedAt: captured, receivedAt: receivedAt, original: timedRecord.kind == .audio)
                 }
@@ -863,15 +877,7 @@ public final class HearPortReceiver {
                 // Uniform source labels can be newer than a splice's oldest contributing sample.
                 let spliceMargin = UInt64(abs(Int(sourceEnd - position) - samples.count / 2)) * 1_000_000_000 / 48_000
                 renderDeadline = renderDeadline > spliceMargin ? renderDeadline - spliceMargin : 0
-                if let round = compressionMusicRound {
-                    let roundStart = UInt64(round.firstSequence) * 120
-                    let roundEnd = roundStart + UInt64(round.seconds * 48_000)
-                    let clippedStart = max(position, roundStart)
-                    let clippedEnd = min(sourceEnd, roundEnd)
-                    if clippedEnd > clippedStart {
-                        compressionSourceFramesPrepared += Int(clippedEnd - clippedStart)
-                    }
-                }
+                compressionSourceCoverage?.recordPrepared(sourceBegin: position, sourceEnd: sourceEnd)
                 concealingAtomic.store(0)
                 renderRing.pushTimed(concealment.accept(samples), sourceBegin: position,
                                       sourceEnd: sourceEnd, capturedAt: captured, deadline: renderDeadline)

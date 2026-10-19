@@ -46,6 +46,7 @@ struct CompressionMusicSummary: Equatable {
     let decodedAdmittedFrames: Int
     let sourceFramesPrepared: Int
     let missingFrames: Int
+    let longestMissingSourceFrames: Int
     let decoderMissingFrames: Int
     let playoutExpiredOutputFrames: Int
     let playoutSourceFrames: Int
@@ -229,6 +230,7 @@ final class CompressionMusicDecoder {
     func finish(at now: UInt64? = nil,
                 reason: String,
                 sourceFramesPrepared: Int = 0,
+                longestMissingSourceFrames: Int = 0,
                 playoutExpiredOutputFrames: Int = 0,
                 playoutSourceFrames: Int = 0) -> CompressionMusicSummary? {
         lock.lock()
@@ -253,6 +255,8 @@ final class CompressionMusicDecoder {
             decodedAdmittedFrames: decodedAdmittedFrames,
             sourceFramesPrepared: preparedSourceFrames,
             missingFrames: expectedFrames - preparedSourceFrames,
+            longestMissingSourceFrames: min(expectedFrames - preparedSourceFrames,
+                                            max(0, longestMissingSourceFrames)),
             decoderMissingFrames: decoderMissingFrames,
             playoutExpiredOutputFrames: max(0, playoutExpiredOutputFrames),
             playoutSourceFrames: max(0, playoutSourceFrames),
@@ -280,6 +284,8 @@ final class CompressionMusicDecoder {
         fields["decoded_admitted_frames"] = "\(summary.decodedAdmittedFrames)"
         fields["source_frames_prepared"] = "\(summary.sourceFramesPrepared)"
         fields["missing_frames"] = "\(summary.missingFrames)"
+        fields["longest_missing_source_frames"] = "\(summary.longestMissingSourceFrames)"
+        fields["longest_missing_ms"] = String(format: "%.3f", Double(summary.longestMissingSourceFrames) / 48)
         fields["missing_measurement_source"] = "source_preparation"
         fields["decoder_missing_frames"] = "\(summary.decoderMissingFrames)"
         fields["playout_expired_output_frames"] = "\(summary.playoutExpiredOutputFrames)"
@@ -306,7 +312,7 @@ final class CompressionMusicDecoder {
         return summary
     }
 
-    private func valid(_ record: TimedAudioRecord) -> Bool {
+    func valid(_ record: TimedAudioRecord) -> Bool {
         let expectedKind: AudioRecordKind = round.profile == 0 ? .audio :
             (round.profile == 1 ? .pcm16 : .opus)
         let totalUnits = UInt32(round.seconds * 400)

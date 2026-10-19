@@ -397,7 +397,10 @@ def _round_result(key, fields, summaries, packets):
 
     duration = metadata.get("duration_seconds")
     missing_frames = receiver.get("missing_frames") if receiver else None
-    missing_source = "receiver_missing_frames" if missing_frames is not None else None
+    missing_source = (
+        receiver.get("missing_measurement_source") or "receiver_missing_frames"
+        if missing_frames is not None and receiver is not None else None
+    )
     if missing_frames is None and receiver is not None:
         if receiver.get("missing_before_jitter") is not None and receiver.get("frame_count") is not None:
             missing_frames = float(receiver["missing_before_jitter"]) * float(receiver["frame_count"])
@@ -413,6 +416,14 @@ def _round_result(key, fields, summaries, packets):
                    if duration is not None and metadata.get("sample_rate") else None)
     missing_fraction = (float(missing_frames) / denominator
                         if missing_frames is not None and denominator else None)
+    longest_missing_frames = (
+        receiver.get("longest_missing_source_frames") if receiver else None
+    )
+    longest_missing_ms = receiver.get("longest_missing_ms") if receiver else None
+    if longest_missing_ms is None and longest_missing_frames is not None:
+        longest_missing_ms = (
+            float(longest_missing_frames) / float(metadata["sample_rate"]) * 1000
+        )
 
     accepted = sender.get("accepted") if sender else None
     received = receiver.get("received") if receiver else None
@@ -459,6 +470,7 @@ def _round_result(key, fields, summaries, packets):
         "round_flags": round_flags,
         "missing_measurement_source": missing_source,
         "time_weighted_missing_fraction": missing_fraction,
+        "longest_missing_milliseconds": longest_missing_ms,
         "packet_loss_fraction": packet_loss,
         "late_packet_fraction": late_fraction,
         "encode_ns_per_frame": encode_ns_per_frame,
@@ -479,7 +491,7 @@ def _paired_differences(rounds):
 
     metric_names = (
         "time_weighted_missing_fraction", "packet_loss_fraction", "late_packet_fraction",
-        "encode_ns_per_frame", "decode_ns_per_frame",
+        "longest_missing_milliseconds", "encode_ns_per_frame", "decode_ns_per_frame",
     )
     results = []
     for (source, session_id, stream_id, profile, transport), repeats in sorted(
@@ -669,15 +681,24 @@ def _pcm_baseline_comparisons(rounds):
                     baseline["time_weighted_missing_fraction"] is not None):
                 missing_delta = (target["time_weighted_missing_fraction"] -
                                  baseline["time_weighted_missing_fraction"])
+            longest_missing_delta = None
+            if (target["longest_missing_milliseconds"] is not None and
+                    baseline["longest_missing_milliseconds"] is not None):
+                longest_missing_delta = (
+                    target["longest_missing_milliseconds"] -
+                    baseline["longest_missing_milliseconds"]
+                )
             baseline_bytes = _bytes_per_frame(baseline)
             target_bytes = _bytes_per_frame(target)
             bytes_reduction = (baseline_bytes - target_bytes
                                if baseline_bytes is not None and target_bytes is not None else None)
             repeats.append({
                 "repeat": repeat,
-                "status": "compared" if missing_delta is not None or bytes_reduction is not None
+                "status": "compared" if (missing_delta is not None or bytes_reduction is not None or
+                                           longest_missing_delta is not None)
                 else "incomplete_evidence",
                 "missing_fraction_delta": missing_delta,
+                "longest_missing_milliseconds_delta": longest_missing_delta,
                 "baseline_bytes_per_frame": baseline_bytes,
                 "profile_bytes_per_frame": target_bytes,
                 "bytes_per_frame_reduction": bytes_reduction,
@@ -688,8 +709,10 @@ def _pcm_baseline_comparisons(rounds):
 
         paired = [item for item in repeats if item.get("status") == "compared"]
         missing_values = [item.get("missing_fraction_delta") for item in paired]
+        longest_missing_values = [item.get("longest_missing_milliseconds_delta") for item in paired]
         bytes_values = [item.get("bytes_per_frame_reduction") for item in paired]
         missing_consistency = _direction_consistent(missing_values)
+        longest_missing_consistency = _direction_consistent(longest_missing_values)
         bytes_consistency = _direction_consistent(bytes_values)
         status = "compared" if len(paired) == 2 and not flags else "incomplete_comparison"
         results.append({
@@ -707,12 +730,18 @@ def _pcm_baseline_comparisons(rounds):
                 if len(missing_values) == 2 and all(value is not None for value in missing_values)
                 else None
             ),
+            "mean_longest_missing_milliseconds_delta": (
+                sum(longest_missing_values) / len(longest_missing_values)
+                if len(longest_missing_values) == 2 and
+                all(value is not None for value in longest_missing_values) else None
+            ),
             "mean_bytes_per_frame_reduction": (
                 sum(bytes_values) / len(bytes_values)
                 if len(bytes_values) == 2 and all(value is not None for value in bytes_values)
                 else None
             ),
             "missing_fraction_direction_consistent": missing_consistency,
+            "longest_missing_direction_consistent": longest_missing_consistency,
             "bytes_per_frame_direction_consistent": bytes_consistency,
             "both_metrics_direction_consistent": (
                 missing_consistency and bytes_consistency
