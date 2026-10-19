@@ -59,6 +59,104 @@ final class QuicTransportTests: XCTestCase {
         wait(for: [audio], timeout: 15)
     }
 
+    func testCompressionMusicUsesFramedVariableRecordsAcrossOneConnection() throws {
+        guard ProcessInfo.processInfo.environment["HEARPORT_QUIC_INTEGRATION"] == "1" else {
+            throw XCTSkip("Requires the loopback QUIC echo server")
+        }
+        let diagnostics = HearPortDiagnostics(
+            directory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
+        let transport = HearPortQuicTransport(diagnostics: diagnostics, audioMode: .reliable)
+        let ready = expectation(description: "One QUIC connection for all compression rounds")
+        let audio = expectation(description: "PCM16 datagram, three framed Opus records, Float32 datagram")
+        audio.expectedFulfillmentCount = 5
+
+        func round(_ index: UInt8, reliable: Bool, profile: UInt8,
+                   frames: UInt16, bitrate: UInt16, generation: UInt32) throws -> MusicTestRound {
+            var manifest = Data([4, index, 32, reliable ? 3 : 2, 0, 60, profile, 1])
+            let firstSequence = UInt32(index - 1) * 60 * 400
+            for value in [firstSequence, generation] {
+                for shift in [24, 16, 8, 0] {
+                    manifest.append(UInt8(truncatingIfNeeded: value >> shift))
+                }
+            }
+            for value in [frames, bitrate, profile >= 2 ? UInt16(120) : UInt16(0), UInt16(0)] {
+                manifest.append(UInt8(truncatingIfNeeded: value >> 8))
+                manifest.append(UInt8(truncatingIfNeeded: value))
+            }
+            return try MusicTestRound(encoded: manifest)
+        }
+        let first = try round(1, reliable: false, profile: 1, frames: 120, bitrate: 0, generation: 2)
+        let second = try round(2, reliable: true, profile: 7, frames: 480, bitrate: 256, generation: 4)
+        let third = try round(3, reliable: false, profile: 0, frames: 120, bitrate: 0, generation: 6)
+        let expectedSequences: [UInt32] = [0, 24_000, 24_004, 24_008, 48_000]
+        var nextPacket = 0
+
+        transport.onStateChange = { state in
+            if state == .ready {
+                ready.fulfill()
+                transport.acceptCoordinatedAudio()
+                transport.enableMusicTest()
+                transport.expectReliableAudio(streamID: 1, latestReceivedSequence: { nil })
+                transport.prepareMusicRound(first)
+                do { try transport.sendControl(Data("COMPRESSION_TEST_1".utf8)) }
+                catch { XCTFail("Compression command failed: \(error)") }
+            } else if state == .failed {
+                XCTFail("Compression transport switching closed the QUIC connection")
+            }
+        }
+        transport.onProbePacket = { _, _, _, _ in
+            XCTFail("Compression music reached the synthetic probe handler")
+        }
+        transport.onAudioDatagram = { data in
+            guard let record = try? TimedAudioRecord(encoded: data) else {
+                XCTFail("Invalid compression transport record"); return
+            }
+            guard nextPacket < expectedSequences.count else {
+                XCTFail("Unexpected extra compression packet"); return
+            }
+            XCTAssertEqual(record.streamID, 1)
+            XCTAssertEqual(record.sequence, expectedSequences[nextPacket])
+            XCTAssertEqual(record.sourceFrame, UInt64(record.sequence) * 120)
+            XCTAssertEqual(record.capturedAt, 1)
+            switch nextPacket {
+            case 0:
+                XCTAssertEqual(record.generation, 2)
+                XCTAssertEqual(record.kind, .pcm16)
+                XCTAssertEqual(record.frameCount, 120)
+                XCTAssertEqual(record.payload, Data(repeating: 17, count: 480))
+            case 1...3:
+                XCTAssertEqual(record.generation, 4)
+                XCTAssertEqual(record.kind, .opus)
+                XCTAssertEqual(record.frameCount, 480)
+                XCTAssertEqual(record.payload, Data(repeating: UInt8(160 + nextPacket), count: 320))
+            default:
+                XCTAssertEqual(record.generation, 6)
+                XCTAssertEqual(record.kind, .audio)
+                XCTAssertEqual(record.frameCount, 120)
+                XCTAssertEqual(record.payload, Data(repeating: 0, count: 960))
+            }
+            nextPacket += 1
+            audio.fulfill()
+            do {
+                if nextPacket == 1 {
+                    transport.prepareMusicRound(second)
+                    try transport.sendControl(Data("COMPRESSION_TEST_2".utf8))
+                } else if nextPacket == 4 {
+                    transport.prepareMusicRound(third)
+                    try transport.sendControl(Data("COMPRESSION_TEST_3".utf8))
+                }
+            } catch { XCTFail("Compression round switch failed: \(error)") }
+        }
+        defer {
+            transport.cancel()
+            print(diagnostics.recentLines().joined(separator: "\n"))
+        }
+        transport.connect(host: "127.0.0.1", port: 44330,
+                          tlsPolicy: .pairing(onPeerSPKIHash: { _ in }))
+        wait(for: [ready, audio], timeout: 15)
+        XCTAssertEqual(nextPacket, 5)
+    }
+
     func testNetworkProbeReceivesBothModesAndQueueHeartbeats() throws {
         guard ProcessInfo.processInfo.environment["HEARPORT_QUIC_INTEGRATION"] == "1" else {
             throw XCTSkip("Requires the loopback QUIC echo server")

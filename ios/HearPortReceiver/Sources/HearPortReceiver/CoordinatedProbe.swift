@@ -1,6 +1,11 @@
 import Foundation
 
 public struct CoordinatedProbePlan: Sendable {
+    private static let compressionProfiles: [(payloadBytes: Int, packetsPerSecond: Int)] = [
+        (992, 400), (512, 400), (112, 400), (192, 200), (352, 100),
+        (92, 400), (152, 200), (272, 100), (112, 200), (112, 100),
+    ]
+
     public struct Round: Sendable {
         public let payloadBytes, packetsPerSecond, burstPackets, variant: Int
         public let reliable: Bool
@@ -13,11 +18,16 @@ public struct CoordinatedProbePlan: Sendable {
     public var durationSeconds: Int { activeDurationSeconds + 10 }
 
     public init(encoded: Data) throws {
-        guard encoded.count >= 4, [1, 2].contains(encoded[0]), encoded[2] == 30,
-              encoded[0] == 1 || encoded[3] <= 10,
-              (1...100).contains(Int(encoded[1])), encoded.count == 4 + Int(encoded[1]) * 12
+        guard encoded.count >= 4 else { throw ControlMessageError.invalidMessage }
+        let version = Int(encoded[0]), roundCount = Int(encoded[1])
+        guard [1, 2, 3].contains(version), encoded[2] == 30,
+              (version == 3
+                ? roundCount == Self.compressionProfiles.count * 4 && encoded[3] == 5
+                : (version == 1 || encoded[3] <= 10) && (1...100).contains(roundCount)),
+              encoded.count == 4 + roundCount * 12
         else { throw ControlMessageError.invalidMessage }
         var result: [Round] = []
+        var seenCompressionPairs = Set<Int>()
         for start in stride(from: 4, to: encoded.count, by: 12) {
             let bytes = Int(encoded[start]) * 256 + Int(encoded[start + 1])
             let rate = Int(encoded[start + 2]) * 256 + Int(encoded[start + 3])
@@ -25,17 +35,31 @@ public struct CoordinatedProbePlan: Sendable {
             let reliable = encoded[start + 6], repeated = Int(encoded[start + 7])
             let controller = Int(encoded[start + 8]), repair = Int(encoded[start + 9])
             let correction = Int(encoded[start + 10])
-            guard [512, 992].contains(bytes), [200, 400].contains(rate),
-                  [1, 4].contains(burst), variant < 5, reliable <= 1,
-                  [1, 2].contains(repeated), (0...3).contains(controller), (0...3).contains(repair),
-                  reliable == 0 || repair == 0, [5, 10].contains(correction)
-            else { throw ControlMessageError.invalidMessage }
+            if version == 3 {
+                guard variant < Self.compressionProfiles.count,
+                      bytes == Self.compressionProfiles[variant].payloadBytes,
+                      rate == Self.compressionProfiles[variant].packetsPerSecond,
+                      burst == 1, reliable <= 1, [1, 2].contains(repeated),
+                      controller == 2, repair == 0, correction == 5, encoded[start + 11] == 0
+                else { throw ControlMessageError.invalidMessage }
+                let pair = ((repeated - 1) * Self.compressionProfiles.count + variant) * 2 + Int(reliable)
+                guard seenCompressionPairs.insert(pair).inserted
+                else { throw ControlMessageError.invalidMessage }
+            } else {
+                guard [512, 992].contains(bytes), [200, 400].contains(rate),
+                      [1, 4].contains(burst), variant < 5, reliable <= 1,
+                      [1, 2].contains(repeated), (0...3).contains(controller), (0...3).contains(repair),
+                      reliable == 0 || repair == 0, [5, 10].contains(correction)
+                else { throw ControlMessageError.invalidMessage }
+            }
             result.append(Round(payloadBytes: bytes, packetsPerSecond: rate, burstPackets: burst,
                 variant: variant, reliable: reliable == 1, repeatIndex: repeated,
                 controller: controller, repair: repair, correctionPercent: correction))
         }
+        guard version != 3 || seenCompressionPairs.count == Self.compressionProfiles.count * 4
+        else { throw ControlMessageError.invalidMessage }
         rounds = result
-        recoverySeconds = encoded[0] == 2 ? Int(encoded[3]) : 0
+        recoverySeconds = version >= 2 ? Int(encoded[3]) : 0
     }
 }
 

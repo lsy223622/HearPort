@@ -28,4 +28,28 @@ final class TimedAudioRecordTests: XCTestCase {
         _ = try records.append(Data([0]))
         XCTAssertThrowsError(try records.finish())
     }
+
+    func testCompressionRecordKindsValidateCodecFramingAndPayloadSizes() throws {
+        let opus = try TimedAudioRecord(streamID: 17, generation: 2, sequence: 4,
+            frameCount: 480, kind: .opus, capturedAt: 1_000,
+            sourceFrame: 480, payload: Data(repeating: 0xa5, count: 992))
+        XCTAssertEqual(opus.encoded.count, 1_024)
+        XCTAssertEqual(try TimedAudioRecord(encoded: opus.encoded), opus)
+
+        let pcm16 = try TimedAudioRecord(streamID: 17, generation: 2, sequence: 0,
+            frameCount: 120, kind: .pcm16, capturedAt: 1_000,
+            sourceFrame: 0, payload: Data(repeating: 0, count: 480))
+        XCTAssertEqual(try TimedAudioRecord(encoded: pcm16.encoded), pcm16)
+
+        let opus240 = try TimedAudioRecord(streamID: 17, generation: 2, sequence: 0,
+            frameCount: 240, kind: .opus, capturedAt: 1_000,
+            sourceFrame: 0, payload: Data([1]))
+        XCTAssertEqual(try TimedAudioRecord(encoded: opus240.encoded), opus240)
+        XCTAssertThrowsError(try TimedAudioRecord(streamID: 17, generation: 2, sequence: 0,
+            frameCount: 120, kind: .pcm16, capturedAt: 1_000,
+            sourceFrame: 0, payload: Data(repeating: 0, count: 478)))
+        XCTAssertThrowsError(try TimedAudioRecord(streamID: 17, generation: 2, sequence: 0,
+            frameCount: 960, kind: .opus, capturedAt: 1_000,
+            sourceFrame: 0, payload: Data([1])))
+    }
 }

@@ -39,6 +39,46 @@ class EchoProtocol(QuicConnectionProtocol):
                 return
             self._quic.send_stream_data(event.stream_id, event.data, end_stream=False)
             self.reliable_requests.extend(event.data)
+            for command, sequence, generation, kind, frames, payload in [
+                (b"COMPRESSION_TEST_1", 0, 2, 6, 120, bytes([17]) * 480),
+                (b"COMPRESSION_TEST_2", 24000, 4, 5, 480, bytes([161]) * 320),
+                (b"COMPRESSION_TEST_3", 48000, 6, 0, 120, bytes(960)),
+            ]:
+                if command not in self.reliable_requests:
+                    continue
+
+                def timed_packet(packet_sequence, packet_payload):
+                    return ((1).to_bytes(4, "big") + generation.to_bytes(4, "big") +
+                            packet_sequence.to_bytes(4, "big") + frames.to_bytes(2, "big") +
+                            kind.to_bytes(2, "big") + (1).to_bytes(8, "big") +
+                            (packet_sequence * 120).to_bytes(8, "big") + packet_payload)
+
+                packet = timed_packet(sequence, payload)
+                if kind == 5:
+                    stream = self._quic.get_next_available_stream_id(is_unidirectional=True)
+                    preface = (1).to_bytes(4, "big") + generation.to_bytes(4, "big")
+                    framed = len(packet).to_bytes(2, "big") + packet
+                    following = b"".join(
+                        len(extra).to_bytes(2, "big") + extra
+                        for extra in [timed_packet(sequence + 4, bytes([162]) * 320),
+                                      timed_packet(sequence + 8, bytes([163]) * 320)])
+                    chunks = [preface[:3], preface[3:] + framed[:1],
+                              framed[1:15], framed[15:] + following]
+                    self._quic.send_stream_data(stream, chunks[0], end_stream=False)
+                    self.transmit()
+
+                    def send_chunk(chunk, final):
+                        self._quic.send_stream_data(stream, chunk, end_stream=final)
+                        self.transmit()
+
+                    loop = asyncio.get_running_loop()
+                    for index, chunk in enumerate(chunks[1:], 1):
+                        loop.call_later(index * 0.025, send_chunk, chunk, index == 3)
+                else:
+                    self._quic.send_datagram_frame(packet)
+                self.sent_audio = True
+                self.reliable_requests.clear()
+                break
             for command, sequence, generation, reliable in [
                 (b"MUSIC_TEST_1", 0, 2, False),
                 (b"MUSIC_TEST_2", 96000, 4, True),

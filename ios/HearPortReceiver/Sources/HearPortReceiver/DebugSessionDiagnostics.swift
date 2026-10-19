@@ -19,6 +19,8 @@ private struct DebugSessionMetadata {
     let startedAt: UInt64
     let networkProbe: Bool
     let networkProbeRepeat: Bool
+    let compressionMusic: Bool
+    let traceSequenceStride: Int
     let coordinatedPlan: CoordinatedProbePlan?
     let physicalPath: String
     let connectionID: String
@@ -115,6 +117,7 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
     private var session: DebugSessionMetadata?
     private var records: [DebugPacketTraceRecord] = []
     private var jitterDecisions: [DebugJitterDecisionRecord] = []
+    private var compressionSummaries: [String] = []
     private var probePackets: [DebugProbePacketRecord] = []
     private var coordinatedPlan: CoordinatedProbePlan?
     private var calibration: EnvironmentCalibrationSession?
@@ -147,11 +150,13 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
 
     public func begin(sessionID: Data, streamID: UInt32, durationSeconds: UInt32,
                       networkProbe: Bool = false,
-                      networkProbeRepeat: Bool = false) {
+                      networkProbeRepeat: Bool = false,
+                      compressionMusic: Bool = false) {
         precondition(sessionID.count == 16 && streamID != 0)
         lock.lock()
         records.removeAll(keepingCapacity: true)
         jitterDecisions.removeAll(keepingCapacity: true)
+        compressionSummaries.removeAll(keepingCapacity: true)
         probePackets.removeAll(keepingCapacity: true)
         probeHeartbeats.removeAll(keepingCapacity: true)
         playback.removeAll(keepingCapacity: true)
@@ -168,6 +173,9 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
             jitterDecisions.reserveCapacity(capacity)
         }
         dropped.store(0)
+        let traceSequenceStride = compressionMusic
+            ? Self.compressionTraceSequenceStride(durationSeconds: durationSeconds, capacity: capacity)
+            : 1
         session = DebugSessionMetadata(
             sessionID: sessionID,
             streamID: streamID,
@@ -175,6 +183,8 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
             startedAt: DispatchTime.now().uptimeNanoseconds,
             networkProbe: networkProbe,
             networkProbeRepeat: networkProbeRepeat,
+            compressionMusic: compressionMusic,
+            traceSequenceStride: traceSequenceStride,
             coordinatedPlan: coordinatedPlan,
             physicalPath: physicalPath, connectionID: connectionID
         )
@@ -189,7 +199,8 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
                 "session_id": Self.hex(sessionID),
                 "stream_id": "\(streamID)",
                 "duration_seconds": "\(durationSeconds)",
-                "trace_capacity": "\(capacity)"
+                "trace_capacity": "\(capacity)",
+                "trace_sequence_stride": "\(traceSequenceStride)"
             ]
         )
     }
@@ -377,6 +388,8 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
         }
         defer { lock.unlock() }
         guard recording.load() != 0, session != nil else { return }
+        if let session, session.compressionMusic,
+           !sequence.isMultiple(of: UInt32(session.traceSequenceStride)) { return }
         guard records.count + jitterDecisions.count < capacity else {
             dropped.increment()
             return
@@ -403,6 +416,8 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
         }
         defer { lock.unlock() }
         guard recording.load() != 0, session != nil else { return }
+        if let session, session.compressionMusic,
+           !sequence.isMultiple(of: UInt32(session.traceSequenceStride)) { return }
         guard records.count + jitterDecisions.count < capacity else {
             dropped.increment()
             return
@@ -414,6 +429,22 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
             decision: decision,
             fillPackets: UInt32(clamping: max(0, fillPackets))
         ))
+    }
+
+    func recordCompressionSummary(fields: [String: String]) {
+        guard recording.load() != 0 else { return }
+        lock.lock()
+        defer { lock.unlock() }
+        guard recording.load() != 0, session?.compressionMusic == true,
+              compressionSummaries.count < 32,
+              let session else { return }
+        var summary = fields
+        summary["session_id"] = Self.hex(session.sessionID)
+        summary["path_id"] = session.physicalPath
+        summary["connection_id"] = session.connectionID
+        guard let data = try? JSONSerialization.data(withJSONObject: summary, options: [.sortedKeys]),
+              let json = String(data: data, encoding: .utf8) else { return }
+        compressionSummaries.append(json)
     }
 
     @discardableResult
@@ -434,6 +465,7 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
         let capturedProbeHeartbeats: [(at: UInt64, scheduledAt: UInt64)]
         let dropCount: UInt64
         let capturedPlayback: [String]
+        let capturedCompressionSummaries: [String]
         let capturedBudget: PlayoutBudget
         let capturedClockExchanges: [String]
         let clockUnavailableCount: UInt64
@@ -451,6 +483,7 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
         capturedProbeHeartbeats = probeHeartbeats
         dropCount = dropped.load()
         capturedPlayback = playback
+        capturedCompressionSummaries = compressionSummaries
         capturedBudget = probeBudget
         capturedClockExchanges = clockExchanges
         clockUnavailableCount = clockUnavailablePackets.load()
@@ -471,6 +504,7 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
                 probePackets: capturedProbePackets,
                 probeHeartbeats: capturedProbeHeartbeats,
                 playback: capturedPlayback,
+                compressionSummaries: capturedCompressionSummaries,
                 clockExchanges: capturedClockExchanges,
                 clockUnavailableCount: clockUnavailableCount,
                 budget: capturedBudget,
@@ -491,6 +525,7 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
             if session?.sessionID == metadata.sessionID {
                 records.removeAll(keepingCapacity: true)
                 jitterDecisions.removeAll(keepingCapacity: true)
+                compressionSummaries.removeAll(keepingCapacity: true)
                 probePackets.removeAll(keepingCapacity: true)
                 probeHeartbeats.removeAll(keepingCapacity: true)
                 session = nil
@@ -521,6 +556,7 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
                                    probePackets: [DebugProbePacketRecord],
                                    probeHeartbeats: [(at: UInt64, scheduledAt: UInt64)],
                                    playback: [String],
+                                   compressionSummaries: [String],
                                    clockExchanges: [String],
                                    clockUnavailableCount: UInt64,
                                    budget: PlayoutBudget,
@@ -556,6 +592,8 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
             "trace_records=\(records.count)",
             "jitter_decision_records=\(jitterDecisions.count)",
             "trace_dropped=\(dropCount)",
+            "trace_sequence_stride=\(metadata.traceSequenceStride)",
+            "compression_summary_count=\(compressionSummaries.count)",
             "clock_unmapped_packets=\(clockUnavailableCount)"
         ]
         lines.reserveCapacity(records.count + jitterDecisions.count + probePackets.count + 30)
@@ -660,6 +698,10 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
             lines.append(safeDiagnostics.trimmingCharacters(in: .newlines))
             return lines.joined(separator: "\n") + "\n"
         }
+        if metadata.compressionMusic {
+            lines.append("\ncompression_summary_json_v1")
+            lines.append(contentsOf: compressionSummaries)
+        }
         lines.append("\npacket_trace_v1")
         lines.append("received_at_ns\tstream_id\tsequence\tdisposition\tjitter_result\tfill_packets")
         for record in records {
@@ -731,6 +773,15 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
         value.unicodeScalars.map { scalar in
             scalar == "\t" || scalar == "\r" || scalar == "\n" ? "_" : String(scalar)
         }.joined()
+    }
+
+    private static func compressionTraceSequenceStride(durationSeconds: UInt32,
+                                                        capacity: Int) -> Int {
+        let estimatedRecords = UInt64(durationSeconds) * 400 * 2
+        let required = max(1, (estimatedRecords + UInt64(capacity) - 1) / UInt64(capacity))
+        var stride = 1
+        while UInt64(stride) < required, stride <= Int.max / 2 { stride *= 2 }
+        return stride
     }
 
     private static func hex(_ data: Data) -> String {

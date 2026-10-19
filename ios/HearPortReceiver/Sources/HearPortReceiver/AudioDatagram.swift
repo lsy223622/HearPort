@@ -5,7 +5,7 @@ public enum AudioDatagramError: Error, Equatable {
     case zeroStreamID
 }
 
-public enum AudioRecordKind: UInt16, Sendable { case audio, fec, retransmission, repeated, probe }
+public enum AudioRecordKind: UInt16, Sendable { case audio, fec, retransmission, repeated, probe, opus, pcm16 }
 
 public struct TimedAudioRecord: Equatable, Sendable {
     public let streamID: UInt32
@@ -20,10 +20,20 @@ public struct TimedAudioRecord: Equatable, Sendable {
     public init(streamID: UInt32, generation: UInt32, sequence: UInt32,
                 frameCount: UInt16, kind: AudioRecordKind, capturedAt: UInt64,
                 sourceFrame: UInt64, payload: Data) throws {
-        let pcm = kind == .audio
+        let validFraming: Bool
+        switch kind {
+        case .audio:
+            validFraming = frameCount == 120 && payload.count == 960
+        case .pcm16:
+            validFraming = frameCount == 120 && payload.count == 480
+        case .opus:
+            validFraming = [120, 240, 480].contains(Int(frameCount))
+        default:
+            validFraming = true
+        }
         guard streamID != 0, generation != 0, capturedAt != 0, frameCount != 0,
               !payload.isEmpty, payload.count <= 992, sourceFrame <= UInt64.max - UInt64(frameCount),
-              !pcm || (frameCount == 120 && payload.count == 960) else {
+              validFraming else {
             throw AudioDatagramError.invalidLength(payload.count + 32)
         }
         self.streamID = streamID

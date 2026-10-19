@@ -99,6 +99,7 @@ class SenderAuthentication {
   bool peer_wants_reliable_ = false;
   bool peer_coordinated_audio_ = false;
   bool peer_supports_music_test_ = false;
+  bool peer_supports_compression_ = false;
   bool peer_supports_calibration_ = false;
   bool report_upload_active_ = false;
   std::array<std::byte, 16> report_upload_session_id_{};

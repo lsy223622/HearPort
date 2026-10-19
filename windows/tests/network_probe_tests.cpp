@@ -2,6 +2,8 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <stdexcept>
+#include <utility>
 
 #include "hearport/windows/network_probe.h"
 #include "hearport/windows/sender_service.h"
@@ -48,17 +50,51 @@ int main() {
   const auto next = MakeNetworkProbeDatagram(0x01020304, 0x11223345, 488);
   assert(packet[8] != next[8]);
   const auto coordinated = MakeCoordinatedProbeRounds(7);
-  assert(coordinated.size() == 12);
+  assert(coordinated.size() == 40);
   const auto manifest = EncodeProbeManifest(coordinated);
-  assert(manifest.size() == 148);
-  assert(manifest[0] == std::byte{2} && manifest[1] == std::byte{12});
+  assert(manifest.size() == 484);
+  assert(manifest[0] == std::byte{3} && manifest[1] == std::byte{40});
   assert(manifest[3] == std::byte{5});
-  assert(kCoordinatedProbeDurationSeconds == 425);
+  assert(kCoordinatedProbeRoundCount == 40);
+  assert(kCoordinatedProbeDurationSeconds == 1405);
+  constexpr std::array<std::pair<std::size_t, std::uint32_t>, 10> profiles{{
+      {992, 400}, {512, 400}, {112, 400}, {192, 200}, {352, 100},
+      {92, 400}, {152, 200}, {272, 100}, {112, 200}, {112, 100},
+  }};
   std::uint32_t source_seconds = 0;
-  for (const auto& round : coordinated) {
-    assert(round.payload_bytes == 512 || round.payload_bytes == 992);
-    assert(!round.reliable || round.repair == 0);
+  for (std::size_t index = 0; index < coordinated.size(); ++index) {
+    const auto& round = coordinated[index];
+    assert(round.variant < profiles.size());
+    assert(round.payload_bytes == profiles[round.variant].first);
+    assert(round.packets_per_second == profiles[round.variant].second);
+    assert(round.burst_packets == 1);
+    assert(round.controller == 2 && round.correction_percent == 5 && round.repair == 0);
+    const auto& paired = coordinated[coordinated.size() - 1 - index];
+    assert(round.variant == paired.variant && round.reliable == paired.reliable);
+    assert(round.repeat == (index < 20 ? 1 : 2));
+    if (index % 2 == 0) {
+      assert(coordinated[index + 1].variant == round.variant);
+      assert(coordinated[index + 1].reliable != round.reliable);
+      assert(coordinated[index + 1].repeat == round.repeat);
+    }
     source_seconds += kNetworkProbeSecondsPerRound;
   }
-  assert(source_seconds == 360);
+  for (std::size_t pair = 0; pair < 10; ++pair) {
+    const auto& first = coordinated[pair * 2];
+    const auto second_index = 20 + (9 - pair) * 2;
+    const auto& second = coordinated[second_index];
+    assert(first.variant == second.variant);
+    assert(first.reliable != second.reliable);
+    assert(coordinated[pair * 2 + 1].reliable != coordinated[second_index + 1].reliable);
+  }
+  assert(source_seconds == 1200);
+  auto invalid_coordinated = coordinated;
+  invalid_coordinated[0].packets_per_second = 200;
+  bool rejected = false;
+  try {
+    (void)EncodeProbeManifest(invalid_coordinated);
+  } catch (const std::invalid_argument&) {
+    rejected = true;
+  }
+  assert(rejected);
 }

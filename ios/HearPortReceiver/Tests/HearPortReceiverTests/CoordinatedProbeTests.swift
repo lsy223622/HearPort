@@ -202,6 +202,50 @@ final class CoordinatedProbeTests: XCTestCase {
         XCTAssertThrowsError(try CoordinatedProbePlan(encoded: Data([2, 2, 30, 11] + round + round)))
     }
 
+    func testVersionThreeAcceptsOnlyTheCompleteCompressionMatrix() throws {
+        let profiles: [(Int, Int)] = [
+            (992, 400), (512, 400), (112, 400), (192, 200), (352, 100),
+            (92, 400), (152, 200), (272, 100), (112, 200), (112, 100),
+        ]
+        var rounds: [[UInt8]] = []
+        for repeatIndex in 1...2 {
+            let order = repeatIndex == 1 ? Array(0..<10) : Array((0..<10).reversed())
+            for variant in order {
+                let transports = repeatIndex == 1 ? [0, 1] : [1, 0]
+                for reliable in transports {
+                    let (wireBytes, rate) = profiles[variant]
+                    rounds.append([
+                        UInt8(wireBytes >> 8), UInt8(wireBytes & 255),
+                        UInt8(rate >> 8), UInt8(rate & 255),
+                        1, UInt8(variant), UInt8(reliable), UInt8(repeatIndex),
+                        2, 0, 5, 0,
+                    ])
+                }
+            }
+        }
+        let encoded = Data([3, 40, 30, 5] + rounds.flatMap { $0 })
+        let plan = try CoordinatedProbePlan(encoded: encoded)
+        XCTAssertEqual(plan.rounds.count, 40)
+        XCTAssertEqual(plan.recoverySeconds, 5)
+        XCTAssertEqual(plan.durationSeconds, 1_405)
+        XCTAssertEqual(plan.rounds[0].framesPerPacket, 120)
+        XCTAssertEqual(plan.rounds.first(where: { $0.variant == 4 })?.framesPerPacket, 480)
+        XCTAssertEqual(plan.rounds.last?.framesPerPacket, 120)
+        XCTAssertTrue(plan.rounds.allSatisfy {
+            $0.burstPackets == 1 && $0.controller == 2 && $0.repair == 0 &&
+            $0.correctionPercent == 5
+        })
+
+        var invalidProfile = encoded
+        invalidProfile[4 + 2] = 0
+        invalidProfile[4 + 3] = 100
+        XCTAssertThrowsError(try CoordinatedProbePlan(encoded: invalidProfile))
+        var incomplete = encoded
+        incomplete[1] = 39
+        incomplete.removeLast(12)
+        XCTAssertThrowsError(try CoordinatedProbePlan(encoded: incomplete))
+    }
+
     func testResyncWhileWaitingAdvancesSourceCursor() throws {
         let plan = try CoordinatedProbePlan(encoded: Data([1,1,30,0,3,224,1,144,1,1,1,1,2,0,5,0]))
         var consumer = ProbeConsumer(round: plan.rounds[0], budget: try PlayoutBudget(targetMilliseconds: 10,

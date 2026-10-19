@@ -82,6 +82,13 @@ class SenderService {
   bool AcknowledgeMusicRound();
   std::uint32_t music_test_round() const noexcept { return music_round_.load(); }
   std::uint32_t music_test_frames_processed() const noexcept { return music_frames_processed_.load(); }
+  MusicTestPolicy music_test_policy() const noexcept {
+    const auto packed = music_policy_.load();
+    auto result = MusicProfile(static_cast<std::uint8_t>(packed & 255));
+    result.repeat = static_cast<std::uint8_t>((packed >> 8) & 255);
+    result.reliable = (packed & 0x10000) != 0;
+    return result;
+  }
   bool network_probe() const noexcept { return network_probe_; }
   bool network_probe_recovering() const { return probe_recovering_.load(); }
   std::uint32_t network_probe_packets_processed() const noexcept {
@@ -102,6 +109,19 @@ class SenderService {
   void SetDebugOutputDirectory(std::filesystem::path directory);
   std::filesystem::path debug_session_directory() const;
   bool WaitForDebugCompletion(std::chrono::milliseconds timeout);
+  bool debug_test_succeeded() const {
+    std::lock_guard lock(debug_mutex_);
+    if (!debug_completed_ || debug_end_reason_ != 1) return false;
+    if (music_clip_) return music_round_.load() == kMusicTestRoundCount &&
+        music_frames_processed_.load() == music_clip_->duration_seconds * 48'000;
+    if (calibration_options_) return calibration_stage_.load() == 4;
+    if (network_probe_) {
+      std::uint32_t expected = 0;
+      for (const auto& round : network_probe_rounds()) expected += round.packets_per_second * 30;
+      return probe_packets_processed_.load() == expected;
+    }
+    return true;
+  }
   void MarkDebugReportCommitted(std::span<const std::byte> session_id);
   void LogDiagnostic(std::string_view line) const;
 
@@ -196,6 +216,7 @@ class SenderService {
   std::thread music_thread_;
   std::optional<MusicExcerpt> music_clip_;
   std::atomic<std::uint32_t> music_round_ = 0;
+  std::atomic<std::uint32_t> music_policy_ = 0x100;
   std::mutex music_mutex_;
   std::condition_variable music_condition_;
   bool music_round_pending_ = false;

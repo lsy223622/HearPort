@@ -573,10 +573,10 @@ class Application {
 
     Control(1, L"BUTTON", Tr(L"Live diagnostics…", L"实时诊断…"), WS_TABSTOP | BS_PUSHBUTTON, kDiagnostics);
     Control(1, L"BUTTON", Tr(L"Network test…", L"网络测试…"), WS_TABSTOP | BS_PUSHBUTTON, kNetworkProbe);
-    Control(1, L"BUTTON", Tr(L"Music test…", L"音乐测试…"), WS_TABSTOP | BS_PUSHBUTTON, kMusicTest);
+    Control(1, L"BUTTON", Tr(L"Music compression test…", L"音乐压缩对比测试…"), WS_TABSTOP | BS_PUSHBUTTON, kMusicTest);
     Control(1, L"STATIC", Tr(L"Capture the PC audio output and diagnose the current connection.", L"采集电脑当前声音，诊断实际播放链路。"), SS_LEFT, 0);
     Control(1, L"STATIC", Tr(L"Compare transport with random data; no audio playback.", L"随机数据对比传输组合，不播放音频。"), SS_LEFT, 0);
-    Control(1, L"STATIC", Tr(L"Replay one excerpt across eight automatic comparison rounds.", L"固定音乐片段，自动连续完成八组对照。"), SS_LEFT, 0);
+    Control(1, L"STATIC", Tr(L"Compare PCM and Opus using one excerpt, both transports and repeated rounds.", L"同一片段比较 PCM／Opus，两种传输自动交叉重复。"), SS_LEFT, 0);
     diagnostic_status_ = Control(1, L"STATIC", L"", SS_LEFT, 0);
     Control(1, L"BUTTON", Tr(L"Open sender log", L"打开运行日志"), WS_TABSTOP | BS_PUSHBUTTON, kLog);
     Control(1, L"BUTTON", Tr(L"Open report folder", L"打开报告文件夹"), WS_TABSTOP | BS_PUSHBUTTON, kReports);
@@ -819,19 +819,26 @@ class Application {
       audio_label = Tr(L"Audio source: selected file excerpt", L"音频来源：所选文件的固定片段");
       const auto seconds = service_->music_test_frames_processed() / 48'000;
       const auto round = service_->music_test_round();
-      heading = connected_ ? Tr(L"Music test ", L"音乐测试 ") + std::to_wstring(round) + L"/8" :
-          Tr(L"Music test ready", L"音乐测试待连接");
+      heading = connected_ ? Tr(L"Compression test ", L"压缩对比测试 ") + std::to_wstring(round) + L"/32" :
+          Tr(L"Music compression test ready", L"音乐压缩对比测试待连接");
       if (connected_ && round > 0) {
-        const auto policy = hearport::windows::kMusicTestPolicies[round - 1];
-        detail = (policy.reliable ? L"Reliable" : L"Datagram") +
-            Tr(policy.adaptive ? L" · adaptive" : L" · fixed", policy.adaptive ? L" · 自适应" : L" · 固定") +
-            L"\n" + std::to_wstring(seconds) + L" / " + music_seconds_ + Tr(L" seconds", L" 秒");
+        const auto policy = service_->music_test_policy();
+        const auto encoding = policy.profile == 0 ? L"PCM Float32" : policy.profile == 1 ? L"PCM16" :
+            L"Opus " + std::to_wstring(policy.bitrate_kbps) + L" kbps";
+        detail = std::wstring(policy.reliable ? L"Reliable" : L"Datagram") + L" · " + encoding +
+            L" · " + (policy.frames == 120 ? L"2.5" : policy.frames == 240 ? L"5" : L"10") + L" ms" +
+            L"\n" + Tr(L"Round remaining: ", L"本组剩余：") +
+            std::to_wstring(std::max(0, std::stoi(music_seconds_) - static_cast<int>(seconds))) + Tr(L" s", L" 秒") +
+            Tr(L" · repetition ", L" · 第 ") + std::to_wstring(policy.repeat) + Tr(L"/2", L"/2 次");
         if (seconds >= std::stoul(music_seconds_)) {
-          detail = round == 8 ? Tr(L"Waiting for the iPad report.", L"正在等待 iPad 回传报告。") :
+          detail = round == hearport::windows::kMusicTestRoundCount ? Tr(L"Waiting for the iPad report.", L"正在等待 iPad 回传报告。") :
               Tr(L"Preparing the next comparison round.", L"正在准备下一组对照。 ");
         }
       } else {
-        detail = Tr(L"Connect once; all eight rounds run automatically.", L"连接 iPad 后自动运行全部八组。 ");
+        const auto duration = std::stoul(music_seconds_) * hearport::windows::kMusicTestRoundCount + 165;
+        detail = Tr(L"32 rounds run automatically; estimated ", L"自动运行 32 组；预计 ") +
+            std::to_wstring(duration / 60) + Tr(L" min ", L" 分 ") + std::to_wstring(duration % 60) +
+            Tr(L" s, plus setup and report transfer.", L" 秒，另加协商与报告回传。");
       }
     } else if (running_ && network_probe_active_ && service_->environment_calibration()) {
       const auto progress = service_->calibration_progress();
@@ -946,7 +953,7 @@ class Application {
                          : Tr(L"Audio: low latency", L"音频：低延迟模式");
     } else if (running_ && completed_test_) {
       heading = completed_test_ == kMusicTest
-          ? Tr(L"Music test complete · 8/8", L"音乐测试已完成 · 8/8")
+          ? Tr(L"Music compression test complete · 32/32", L"音乐压缩对比已完成 · 32/32")
           : completed_test_ == kNetworkProbe
               ? Tr(L"Network test complete", L"网络测试已完成")
               : Tr(L"Live diagnostics complete", L"实时诊断已完成");
@@ -1270,8 +1277,8 @@ class Application {
       return input;
     };
     const auto explanation = kind == kMusicTest ?
-        Tr(L"The same excerpt plays in 8 rounds: Datagram/Reliable × fixed/adaptive, repeated in reverse. Each round is 120 seconds by default, with 5 seconds between rounds.",
-           L"同一片段自动运行 8 组：Datagram／Reliable × 固定／自适应，再反序重复。默认每组 120 秒，组间间隔 5 秒。") :
+        Tr(L"32 rounds: Float32, PCM16 and Opus 192/256 kbps at 2.5/5/10 ms; both transports, twice. Default: 66 min 45 s plus setup/upload. Same excerpt each round.",
+           L"32 组：Float32、PCM16、Opus 192／256 kbps（2.5／5／10 ms），两种传输各两次。同一片段；默认约 66 分 45 秒，另加协商与回传。") :
         kind == kNetworkProbe ? Tr(L"Automatic recommendation samples both transports, replays identical input, then validates recommendations twice. Existing transport comparisons remain available. No audio playback.",
            L"自动测试并推荐参数会采样两种传输，以同一轨迹比较预算，再对推荐参数复核两次。也可选择原传输对比测试。全程不播放音频。") :
         Tr(L"Capture the PC's current audio output. The iPad report is returned automatically when the chosen duration ends.",
@@ -1285,21 +1292,21 @@ class Application {
       control(L"STATIC",Tr(L"Round (seconds)",L"每组时长（秒）"),SS_LEFT | SS_CENTERIMAGE,0,20,186,150,29);
       settings_duration_ = edit(music_seconds_,ES_NUMBER,180,186,100);
       control(L"STATIC",Tr(L"Connect once. Transport switches automatically. Reports include round boundaries.",
-          L"只需连接一次，自动切换传输；报告会记录每组边界。"),SS_LEFT,0,20,233,430,40);
+          L"只需连接一次；总传输时间约 32 × 每组秒数 + 165 秒。"),SS_LEFT,0,20,233,430,40);
     } else if (kind == kNetworkProbe) {
       control(L"STATIC",Tr(L"Purpose",L"测试用途"),SS_LEFT | SS_CENTERIMAGE,0,20,94,150,29);
       settings_purpose_ = control(WC_COMBOBOX,L"",CBS_DROPDOWNLIST | WS_TABSTOP,0,180,94,260,100);
       SendMessageW(settings_purpose_,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(Tr(L"Automatic test and parameter recommendations",L"自动测试并推荐参数").c_str()));
-      SendMessageW(settings_purpose_,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(Tr(L"Transport comparison (12 rounds)",L"传输组合对比（12 组）").c_str()));
+      SendMessageW(settings_purpose_,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(Tr(L"Compression traffic comparison (40 rounds)",L"压缩传输负载对比（40 组）").c_str()));
       SendMessageW(settings_purpose_,CB_SETCURSEL,calibration_selected_ ? 0 : 1,0);
-      control(L"STATIC",Tr(L"Maximum delay (ms)",L"最大延迟上限（毫秒）"),SS_LEFT | SS_CENTERIMAGE,0,20,137,205,29);
+      control(L"STATIC",Tr(L"Recommendation maximum (ms)",L"自动推荐：延迟上限（毫秒）"),SS_LEFT | SS_CENTERIMAGE,0,20,137,205,29);
       settings_maximum_ = edit(std::to_wstring(calibration_maximum_),ES_NUMBER,240,137,100);
-      control(L"STATIC",Tr(L"Round duration (seconds)",L"每组时长（秒）"),SS_LEFT | SS_CENTERIMAGE,0,20,180,205,29);
+      control(L"STATIC",Tr(L"Recommendation round (seconds)",L"自动推荐：每组时长（秒）"),SS_LEFT | SS_CENTERIMAGE,0,20,180,205,29);
       settings_duration_ = control(WC_COMBOBOX,L"",CBS_DROPDOWNLIST | WS_TABSTOP,0,240,180,100,120);
       for (const auto* seconds : {L"30",L"60",L"120"}) SendMessageW(settings_duration_,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(seconds));
       SendMessageW(settings_duration_,CB_SETCURSEL,calibration_seconds_ == 30 ? 0 : calibration_seconds_ == 60 ? 1 : 2,0);
-      control(L"STATIC",Tr(L"Automatic recommendation: 4 sampling + up to 6 validation rounds, with 5-second gaps. Default: up to 5 min 55 s, plus analysis and report transfer. Transport comparison: fixed 7 min 5 s.",
-          L"自动测试并推荐参数：4 组采样，最多 6 组复核，组间 5 秒。默认最多 5 分 55 秒，另加分析与回传；时长随组数变化。原传输对比固定 7 分 5 秒。"),SS_LEFT,0,20,223,430,62);
+      control(L"STATIC",Tr(L"Recommendations: 4 sampling + up to 6 validation rounds. Compression traffic: 10 payload/rate profiles × 2 transports × 2 repeats, 30 s each, total 23 min 25 s. No audio or codec runs in traffic tests.",
+          L"自动推荐：4 组采样，最多 6 组复核。压缩负载：10 种大小／频率 × 两种传输 × 两次重复，固定每组 30 秒，共 23 分 25 秒；不播放音频、不运行编码器。"),SS_LEFT,0,20,223,430,62);
     } else if (kind == kDiagnostics) {
       control(L"STATIC",Tr(L"Duration (seconds)",L"时长（秒）"),SS_LEFT | SS_CENTERIMAGE,0,20,94,150,29);
       settings_duration_ = edit(live_seconds_,ES_NUMBER,180,94,100);
@@ -1495,10 +1502,11 @@ class Application {
     if (running_ || pin_expires_) UpdateStatus();
     if (!diagnostic_duration_ || !service_) return;
     if (service_->WaitForDebugCompletion(std::chrono::milliseconds(0))) {
+      const bool succeeded = service_->debug_test_succeeded();
       const int completed_test = music_test_active_ ? kMusicTest :
           network_probe_active_ ? kNetworkProbe : kDiagnostics;
       if (service_->environment_calibration()) calibration_report_path_ = service_->debug_session_directory() / L"ipad-report.txt";
-      completed_test_ = completed_test;
+      completed_test_ = succeeded ? completed_test : 0;
       music_test_active_ = false;
       network_probe_active_ = false;
       connected_ = false;
@@ -1511,8 +1519,11 @@ class Application {
                    RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
       StopService();
       StartService();
-      completed_test_ = running_ ? completed_test : 0;
+      completed_test_ = running_ && succeeded ? completed_test : 0;
       UpdateStatus();
+      if (!succeeded) SetWindowTextW(diagnostic_status_,
+          Tr(L"Test interrupted; the available report was saved. It is not a complete comparison.",
+             L"测试已中断，现有报告已保存；本次不是完整对照。").c_str());
     } else if (Clock::now() - diagnostic_started_ >
                *diagnostic_duration_ + std::chrono::minutes(7)) {
       StopService();

@@ -19,6 +19,13 @@
 "Network test running" = "Network test running";
 "Music test running" = "Music test running";
 "Music test %d/8 · %@ · %@" = "Music test %d/8 · %@ · %@";
+"Compression music tests need the current HearPort Windows app. Update it and retry." = "Compression music tests need the current HearPort Windows app. Update it and retry.";
+"Compression test · %d / %d" = "Compression test · %d / %d";
+"Compression %d/%d · repeat %d/2 · %@ · %@ · %@" = "Compression %d/%d · repeat %d/2 · %@ · %@ · %@";
+"Round remaining %.0f s" = "Round remaining %.0f s";
+"Float PCM" = "Float PCM";
+"PCM16" = "PCM16";
+"Opus · %d kbps" = "Opus · %d kbps";
 "Adaptive" = "Adaptive";
 "Fixed" = "Fixed";
 "Audio output unavailable" = "Audio output unavailable";

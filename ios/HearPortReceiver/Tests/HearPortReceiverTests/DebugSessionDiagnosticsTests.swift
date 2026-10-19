@@ -201,6 +201,51 @@ final class DebugSessionDiagnosticsTests: XCTestCase {
         XCTAssertFalse(report.contains("a5a5a5"))
     }
 
+    func testCompressionSummaryAndSampledTraceSurviveDiagnosticLogRotation() throws {
+        let directory = try temporaryDirectory("CompressionSummary")
+        let diagnostics = HearPortDiagnostics(directory: directory.appendingPathComponent("logs"),
+            maxFileBytes: 128, maxRotatedFiles: 0)
+        let transfer = DebugReportTransfer(directory: directory.appendingPathComponent("reports"))
+        let capture = DebugSessionDiagnostics(capacity: 4, reportTransfer: transfer,
+                                              diagnostics: diagnostics)
+        let sessionID = Data(repeating: 0x58, count: 16)
+        capture.begin(sessionID: sessionID, streamID: 7, durationSeconds: 60,
+                      compressionMusic: true)
+        for sequence in 0..<20_000 {
+            capture.recordPacket(streamID: 7, sequence: UInt32(sequence),
+                receivedAt: UInt64(sequence), disposition: .accepted,
+                jitterResult: .inserted, fillPackets: 1)
+            capture.recordJitterDecision(streamID: 7, sequence: UInt32(sequence),
+                decision: .concealed, at: UInt64(sequence), fillPackets: 0)
+        }
+        for round in 1...32 {
+            capture.recordCompressionSummary(fields: [
+                "event": "compression_summary", "round": "\(round)", "complete": "1"
+            ])
+        }
+        for _ in 0..<10 {
+            diagnostics.log(.info, category: .app, message: "rotating_log_entry")
+        }
+
+        _ = try capture.finish(reason: "duration_expired", diagnostics: diagnostics)
+        let report = try XCTUnwrap(String(data: try XCTUnwrap(transfer.pendingReport()).data,
+                                          encoding: .utf8))
+        XCTAssertTrue(report.contains("trace_sequence_stride=16384"))
+        XCTAssertTrue(report.contains("compression_summary_count=32"))
+        XCTAssertTrue(report.contains("compression_summary_json_v1"))
+        XCTAssertTrue(report.contains("\"session_id\":\"58585858585858585858585858585858\""))
+        XCTAssertTrue(report.contains("\"path_id\":"))
+        XCTAssertTrue(report.contains("\"connection_id\":"))
+        XCTAssertTrue(report.contains("\"round\":\"1\""))
+        XCTAssertTrue(report.contains("\"round\":\"32\""))
+        XCTAssertTrue(report.contains("packet_trace_v1\nreceived_at_ns\tstream_id\tsequence"))
+        XCTAssertEqual(report.components(separatedBy: "\"event\":\"compression_summary\"").count - 1,
+                       32)
+        XCTAssertTrue(report.contains("trace_records=2"))
+        XCTAssertTrue(report.contains("jitter_decision_records=2"))
+        XCTAssertTrue(report.contains("trace_dropped=0"))
+    }
+
     func testDisconnectPersistsPartialReportForLaterUpload() throws {
         let directory = try temporaryDirectory("DebugSessionPartial")
         let diagnostics = HearPortDiagnostics(directory: directory.appendingPathComponent("logs"))

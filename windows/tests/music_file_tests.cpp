@@ -17,16 +17,28 @@
 
 int wmain(int argc, wchar_t** argv) {
   using hearport::windows::LoadMusicExcerpt;
-  using hearport::windows::kMusicTestPolicies;
-  for (std::size_t i = 0; i < kMusicTestPolicies.size(); ++i) {
-    const auto opposite = kMusicTestPolicies[kMusicTestPolicies.size() - 1 - i];
-    assert(kMusicTestPolicies[i].reliable == opposite.reliable);
-    assert(kMusicTestPolicies[i].adaptive == opposite.adaptive);
+  const auto policies = hearport::windows::MakeMusicTestPolicies(123);
+  assert(policies == hearport::windows::MakeMusicTestPolicies(123));
+  assert(policies != hearport::windows::MakeMusicTestPolicies(124));
+  assert(policies.size() == 32);
+  int counts[8][2][2]{};
+  for (const auto policy : policies) {
+    assert(policy.profile < 8 && policy.repeat >= 1 && policy.repeat <= 2);
+    assert(policy.adaptive);
+    ++counts[policy.profile][policy.reliable ? 1 : 0][policy.repeat - 1];
   }
-  const auto round = hearport::windows::EncodeMusicTestRound(3, 120, 96'000, 4);
-  assert(round == std::vector<std::byte>({std::byte{3}, std::byte{3}, std::byte{8}, std::byte{3},
-      std::byte{0}, std::byte{120}, std::byte{0}, std::byte{0}, std::byte{0}, std::byte{1},
-      std::byte{119}, std::byte{0}, std::byte{0}, std::byte{0}, std::byte{0}, std::byte{4}}));
+  for (const auto& profile : counts) for (const auto& mode : profile)
+    assert(mode[0] == 1 && mode[1] == 1);
+  for (std::size_t i = 0; i < 16; ++i) {
+    assert(policies[i].profile == policies[31 - i].profile);
+    assert(policies[i].reliable == policies[31 - i].reliable);
+  }
+  auto policy = hearport::windows::MusicTestPolicy{true, true, 4, 2, 480, 192};
+  const auto round = hearport::windows::EncodeMusicTestRound(3, 120, 96'000, 4, policy, 120);
+  assert(round.size() == 24 && round[0] == std::byte{4} && round[2] == std::byte{32});
+  assert(round[6] == std::byte{4} && round[7] == std::byte{2});
+  assert(round[16] == std::byte{1} && round[17] == std::byte{224});
+  assert(round[19] == std::byte{192} && round[21] == std::byte{120});
   if (argc == 2) {
     const auto first = LoadMusicExcerpt(argv[1], 0, 120);
     const auto second = LoadMusicExcerpt(argv[1], 0, 120);
@@ -41,7 +53,7 @@ int wmain(int argc, wchar_t** argv) {
     clip.duration_seconds = 60;
     clip.samples.resize(60 * 48'000 * 2);
     service.ConfigureMusicTest(std::move(clip));
-    assert(service.debug_duration()->count() == 570);
+    assert(service.debug_duration()->count() == 2265);
     assert(service.ObserveAudioProgress(7, 1, 0));
   }
   const auto path = std::filesystem::temp_directory_path() /
