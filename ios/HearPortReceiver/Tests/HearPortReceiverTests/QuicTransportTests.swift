@@ -89,7 +89,7 @@ final class QuicTransportTests: XCTestCase {
         let second = try round(2, reliable: true, profile: 7, frames: 480, bitrate: 256, generation: 4)
         let third = try round(3, reliable: false, profile: 0, frames: 120, bitrate: 0, generation: 6)
         let expectedSequences: [UInt32] = [0, 24_000, 24_004, 24_008, 48_000]
-        var nextPacket = 0
+        let progress = CompressionSequenceState(expected: expectedSequences)
 
         transport.onStateChange = { state in
             if state == .ready {
@@ -111,14 +111,14 @@ final class QuicTransportTests: XCTestCase {
             guard let record = try? TimedAudioRecord(encoded: data) else {
                 XCTFail("Invalid compression transport record"); return
             }
-            guard nextPacket < expectedSequences.count else {
-                XCTFail("Unexpected extra compression packet"); return
+            guard let packetIndex = progress.accept(record.sequence) else {
+                XCTFail("Unexpected compression packet sequence \(record.sequence)"); return
             }
             XCTAssertEqual(record.streamID, 1)
-            XCTAssertEqual(record.sequence, expectedSequences[nextPacket])
+            XCTAssertEqual(record.sequence, expectedSequences[packetIndex])
             XCTAssertEqual(record.sourceFrame, UInt64(record.sequence) * 120)
             XCTAssertEqual(record.capturedAt, 1)
-            switch nextPacket {
+            switch packetIndex {
             case 0:
                 XCTAssertEqual(record.generation, 2)
                 XCTAssertEqual(record.kind, .pcm16)
@@ -128,20 +128,19 @@ final class QuicTransportTests: XCTestCase {
                 XCTAssertEqual(record.generation, 4)
                 XCTAssertEqual(record.kind, .opus)
                 XCTAssertEqual(record.frameCount, 480)
-                XCTAssertEqual(record.payload, Data(repeating: UInt8(160 + nextPacket), count: 320))
+                XCTAssertEqual(record.payload, Data(repeating: UInt8(160 + packetIndex), count: 320))
             default:
                 XCTAssertEqual(record.generation, 6)
                 XCTAssertEqual(record.kind, .audio)
                 XCTAssertEqual(record.frameCount, 120)
                 XCTAssertEqual(record.payload, Data(repeating: 0, count: 960))
             }
-            nextPacket += 1
             audio.fulfill()
             do {
-                if nextPacket == 1 {
+                if packetIndex == 0 {
                     transport.prepareMusicRound(second)
                     try transport.sendControl(Data("COMPRESSION_TEST_2".utf8))
-                } else if nextPacket == 4 {
+                } else if packetIndex == 3 {
                     transport.prepareMusicRound(third)
                     try transport.sendControl(Data("COMPRESSION_TEST_3".utf8))
                 }
@@ -154,7 +153,7 @@ final class QuicTransportTests: XCTestCase {
         transport.connect(host: "127.0.0.1", port: 44330,
                           tlsPolicy: .pairing(onPeerSPKIHash: { _ in }))
         wait(for: [ready, audio], timeout: 15)
-        XCTAssertEqual(nextPacket, 5)
+        XCTAssertEqual(progress.count, 5)
     }
 
     func testNetworkProbeReceivesBothModesAndQueueHeartbeats() throws {
@@ -197,6 +196,24 @@ final class QuicTransportTests: XCTestCase {
         transport.connect(host: "127.0.0.1", port: 44330,
                           tlsPolicy: .pairing(onPeerSPKIHash: { _ in }))
         wait(for: [datagram, reliable, heartbeat], timeout: 15)
+    }
+
+    private final class CompressionSequenceState: @unchecked Sendable {
+        private let lock = NSLock()
+        private let expected: [UInt32]
+        private var received = 0
+        init(expected: [UInt32]) { self.expected = expected }
+        var count: Int {
+            lock.lock(); defer { lock.unlock() }
+            return received
+        }
+        func accept(_ sequence: UInt32) -> Int? {
+            lock.lock(); defer { lock.unlock() }
+            guard received < expected.count, expected[received] == sequence else { return nil }
+            let index = received
+            received += 1
+            return index
+        }
     }
 
     private final class AudioCycleState: @unchecked Sendable {

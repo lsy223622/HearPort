@@ -229,7 +229,7 @@ final class CompressionMusicDecoderTests: XCTestCase {
             budget: PlayoutBudget(targetMilliseconds: 50, maximumMilliseconds: 100,
                                   outputReserveMilliseconds: 10),
             diagnostics: .shared, roundStartedAt: origin, opusDecoder: opus,
-            startsTimer: false, monotonicNow: { origin + 10_000_000 }, onDecoded: onDecoded)
+            startsTimer: false, monotonicNow: { self.origin + 10_000_000 }, onDecoded: onDecoded)
     }
 
     private func makeRound(profile: Int, seconds: Int) throws -> MusicTestRound {

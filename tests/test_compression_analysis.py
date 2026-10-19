@@ -395,6 +395,55 @@ class CompressionAnalysisTests(unittest.TestCase):
         self.assertEqual(changed["status"], "incomplete_comparison")
         self.assertIn("repeat_1_path_identity_mismatch", changed["flags"])
 
+    def test_longest_missing_gap_is_kept_separate_from_total_missing_fraction(self):
+        rows = []
+        longest_frames = {
+            (0, 1): 2400,
+            (2, 1): 1200,
+            (0, 2): 4800,
+            (2, 2): 2400,
+        }
+        for (profile, repeat), longest in longest_frames.items():
+            round_number = profile * 10 + repeat
+            codec = "float_pcm" if profile == 0 else "opus"
+            bitrate = 0 if profile == 0 else 256000
+            common = {
+                "profile": profile, "codec": codec, "bitrate": bitrate,
+                "frame_count": 120, "duration_seconds": 30,
+                "missing_frames": 480,
+                "missing_measurement_source": "source_preparation",
+                "longest_missing_source_frames": longest,
+            }
+            rows.extend([
+                summary("real", "sender", round_number, repeat, **common,
+                        packets=100, accepted=100,
+                        wire_bytes=120000 if profile == 0 else 60000),
+                summary("real", "receiver", round_number, repeat, **common,
+                        received=100),
+            ])
+
+        result = self.analyze_rows(rows)
+        rounds = {row["profile"]: row for row in result["rounds"]
+                  if row["repeat"] == 1}
+        self.assertEqual(rounds[0]["time_weighted_missing_fraction"],
+                         rounds[2]["time_weighted_missing_fraction"])
+        self.assertEqual(rounds[0]["missing_measurement_source"], "source_preparation")
+        self.assertEqual(rounds[0]["longest_missing_milliseconds"], 50)
+        self.assertEqual(rounds[2]["longest_missing_milliseconds"], 25)
+
+        repeats = {row["profile"]: row for row in result["paired_differences"]}
+        self.assertEqual(repeats[0]["differences"]["time_weighted_missing_fraction"], 0)
+        self.assertEqual(repeats[2]["differences"]["longest_missing_milliseconds"], 25)
+
+        baseline = result["pcm_baseline_comparisons"][0]
+        self.assertEqual(baseline["mean_missing_fraction_delta"], 0)
+        self.assertEqual(
+            [row["longest_missing_milliseconds_delta"] for row in baseline["repeats"]],
+            [-25, -50],
+        )
+        self.assertEqual(baseline["mean_longest_missing_milliseconds_delta"], -37.5)
+        self.assertEqual(baseline["longest_missing_direction_consistent"], True)
+
     def test_malformed_plain_compression_summary_is_an_error(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "hearport.log"

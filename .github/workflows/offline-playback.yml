@@ -14,6 +14,16 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
+      - name: Build pinned host Opus
+        run: |
+          python3 scripts/fetch_opus.py
+          cmake -S ios/HearPortReceiver/Vendor/opus -B "$RUNNER_TEMP/opus-build" \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/opus" \
+            -DBUILD_SHARED_LIBS=OFF -DOPUS_BUILD_SHARED_LIBRARY=OFF \
+            -DBUILD_TESTING=OFF -DOPUS_BUILD_TESTING=OFF -DOPUS_BUILD_PROGRAMS=OFF \
+            -DOPUS_DRED=OFF -DOPUS_OSCE=OFF
+          cmake --build "$RUNNER_TEMP/opus-build" --parallel 4
+          cmake --install "$RUNNER_TEMP/opus-build"
       - name: Prepare virtual clock copy and exercise production playback
         env:
           HEARPORT_PLAYBACK_REFERENCE: ${{ matrix.reference }}
@@ -26,7 +36,8 @@ jobs:
           fi
           python3 diagnostics/prepare_offline_playback.py "$source" "$RUNNER_TEMP/playback"
           HEARPORT_PLAYBACK_RESULTS="$RUNNER_TEMP/playback.json" \
-            swift test --package-path "$RUNNER_TEMP/playback" -c release --filter OfflinePlaybackTests
+            swift test --package-path "$RUNNER_TEMP/playback" -c release \
+              -Xlinker -L -Xlinker "$RUNNER_TEMP/opus/lib" --filter OfflinePlaybackTests
       - uses: actions/upload-artifact@v4
         if: always()
         with:
