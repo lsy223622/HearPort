@@ -1,6 +1,13 @@
 # HearPort 0.1.0 release checklist
 
-## Recorded evidence
+## Compression test candidate (2026-10-20)
+
+- [x] Matching source commit `53de0cd7eefa0afd9e63f549b50439c023172b51`: Windows Actions [39360465692](https://github.com/lsy223622/HearPort/actions/runs/39360465692), iPad Actions [39360464729](https://github.com/lsy223622/HearPort/actions/runs/39360464729).
+- [x] Windows Release build, 23 CTest checks, 28 Python checks, 179 Swift checks, unsigned IPA build 162 and CodeQL passed.
+- [x] Download checksums, Windows file hashes, matching IPA identity and bundled Opus license verified; extracted Windows package started and listened on UDP 52137.
+- [ ] Install build 162 and run paired compression comparisons under the intended real network conditions. Follow [compression-tests.md](compression-tests.md); no device compression result is inferred from CI.
+
+## Baseline evidence (2026-10-18)
 
 - [x] Windows Actions run [39052133439](https://github.com/lsy223622/HearPort/actions/runs/39052133439): Release build, 22/22 CTest checks and 6/6 package/document checks passed, with test assertions enabled.
 - [x] Python suite: 65 checks run, 3 optional checks skipped; release dependency-closure tests passed.

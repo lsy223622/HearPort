@@ -12,8 +12,8 @@
 - [x] Add seeded synthetic profiles with strict manifest validation and paired analysis tests.
 - [x] Add music policy/manifest/wire tests, then implement real-time framed encoding and timing summaries.
 - [x] Add ordered bounded decoding, deadline/cancellation/generation tests, receiver summaries and progress labels.
-- [ ] Review framing, source timestamps, report completeness, final-round drain and no-arrival behavior; run focused tests and consolidated Actions gates.
-- [ ] Update user instructions and verification evidence, deliver matching Actions artifacts without claiming physical validation.
+- [x] Review framing, source timestamps, report completeness, final-round drain and no-arrival behavior; run focused tests and consolidated Actions gates.
+- [x] Update user instructions and verification evidence, deliver matching Actions artifacts without claiming physical validation.
 
 ## Review focus
 
@@ -21,12 +21,13 @@ Out-of-order Opus packets must never mutate decoder state in arrival order. Lost
 
 ## Execution
 
-Main workspace; standing user authorization to implement after planning. Independent build, synthetic-matrix and receiver work delegated at the user's requested model settings; sender/protocol integration and final review remain coordinated here. Batch validation; no live network conclusions until matching devices run the experiment.
+Implementation and independent review used the main workspace. Batch validation; no live network conclusions until matching devices run the experiment.
 
 ## Local evidence
 
 - VS 2022 x64 Release build and 23 CTest checks passed.
-- 27 focused Python checks passed (16 analysis checks plus source fetch safety, notices, package and validation-document contracts).
+- 28 focused Python checks passed (17 analysis checks plus source fetch safety, notices, package and validation-document contracts).
 - All six actual Opus profiles round-trip with the expected CBR packet lengths; this is desktop verification, not iPad timing acceptance.
 - Independent review corrected early original-packet rejection, reliable length framing, diagnostic sampling across the full sequence range, durable round summaries, source/output unit separation and aborted-test status.
-- macOS Swift/QUIC and iPad archive remain for Actions; no physical-device compression result is claimed.
+- Final commit `53de0cd7eefa0afd9e63f549b50439c023172b51`: Windows Actions 39360465692 passed 23 CTest and 28 Python checks; iPad Actions 39360464729 passed 179 Swift checks and archived unsigned IPA build 162; CodeQL 39360464054 passed.
+- Both downloaded artifacts, runtime file hashes, IPA identity and Opus notices verified; the Actions Windows package started and listened on UDP 52137. No physical-device compression result is claimed.

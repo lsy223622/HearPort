@@ -10,7 +10,16 @@ including cable disconnect and reconnect; repeated playback/tests on weak
 2.4 GHz Wi-Fi. These observations do not establish a timed soak, lock-screen
 behavior, a clean-machine install, or final Release acceptance.
 
-## Current release candidate evidence (2026-10-18)
+## Current compression test candidate evidence (2026-10-20)
+
+- Source commit: `53de0cd7eefa0afd9e63f549b50439c023172b51`, product version 0.1.0.
+- Windows Actions [39360465692](https://github.com/lsy223622/HearPort/actions/runs/39360465692): Release build, 23 CTest checks and 28 Python checks passed; portable ZIP, matching source ZIP and SHA-256 manifest uploaded.
+- iPad Actions [39360464729](https://github.com/lsy223622/HearPort/actions/runs/39360464729): 179 Swift tests passed, including real QUIC framing/mode-switch integration; unsigned Release IPA build 162 archived with Opus and Rust license notices.
+- CodeQL [39360464054](https://github.com/lsy223622/HearPort/actions/runs/39360464054) passed.
+- Download hashes, Windows per-file manifest, IPA commit/build metadata and bundled Opus license checked. The downloaded Windows package started, loaded its four runtime DLLs locally and listened on UDP 52137 plus the USB tunnel's loopback endpoint.
+- Physical iPad compression playback and weak-signal comparison remain unverified. Desktop/macOS codec timing and synthetic load tests do not establish iPad performance or a compression benefit on a real network. Test procedure: [compression-tests.md](compression-tests.md).
+
+## Previous release candidate evidence (2026-10-18)
 
 - Source commit: `35f00d8c5adfdb6e27d724daaff6677b0172abfb`, product version 0.1.0.
 - Windows Actions [39052133439](https://github.com/lsy223622/HearPort/actions/runs/39052133439): Release build, 22 CTest checks and 6 package/document checks passed; portable ZIP, source ZIP and SHA-256 manifest uploaded.
