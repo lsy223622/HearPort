@@ -15,7 +15,7 @@ struct AdaptiveCalibrationView: View {
 
     var body: some View {
         List {
-            Section("Test goal") {
+            Section {
                 Picker("Profile", selection: $goal) {
                     Text("Low latency").tag(1)
                     Text("Balanced").tag(2)
@@ -35,11 +35,13 @@ struct AdaptiveCalibrationView: View {
                     applied = false; start(goal, seconds, maximum)
                 }.disabled(!canStart || starting)
                 if let status { Text(status).font(.footnote).foregroundStyle(.secondary) }
+            } header: {
+                Text("Test goal")
             } footer: {
                 Text("Playback pauses while random traffic tests the network route. Results stay on this iPad. USB audio settings are independent.")
             }
             if let result {
-                Section("Latest recommendation") {
+                Section {
                     Text(CalibrationResultsView.profileName(result.goal)).font(.headline)
                     Text(result.testedAt, style: .date) + Text(" ") + Text(result.testedAt, style: .time)
                     if let p = result.selected {
@@ -69,6 +71,8 @@ struct AdaptiveCalibrationView: View {
                             }.font(.caption)
                         }
                     }
+                } header: {
+                    Text("Latest recommendation")
                 } footer: {
                     Text("This is an observation of current network conditions, not a stability guarantee. Random payloads reserve codec preparation time but do not measure audio quality or decoder speed.")
                 }

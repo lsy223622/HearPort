@@ -365,3 +365,17 @@
 "Parameters change in larger steps far from the goal and smaller steps near it. You can stop at any time." = "离目标较远时大步调整，接近目标时小步微调。可随时停止。";
 
 "Recommendations are ready to apply." = "推荐参数已生成，可以一键应用。";
+
+"Checking the selected settings with longer observations." = "使用较长观测复核最终参数。";
+
+"Comparing transport modes in ABBA order." = "按 ABBA 顺序重复对照两种传输模式。";
+
+"Repeating the same settings to check network variation." = "重复同一套参数，检查网络波动的影响。";
+
+"Testing a different encoding and packet load." = "尝试调整编码和每包负载。";
+
+"Increasing the delay allowance to reduce gaps." = "提高延迟预算，尝试减少缺口。";
+
+"Reducing the delay allowance toward the goal." = "逐步降低延迟预算，逼近所选目标。";
+
+"Estimated remaining: %lld–%lld seconds; updated after each observation." = "预计剩余 %lld–%lld 秒；每次观测后更新。";

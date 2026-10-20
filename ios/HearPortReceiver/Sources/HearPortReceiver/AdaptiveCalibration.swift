@@ -34,7 +34,7 @@ struct AdaptiveCalibrationResult: Codable, Sendable {
                 frameCount: p.format.frameCount)) == p.format,
               p.budget.maximum <= maximum, p.budget.target > p.reserve,
               p.budget.target + 5 <= p.budget.maximum, validation.count == 2 else { return false }
-        return validation.allSatisfy { $0.valid && AdaptiveCalibrationSearch.meets($0, goal: goal) }
+        return validation.allSatisfy { $0.valid && (goal == 4 || AdaptiveCalibrationSearch.meets($0, goal: goal)) }
     }
     func save(to defaults: UserDefaults = .standard) {
         if canApply, let data = try? JSONEncoder().encode(self) { defaults.set(data, forKey: Self.storageKey) }
@@ -276,9 +276,18 @@ final class AdaptiveCalibrationSession: @unchecked Sendable {
         p.liveLongestGap = longestLiveGap
         let observed = search.observations.count
         let verified = search.observations.filter(\.validation).count
-        p.minimumWindows = search.validating ? max(0, 2 - verified) : max(0, 4 - observed) + 2
+        p.minimumWindows = search.validating ? max(0, 2 - verified) : max(1, 4 - observed) + 2
         p.maximumWindows = search.validating ? max(0, 2 - verified) : max(0, 12 - observed) + 2
         p.validationIndex = verified + 1
+        p.baseSeconds = setup.seconds
+        if search.validating { p.action = "Checking the selected settings with longer observations." }
+        else if observed < 4 { p.action = "Comparing transport modes in ABBA order." }
+        else if let previous = search.observations.last?.parameters, let parameters {
+            if parameters == previous { p.action = "Repeating the same settings to check network variation." }
+            else if parameters.format != previous.format { p.action = "Testing a different encoding and packet load." }
+            else { p.action = parameters.budget.maximum > previous.budget.maximum ?
+                "Increasing the delay allowance to reduce gaps." : "Reducing the delay allowance toward the goal." }
+        }
         return p
     }
     func result(complete: Bool) -> AdaptiveCalibrationResult {

@@ -670,6 +670,10 @@ import SwiftUI
                 Text("Previous window: gaps \(ratio * 100, specifier: "%.3f")% · longest \(longest, specifier: "%.1f") ms")
                     .font(.footnote).foregroundStyle(.secondary)
             }
+            Text(LocalizedStringKey(progress.action)).font(.footnote).foregroundStyle(.secondary)
+            let estimate = progress.adaptiveRemainingSeconds(at: calibrationNow)
+            Text("Estimated remaining: \(estimate.lowerBound)–\(estimate.upperBound) seconds; updated after each observation.")
+                .font(.footnote).foregroundStyle(.secondary).monospacedDigit()
             Text("Estimated remaining: \(progress.minimumWindows)–\(progress.maximumWindows) observation windows, including this one. Final verification uses longer windows.")
                 .font(.footnote).foregroundStyle(.secondary)
             Text("Parameters change in larger steps far from the goal and smaller steps near it. You can stop at any time.")

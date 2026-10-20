@@ -365,3 +365,17 @@
 "Parameters change in larger steps far from the goal and smaller steps near it. You can stop at any time." = "Parameters change in larger steps far from the goal and smaller steps near it. You can stop at any time.";
 
 "Recommendations are ready to apply." = "Recommendations are ready to apply.";
+
+"Checking the selected settings with longer observations." = "Checking the selected settings with longer observations.";
+
+"Comparing transport modes in ABBA order." = "Comparing transport modes in ABBA order.";
+
+"Repeating the same settings to check network variation." = "Repeating the same settings to check network variation.";
+
+"Testing a different encoding and packet load." = "Testing a different encoding and packet load.";
+
+"Increasing the delay allowance to reduce gaps." = "Increasing the delay allowance to reduce gaps.";
+
+"Reducing the delay allowance toward the goal." = "Reducing the delay allowance toward the goal.";
+
+"Estimated remaining: %lld–%lld seconds; updated after each observation." = "Estimated remaining: %lld–%lld seconds; updated after each observation.";

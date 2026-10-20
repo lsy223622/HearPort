@@ -94,6 +94,19 @@ final class AdaptiveCalibrationTests: XCTestCase {
         XCTAssertFalse(partial.canApply)
     }
 
+    func testStabilityFirstCanApplyBestObservedSettingsWithNonzeroGaps() throws {
+        let p = AdaptiveParameters(reliable: true, format: try AudioStreamFormat(opus: true),
+            budget: CalibrationBudget(target: 200, maximum: 300), reserve: 11)
+        let observation = AdaptiveObservation(parameters: p, measurement: measurement(p, ratio: 0.01), validation: true)
+        let result = AdaptiveCalibrationResult(testedAt: Date(), goal: 4, maximum: 300,
+            observations: [observation,observation], selected: p, complete: true)
+        XCTAssertTrue(result.canApply)
+        var progress = CalibrationProgressSnapshot(stage: "adaptive", index: 1, count: 16, completed: 0, total: 0,
+            seconds: 15, roundStartedAt: 1_000_000_000)
+        progress.baseSeconds = 15; progress.minimumWindows = 6; progress.maximumWindows = 14
+        XCTAssertEqual(progress.adaptiveRemainingSeconds(at: 6_000_000_000), 133...277)
+    }
+
     func testVariablePacketsExpandIntoSourceUnitsAndFinishObservation() throws {
         var setup = CalibrationMessage(kind: .setup, planID: 7)
         setup.goal = 2; setup.seconds = 15; setup.budget = CalibrationBudget(target: 0, maximum: 300)

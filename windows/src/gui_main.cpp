@@ -1512,7 +1512,7 @@ class Application {
           network_probe_active_ ? kNetworkProbe : kDiagnostics;
       const bool local_calibration = service_->adaptive_calibration();
       if (service_->environment_calibration() && !local_calibration) calibration_report_path_ = service_->debug_session_directory() / L"ipad-report.txt";
-      completed_test_ = succeeded ? completed_test : 0;
+      completed_test_ = succeeded && !local_calibration ? completed_test : 0;
       music_test_active_ = false;
       network_probe_active_ = false;
       connected_ = false;
@@ -1525,7 +1525,7 @@ class Application {
                    RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
       StopService();
       StartService();
-      completed_test_ = running_ && succeeded ? completed_test : 0;
+      completed_test_ = running_ && succeeded && !local_calibration ? completed_test : 0;
       UpdateStatus();
       if (!succeeded) SetWindowTextW(diagnostic_status_,
           Tr(L"Test interrupted; the available report was saved. It is not a complete comparison.",
