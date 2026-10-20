@@ -12,6 +12,18 @@ behavior, a clean-machine install, or final Release acceptance.
 
 ## Live compression development (2026-10-20)
 
+### Capture-silence recovery regression
+
+- Build 165 can keep advancing the coordinated playback cursor after capture stops,
+  causing resumed source packets to be classified late indefinitely.
+- Regression Actions [39391950466](https://github.com/lsy223622/HearPort/actions/runs/39391950466)
+  reproduced it: 20 resumed packets rejected as late and no resumed audio on the
+  same stream. The other 186 tests passed. Decoder-only silence coverage had not
+  exercised the playback pump interaction.
+- The pump now advances source gaps only while a buffered packet establishes the
+  future timeline; staged audio drains into the existing silent-rebuffer path.
+- Fixed-build Actions and physical switching-track acceptance are pending.
+
 - Network/USB encoding preferences, negotiated live Opus and PCM, bitrate/frame duration settings implemented.
 - Local Release build: 24/24 CTest checks; focused Python: 17 analyzer and 4 package checks passed.
 - Matching source `21b3848312e16aa652c55704991839502698feee`: Windows Actions [39386364549](https://github.com/lsy223622/HearPort/actions/runs/39386364549) passed 24 CTest and 28 Python checks; iPad Actions [39386215008](https://github.com/lsy223622/HearPort/actions/runs/39386215008) passed 186 Swift tests and archived unsigned IPA build 165; CodeQL [39386214238](https://github.com/lsy223622/HearPort/actions/runs/39386214238) passed.

@@ -49,3 +49,13 @@ and USB/Wi-Fi switching remain device checks, not inferred from compilation.
 - First Swift attempts rejected the new diagnostics fixture initializer; it was
   corrected to the actual public API before the passing full run.
 - Physical acceptance remains the device checks in the validation matrix.
+
+## Capture-silence follow-up
+
+- User device evidence identified a permanently advanced playback cursor after
+  capture stops; reconnecting clears the state. Raw logs remain local.
+- Regression 966701d / Actions 39391950466: 20 fresh resumed packets rejected as
+  late, resumed-output assertion failed; all other tests passed.
+- Fix is limited to the coordinated pump: no source advancement without any
+  buffered packet, allowing real ring content to drain into silent rebuffer.
+- Fixed-build verification is pending.
