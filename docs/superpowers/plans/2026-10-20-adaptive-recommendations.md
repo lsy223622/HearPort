@@ -4,8 +4,8 @@
 
 Work in the main checkout. Keep Windows full diagnostic calibration on protocol
 version 4. Client quick testing uses negotiated capability 1024 and version 5,
-chooses one profile before starting, and retains its result locally. No client
-diagnostic recording or report upload is started for that test. A small completion
+chooses one profile before starting, and retains its result locally. No full diagnostic
+recording or report upload is started for that test. A small completion
 acknowledgement lets Windows return to ordinary playback service.
 
 Version 5 adds the selected goal and PCM/Opus bitrate/frame duration. Both codecs
@@ -70,3 +70,17 @@ their actual results are available.
   not overwrite an applicable stored result.
 - Initial iOS archive caught a Section initializer mismatch, fixed before final
   packaging. Physical-device acceptance remains explicitly pending in the matrix.
+
+## Transport comparison revision verification
+
+- Three search regressions reproduced the previous selection defects before the fix
+  (Actions 39422781309). Every tested load/budget now receives two observations per
+  transport; close results retain either configured preference and disclose similarity.
+- Matching source `2571b1b29a160617d71a087b8c48018687269c3a`: Windows Actions
+  39425040006 passed 24 CTest, 28 Python and packaged GUI startup checks; iPad
+  Actions 39425055397 passed 204 Swift checks and archived unsigned build 176.
+  CodeQL 39425038251 passed. Matching package identities and hashes were verified.
+- Detailed local logs retain measurements and selection policy. Ordinary retention
+  is approximately 4 MiB per endpoint, rising to 128 MiB with detailed logging.
+- Physical acceptance of the route preferences, numeric controls and revised
+  recommendation presentation remains pending build 176 installation.

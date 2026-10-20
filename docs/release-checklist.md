@@ -1,11 +1,20 @@
 # HearPort 0.1.0 release checklist
 
+## Transport comparison and settings candidate (2026-10-20)
+
+- [x] Matching source `2571b1b29a160617d71a087b8c48018687269c3a`: Windows Actions [39425040006](https://github.com/lsy223622/HearPort/actions/runs/39425040006), iPad Actions [39425055397](https://github.com/lsy223622/HearPort/actions/runs/39425055397).
+- [x] 24 CTest, 28 Python and 204 Swift checks passed; unsigned build 176 archived; CodeQL passed.
+- [x] Packaged Windows GUI startup checked in Actions. Download hashes, all 100 Windows file hashes, unsigned IPA and matching identities verified. Final Actions Windows program started and listened on UDP 52137.
+- [x] Ordinary/detailed retention policies and pruning tested; detailed recommendation measurements export locally. Actual ordinary Windows runtime files pruned to one active file and three backups, each at most 1 MiB.
+- [ ] Install build 176; check independent route transport preferences, direct numeric delay editing, primary action visibility in light/dark mode and a fresh local recommendation with detailed logging enabled.
+- [ ] Confirm normal playback and USB/network handover on the physical iPad. Network variation remains separate from automated algorithm regressions.
+
 ## USB recovery and runtime log candidate (2026-10-20)
 
 - [x] Matching source `82bdaee35a7d32a72a6edfabc3abe56491e40bd8`: Windows Actions [39417771470](https://github.com/lsy223622/HearPort/actions/runs/39417771470), iPad Actions [39417768450](https://github.com/lsy223622/HearPort/actions/runs/39417768450).
 - [x] 24 CTest, 28 Python and 197 Swift checks passed; unsigned build 173 archived; CodeQL passed.
 - [x] Release hashes, 100 Windows packaged-file hashes and matching IPA identity verified; Actions Windows executable started and listened on UDP 52137.
-- [x] Runtime logs retain approximately 128 MiB per endpoint; background streamed iPad export includes USB state.
+- [x] That candidate validated approximately 128 MiB retention per endpoint; background streamed iPad export includes USB state.
 - [ ] Install build 173 and observe USB priority after extended use, foreground return and cable reconnect. The original physical listener transition was not retained in build 170's export.
 
 ## Adaptive client recommendation candidate (2026-10-20)

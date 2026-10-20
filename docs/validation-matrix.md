@@ -10,6 +10,17 @@ including cable disconnect and reconnect; repeated playback/tests on weak
 2.4 GHz Wi-Fi. These observations do not establish a timed soak, lock-screen
 behavior, a clean-machine install, or final Release acceptance.
 
+## Transport comparison and route settings (2026-10-20)
+
+- Executable source `2571b1b29a160617d71a087b8c48018687269c3a`.
+- Windows Actions [39425040006](https://github.com/lsy223622/HearPort/actions/runs/39425040006): Release package, 24 CTest and 28 Python checks passed. The extracted distribution also passed a four-second GUI startup check before upload.
+- iPad Actions [39425055397](https://github.com/lsy223622/HearPort/actions/runs/39425055397): 204 Swift checks passed and unsigned IPA build 176 archived. CodeQL [39425038251](https://github.com/lsy223622/HearPort/actions/runs/39425038251) passed.
+- Regression Actions [39422781309](https://github.com/lsy223622/HearPort/actions/runs/39422781309) reproduced the last-round adjustment bias, missing transport comparisons at changed settings and sensitivity to small latency differences. Passing coverage includes two observations per transport at every load/budget, either configured preference retained on close results, a material difference overriding preference, independent route preferences, detailed measurement export and retention downgrade.
+- Each candidate uses an ABBA block. Comparison tolerances include observed repeat variation and a fixed floor; they are selection heuristics, not confidence intervals. Similar transport results are disclosed. Final longer repeats verify the selected candidate; this does not establish a causal transport advantage or future rare-loss rate.
+- Logs retain approximately 4 MiB normally or 128 MiB with detailed logging enabled. Disabling detailed logging prunes excess files and oversized retained files. The Windows detailed-event filter preserves failures; iPad detailed logs include per-round parameter/measurement JSON and selection outcome. Quick tests do not automatically upload a report.
+- Download hashes, all 100 Windows packaged-file hashes, matching Windows/IPA source identities and unsigned IPA packaging verified. The final Actions Windows executable remained running and bound UDP 52137. Its ordinary runtime files were each at most 1 MiB with only three backups retained.
+- Physical acceptance remains pending installation of build 176: independent USB/network transport changes and handover, direct delay input, light/dark action buttons, and a fresh recommendation with detailed logs. Build/automated evidence does not establish device UI appearance or comparative network performance.
+
 ## USB recovery and extended diagnostics (2026-10-20)
 
 - Matching executable source `82bdaee35a7d32a72a6edfabc3abe56491e40bd8`.
@@ -17,7 +28,7 @@ behavior, a clean-machine install, or final Release acceptance.
 - iPad Actions [39417768450](https://github.com/lsy223622/HearPort/actions/runs/39417768450): 197 Swift checks passed and unsigned IPA build 173 archived. Coverage includes listener recreation, USB cooldown retry while LAN is active, preservation of an accepted tunnel, larger default log retention and Unicode streaming export.
 - CodeQL [39417768290](https://github.com/lsy223622/HearPort/actions/runs/39417768290) passed. Both archive hashes/source identities and all 100 Windows packaged-file hashes verified. The Actions Windows package started and bound UDP 52137.
 - Build 170 physical evidence showed continued LAN playback and usbmux Connect result 3 on the USB entrance. Startup listener events had rotated out; the original lifecycle transition remains unproven. Old-behavior regressions reproduced two recovery gaps; final fixtures use isolated ports to avoid the live CI QUIC bridge.
-- Runtime retention is now 16 MiB per file plus seven backups on each endpoint (approximately 128 MiB). iPad export copies a fixed-length descriptor snapshot outside the writer lock on a background queue and records current USB states.
+- That candidate used 16 MiB per file plus seven backups on each endpoint (approximately 128 MiB). iPad export copies a fixed-length descriptor snapshot outside the writer lock on a background queue and records current USB states.
 - Physical long-running acceptance remains pending installation of build 173; automated lifecycle simulations do not prove the cause or recovery of the original device failure.
 
 ## Adaptive client recommendations (2026-10-20)
