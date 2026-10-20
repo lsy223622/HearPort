@@ -108,6 +108,29 @@ int main() {
   assert(retained.find("rotation_entry_30\n") != std::string::npos);
   assert(retained.find("rotation_entry_0\n") == std::string::npos);
   assert(rotating.dropped_count() == 0);
+  const auto long_path = directory / "long-session.log";
+  hearport::windows::SenderDiagnosticLogger long_session;
+  assert(long_session.Start(long_path));
+  const auto write_long = [&](const std::string& line) {
+    for (int attempt = 0; attempt < 1000; ++attempt) {
+      if (long_session.TryLog(line)) return true;
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return false;
+  };
+  assert(write_long("usb_startup_retention_marker"));
+  const std::string long_line(1024, 'x');
+  for (int index = 0; index < 20000; ++index) assert(write_long(long_line));
+  long_session.Stop();
+  bool kept_startup = false;
+  for (int index = 0; index < 8; ++index) {
+    auto candidate = long_path;
+    if (index) candidate += L"." + std::to_wstring(index);
+    std::ifstream file(candidate, std::ios::binary);
+    std::string first_line;
+    if (std::getline(file, first_line) && first_line == "usb_startup_retention_marker") kept_startup = true;
+  }
+  assert(kept_startup);
   std::filesystem::remove_all(directory);
   return 0;
 }

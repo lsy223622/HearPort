@@ -102,6 +102,16 @@ extension USBPacketTunnelTests {
             }
         }
         wait(for: [available], timeout: 5)
+        let preserved = expectation(description: "Resume preserves established USB tunnel")
+        tunnel.recordStatus {
+            let count = constructions
+            tunnel.start()
+            tunnel.recordStatus {
+                XCTAssertEqual(constructions, count)
+                preserved.fulfill()
+            }
+        }
+        wait(for: [preserved], timeout: 3)
         clientQueue.sync { stoppedClients = true; clients.forEach { $0.cancel() } }
         let stopped = expectation(description: "Stopped")
         tunnel.stop { stopped.fulfill() }; wait(for: [stopped], timeout: 3)

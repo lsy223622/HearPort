@@ -133,6 +133,12 @@ public struct ConnectionEndpoint: Identifiable {
         }
         browser.start(queue: DispatchQueue(label: "com.hearport.discovery"))
     }
+    public func resumeUSBDiscovery() {
+        guard browser != nil else { start(); return }
+        tunnel.start()
+        attempt()
+    }
+    public func recordUSBStatus(completion: @escaping () -> Void) { tunnel.recordStatus(completion: completion) }
     public func setRememberedIdentity(_ hash: Data?) {
         rememberedIdentity = hash.flatMap { $0.count == 32 ? $0.map { String(format: "%02x", $0) }.joined() : nil }
         rememberedName = hash.map { "HearPort-" + $0.prefix(6).map { String(format: "%02x", $0) }.joined() }
@@ -261,6 +267,8 @@ public struct ConnectionEndpoint: Identifiable {
         }
         guard let endpoint else {
             if policy.active == nil { onSearching?(); scheduleRetry() }
+            else if !networkTestOnly, policy.path == .network, let usbEndpoint,
+                    matches(usbEndpoint), !usable(usbEndpoint) { scheduleRetry() }
             return
         }
         retry?.cancel(); retry = nil
