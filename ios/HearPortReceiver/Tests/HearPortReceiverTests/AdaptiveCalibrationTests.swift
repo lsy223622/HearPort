@@ -63,6 +63,41 @@ final class AdaptiveCalibrationTests: XCTestCase {
         XCTAssertNotNil(search.selected)
     }
 
+    func testFailureContinuesFromMeasuredBetterTransportRatherThanLastRound() throws {
+        var search = AdaptiveCalibrationSearch(goal: 2, maximum: 300, reserve: 11)
+        for _ in 0..<4 {
+            let p = try XCTUnwrap(search.next())
+            search.record(p, measurement: measurement(p, ratio: p.reliable ? 0.01 : 0.1), validation: false)
+        }
+        XCTAssertTrue(try XCTUnwrap(search.next()).reliable)
+    }
+
+    func testEveryChangedLoadAndBudgetComparesBothTransportsTwice() throws {
+        var search = AdaptiveCalibrationSearch(goal: 2, maximum: 300, reserve: 11)
+        while let p = search.next() {
+            search.record(p, measurement: measurement(p, ratio: 0.2), validation: search.validating)
+            XCTAssertLessThanOrEqual(search.observations.count, 16)
+        }
+        let rows = search.observations.filter { !$0.validation }
+        for row in rows {
+            let peers = rows.filter { $0.parameters.format == row.parameters.format && $0.parameters.budget == row.parameters.budget }
+            XCTAssertEqual(peers.filter { $0.parameters.reliable }.count, 2)
+            XCTAssertEqual(peers.filter { !$0.parameters.reliable }.count, 2)
+        }
+    }
+
+    func testSmallLatencyDifferenceWithinRepeatVariationDoesNotDecideTransport() throws {
+        var search = AdaptiveCalibrationSearch(goal: 2, maximum: 300, reserve: 11)
+        for index in 0..<4 {
+            let p = try XCTUnwrap(search.next())
+            var m = measurement(p)
+            m.ageP95Milliseconds = [114, 110, 113, 112][index]
+            search.record(p, measurement: m, validation: false)
+        }
+        // Both meet the goal, and their ranges overlap: retain the existing default.
+        XCTAssertFalse(try XCTUnwrap(search.next()).reliable)
+    }
+
     func testInvalidClockCannotGenerateRecommendation() throws {
         var search = AdaptiveCalibrationSearch(goal: 2, maximum: 300, reserve: 11)
         for _ in 0..<4 {
