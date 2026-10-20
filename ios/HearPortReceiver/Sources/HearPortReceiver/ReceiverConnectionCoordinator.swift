@@ -93,6 +93,7 @@ public struct ConnectionEndpoint: Identifiable {
     public var isWaiting: Bool { policy.wantsConnection && policy.active == nil }
 
     public init(diagnostics: HearPortDiagnostics = .shared) { tunnel = USBPacketTunnel(diagnostics: diagnostics) }
+    init(tunnel: USBPacketTunnel) { self.tunnel = tunnel }
     public func start() {
         guard browser == nil else { return }
         tunnel.onAvailable = { [weak self] port in DispatchQueue.main.async {

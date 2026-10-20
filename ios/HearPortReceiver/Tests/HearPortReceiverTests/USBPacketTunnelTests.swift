@@ -61,6 +61,53 @@ final class USBPacketTunnelTests: XCTestCase {
 #if canImport(Network)
 import Network
 extension USBPacketTunnelTests {
+    private func waitFor(_ listener: NWListener, cancelled: Bool = false) {
+        let reached = expectation(description: cancelled ? "Listener cancelled" : "Listener ready")
+        DispatchQueue.global().async {
+            for _ in 0..<300 {
+                switch listener.state {
+                case .ready where !cancelled, .cancelled where cancelled:
+                    reached.fulfill(); return
+                default: Thread.sleep(forTimeInterval: 0.01)
+                }
+            }
+        }
+        wait(for: [reached], timeout: 4)
+    }
+
+    func testStartReplacesAnIdleListenerThatNoLongerAcceptsConnections() throws {
+        let parameters = NWParameters.tcp
+        parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: 52138)
+        let original = try NWListener(using: parameters)
+        var constructions = 0
+        let tunnel = USBPacketTunnel(diagnostics: .shared, makeTCPListener: { parameters in
+            constructions += 1
+            if constructions == 1 { return original }
+            return try NWListener(using: parameters)
+        })
+        tunnel.start(); waitFor(original)
+        original.cancel(); waitFor(original, cancelled: true)
+        // Resuming must not trust an old non-nil listener reference.
+        tunnel.start()
+        let available = expectation(description: "Fresh USB entrance accepts a connection")
+        available.assertForOverFulfill = false
+        tunnel.onAvailable = { _ in available.fulfill() }
+        let clientQueue = DispatchQueue(label: "usb-resume-client")
+        var clients: [NWConnection] = [], stoppedClients = false
+        for attempt in 0..<30 {
+            clientQueue.asyncAfter(deadline: .now() + Double(attempt + 1) * 0.1) {
+                guard !stoppedClients else { return }
+                let client = NWConnection(host: "127.0.0.1", port: 52138, using: .tcp)
+                clients.append(client); client.start(queue: clientQueue)
+            }
+        }
+        wait(for: [available], timeout: 5)
+        clientQueue.sync { stoppedClients = true; clients.forEach { $0.cancel() } }
+        let stopped = expectation(description: "Stopped")
+        tunnel.stop { stopped.fulfill() }; wait(for: [stopped], timeout: 3)
+        XCTAssertGreaterThanOrEqual(constructions, 2)
+    }
+
     func testListenerRecoversAfterPortWasOccupied() throws {
         let parameters = NWParameters.tcp
         parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: 52138)

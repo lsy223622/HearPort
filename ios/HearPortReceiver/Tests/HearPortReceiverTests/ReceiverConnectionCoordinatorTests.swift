@@ -83,3 +83,41 @@ final class ReceiverConnectionCoordinatorTests: XCTestCase {
         policy.stop(); XCTAssertFalse(policy.promote(UUID(), path: .usb, identity: Data([1])))
     }
 }
+
+#if canImport(Network) && canImport(Combine)
+import Network
+extension ReceiverConnectionCoordinatorTests {
+    @MainActor func testUSBIsRetriedAfterCooldownWhileNetworkKeepsPlaying() {
+        let tunnel = USBPacketTunnel()
+        let coordinator = ReceiverConnectionCoordinator(tunnel: tunnel)
+        let identity = Data(repeating: 0xab, count: 32)
+        let identityText = String(repeating: "ab", count: 32)
+        coordinator.setRememberedIdentity(identity)
+        let network = expectation(description: "Network fallback authenticated")
+        let retried = expectation(description: "USB retried after cooldown without another device event")
+        var usbAttempts = 0
+        coordinator.onRequest = { [weak coordinator] id, endpoint in
+            guard let coordinator else { return }
+            if endpoint.path == .network {
+                XCTAssertTrue(coordinator.authenticated(id, identity: identity, features: 0))
+                network.fulfill()
+            } else {
+                usbAttempts += 1
+                if usbAttempts == 1 {
+                    coordinator.ended(id)
+                    tunnel.onAvailable?(61001)
+                    tunnel.onPeerIdentity?(61001, identityText)
+                } else { retried.fulfill() }
+            }
+        }
+        coordinator.start()
+        tunnel.onAvailable?(61000); tunnel.onPeerIdentity?(61000, identityText)
+        DispatchQueue.main.async { coordinator.connect(manualHost: "127.0.0.1") }
+        wait(for: [network, retried], timeout: 5)
+        coordinator.stop()
+        let stopped = expectation(description: "USB listener stopped")
+        tunnel.stop { stopped.fulfill() }; wait(for: [stopped], timeout: 3)
+        XCTAssertEqual(usbAttempts, 2)
+    }
+}
+#endif
