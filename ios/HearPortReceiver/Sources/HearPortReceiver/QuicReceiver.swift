@@ -869,6 +869,9 @@ public final class HearPortReceiver {
         var prepared = 0
         while renderRing.fillFrames + 120 <= ringReserveFrames, prepared < 256,
               let sequence = jitter?.expectedSequence, let position = sourcePosition(for: sequence) {
+            // No future packet proves a source gap. Let real staged audio drain into
+            // silent rebuffer instead of inventing sequences during capture silence.
+            guard (jitter?.fillPackets ?? 0) > 0 else { break }
             prepared += 1
             let stored = timedPackets[sequence]
             let captured = stored?.capturedAt ?? playoutController?.captureTime(sourceFrame: position)
