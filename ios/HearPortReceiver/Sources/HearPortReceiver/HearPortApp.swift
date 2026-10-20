@@ -99,22 +99,24 @@ import SwiftUI
         }
         .background(Color(uiColor: .systemGroupedBackground))
         .tint(Color.primary)
-        .sheet(item: $canvasSheet) { sheet in
-            NavigationStack {
-                Group {
-                    switch sheet {
-                    case .settings: settingsView
-                    case .details: connectionDetailsView
-                    case .recommendations: calibrationResults
+        .background {
+            NarrowFormSheet(item: $canvasSheet) { sheet in
+                NavigationStack {
+                    Group {
+                        switch sheet {
+                        case .settings: settingsView
+                        case .details: connectionDetailsView
+                        case .recommendations: calibrationResults
+                        }
+                    }
+                    .toolbar {
+                        ToolbarItem(placement: .navigationBarTrailing) {
+                            Button("Done") { canvasSheet = nil }
+                        }
                     }
                 }
-                .toolbar {
-                    ToolbarItem(placement: .navigationBarTrailing) {
-                        Button("Done") { canvasSheet = nil }
-                    }
-                }
+                .tint(Color.primary)
             }
-            .tint(Color.primary)
         }
         .sheet(isPresented: $showingConnectionSetup) {
             NavigationStack {
@@ -348,7 +350,7 @@ import SwiftUI
                 }
             }
             .font(.subheadline)
-            .foregroundStyle(qualityTracker.quality.color)
+            .foregroundStyle(qualityTracker.quality.color(for: activePath))
         }
     }
 
@@ -513,7 +515,7 @@ import SwiftUI
                 if connectionEstablished && !isConnecting { Label("Identity verified", systemImage: "checkmark.shield") }
             }
             Section {
-                LabeledContent("Link stability") { Text(qualityTracker.quality.title).foregroundStyle(qualityTracker.quality.color) }
+                LabeledContent("Link stability") { Text(qualityTracker.quality.title).foregroundStyle(qualityTracker.quality.color(for: activePath)) }
                 LabeledContent("Round-trip time", value: linkSample?.roundTripMilliseconds.map { String(format: "%.1f ms", $0) } ?? "—")
                 LabeledContent("Delay variation", value: qualityTracker.variationMilliseconds.map { String(format: "%.1f ms", $0) } ?? "—")
                 LabeledContent("Probe samples", value: "\(qualityTracker.sampleCount)")
@@ -772,7 +774,7 @@ import SwiftUI
         }
         .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.inline)
-        .frame(maxWidth: 760)
+        .frame(maxWidth: 600)
         .frame(maxWidth: .infinity)
         .background(Color(uiColor: .systemGroupedBackground))
     }
@@ -819,7 +821,7 @@ import SwiftUI
         }
         .navigationTitle("Diagnostics")
         .navigationBarTitleDisplayMode(.inline)
-        .frame(maxWidth: 760)
+        .frame(maxWidth: 600)
         .frame(maxWidth: .infinity)
         .background(Color(uiColor: .systemGroupedBackground))
         .onAppear { refreshDiagnostics() }

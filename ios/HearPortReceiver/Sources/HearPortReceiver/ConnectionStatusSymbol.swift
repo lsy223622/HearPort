@@ -27,7 +27,7 @@ struct ConnectionStatusSymbol: View {
                     ZStack {
                         ForEach(0..<3) { index in
                             ConnectionMark(index: index, wired: path == .usb ? 1 : 0)
-                                .stroke(quality.color, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
+                                .stroke(quality.color(for: path), style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
                                 .opacity(connected || connecting ? markOpacity(index) : 0)
                         }
                     }
@@ -107,10 +107,10 @@ extension LinkStability {
         case .poor: return "Unstable"
         }
     }
-    var color: Color {
+    func color(for path: ConnectionPath) -> Color {
         switch self {
         case .unknown: return .secondary
-        case .stable: return .teal
+        case .stable: return path == .usb ? .blue : Color(red: 30.0 / 255, green: 210.0 / 255, blue: 167.0 / 255)
         case .variable: return .orange
         case .poor: return .red
         }
