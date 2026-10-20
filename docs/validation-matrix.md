@@ -10,6 +10,16 @@ including cable disconnect and reconnect; repeated playback/tests on weak
 2.4 GHz Wi-Fi. These observations do not establish a timed soak, lock-screen
 behavior, a clean-machine install, or final Release acceptance.
 
+## iPad menu presentation (2026-10-20)
+
+- iPad executable source `d8977fa9d6b3bb9946baa1f1724cac3b1cbc28ec`.
+- Actions [39440168724](https://github.com/lsy223622/HearPort/actions/runs/39440168724): 204 Swift tests passed and unsigned IPA build 177 archived. CodeQL [39440168151](https://github.com/lsy223622/HearPort/actions/runs/39440168151) passed.
+- Downloaded IPA SHA-256, source identity, build number and unsigned packaging verified.
+- Recommendation rows use label/value pairs with a visible test timestamp. Test ceiling and segment duration are visible together; action rows use blue text. The native segmented control uses a 44-point height and body-size titles. Settings/details use a form presentation with a preferred 600-point width.
+- Stable network status uses the icon asset's RGB (30,210,167); stable USB status uses system blue across the connection symbol, status text and details. Other stability levels keep their existing colors.
+- Physical acceptance remains pending installation: compact sheet width, presentation/dismissal, navigation and confirmation dialogs, enlarged segments, blue action rows and system light/dark appearance. A successful archive does not establish screenshot appearance or touch interaction.
+- Current Windows Actions package remains the validated `2571b1b` server; this revision changes iPad presentation.
+
 ## Transport comparison and route settings (2026-10-20)
 
 - Executable source `2571b1b29a160617d71a087b8c48018687269c3a`.

@@ -1,5 +1,12 @@
 # HearPort 0.1.0 release checklist
 
+## iPad menu presentation candidate (2026-10-20)
+
+- [x] iPad source `d8977fa9d6b3bb9946baa1f1724cac3b1cbc28ec`: Actions [39440168724](https://github.com/lsy223622/HearPort/actions/runs/39440168724), 204 Swift tests and unsigned build 177 archive passed. CodeQL passed.
+- [x] IPA hash, source/build identity and unsigned packaging verified. Existing validated Windows package remains compatible.
+- [ ] Install build 177; inspect label/value rows, timestamp, visible segment duration and ceiling, blue text actions and larger profile segments in light/dark mode.
+- [ ] Check settings/details sheet width, dismissal, navigation, clear-log confirmation and network/USB stable colors on iPad.
+
 ## Transport comparison and settings candidate (2026-10-20)
 
 - [x] Matching source `2571b1b29a160617d71a087b8c48018687269c3a`: Windows Actions [39425040006](https://github.com/lsy223622/HearPort/actions/runs/39425040006), iPad Actions [39425055397](https://github.com/lsy223622/HearPort/actions/runs/39425055397).
