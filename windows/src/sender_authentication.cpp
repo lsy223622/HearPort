@@ -134,6 +134,9 @@ bool SenderAuthentication::HandleConnect(
       (envelope.feature_bits & wire::kFeatureReliableAudio) != 0;
   peer_supports_music_test_ = (envelope.feature_bits & wire::kFeatureMusicTest) != 0;
   peer_supports_compression_ = (envelope.feature_bits & wire::kFeatureCompressionMusic) != 0;
+  peer_supports_live_compression_ = (envelope.feature_bits & wire::kFeatureLiveCompression) != 0;
+  wire::ControlEnvelope default_format;
+  if (!service_.ConfigureAudioFormat(default_format)) return false;
   peer_supports_calibration_ = (envelope.feature_bits & wire::kFeatureEnvironmentCalibration) != 0;
   peer_coordinated_audio_ = (envelope.feature_bits & wire::kFeatureCoordinatedAudio) != 0;
   service_.ConfigureCoordinatedAudio(peer_coordinated_audio_);
@@ -278,6 +281,8 @@ bool SenderAuthentication::CompleteAuthentication(bool remember) {
   if (service_.debug_duration().has_value()) ready.feature_bits |= wire::kFeatureTimedDiagnostics;
   if (peer_wants_reliable_) ready.feature_bits |= wire::kFeatureReliableAudio;
   if (peer_coordinated_audio_) ready.feature_bits |= wire::kFeatureCoordinatedAudio;
+  if (peer_coordinated_audio_ && peer_supports_live_compression_)
+    ready.feature_bits |= wire::kFeatureLiveCompression;
   if (service_.music_test()) ready.feature_bits |= wire::kFeatureMusicTest;
   if (service_.music_test()) ready.feature_bits |= wire::kFeatureCompressionMusic;
   if (service_.environment_calibration()) ready.feature_bits |= wire::kFeatureEnvironmentCalibration;
@@ -428,7 +433,7 @@ void SenderAuthentication::OnDebugSessionEnded(
 bool SenderAuthentication::HandleControlPayload(
     std::span<const std::byte> payload) {
   std::lock_guard lock(mutex_);
-  const auto envelope = wire::DecodeControlEnvelope(payload);
+  auto envelope = wire::DecodeControlEnvelope(payload);
   if (!envelope.has_value()) {
     return Fail(ErrorCode::protocol, "malformed control envelope");
   }
@@ -474,6 +479,11 @@ bool SenderAuthentication::HandleControlPayload(
                                           envelope->output_reserve_ms)) {
         return Fail(ErrorCode::stream_state, "unexpected AudioSetup");
       }
+      if (envelope->audio_codec != 0 && (!peer_supports_live_compression_ ||
+          service_.network_probe() || service_.music_test()))
+        return Fail(ErrorCode::protocol, "unexpected live audio codec");
+      if (!service_.ConfigureAudioFormat(*envelope))
+        return Fail(ErrorCode::audio_unavailable, "Unable to initialize audio codec");
       return Send(*envelope);
     case wire::ControlMessageType::clock_request: {
       if (!authenticated_ || !peer_coordinated_audio_) {

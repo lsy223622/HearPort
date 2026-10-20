@@ -1,5 +1,21 @@
 # HearPort v1 protocol artifacts
 
+## Live audio format negotiation
+
+Capability bit 512 enables AudioSetup fields 5–8: codec (0 Float32 PCM,
+1 Opus), bitrate (192000/256000), frame count (120/240/480), and codec
+lookahead frames. PCM omits these fields. The receiver requests the format
+before StartStreamAck; the sender creates the encoder and echoes the actual
+lookahead. Peers without the capability retain the existing PCM wire contract.
+Diagnostic matrices negotiate PCM here and select their test format separately.
+
+Opus uses the existing timed kind 5 records and u16-length Reliable framing.
+Logical sequence numbers still represent 120 source frames, so a 480-frame
+record advances by four units. Capture time includes encoder lookahead in
+the same end-to-end deadline. The receiver splits decoded records into the
+existing 120-frame playback timeline. Reliable Opus keeps codec state across
+bounded pending-window losses rather than replacing the stream at the live edge.
+
 `hearport-v1.proto` is the canonical control-plane schema for both the C++
 sender and the Swift receiver. It is copied from the normative v1 design
 documents and remains the source of truth for field numbers and message

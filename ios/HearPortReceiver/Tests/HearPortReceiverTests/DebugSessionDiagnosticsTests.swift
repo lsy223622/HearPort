@@ -3,6 +3,34 @@ import XCTest
 @testable import HearPortReceiver
 
 final class DebugSessionDiagnosticsTests: XCTestCase {
+    func testFinalProbePlaybackFlushesUnpublishedConsumption() throws {
+        let directory = try temporaryDirectory("FinalProbe")
+        let diagnostics = HearPortDiagnostics(directory: directory, maximumEntries: 32)
+        let transfer = DebugReportTransfer(directory: directory.appendingPathComponent("reports"))
+        let capture = DebugSessionDiagnostics(capacity: 100, reportTransfer: transfer, diagnostics: diagnostics)
+        let plan = try CoordinatedProbePlan(encoded: Data([1,1,30,0,3,224,1,144,1,1,1,1,2,0,5,0]))
+        capture.configureProbePlan(plan)
+        capture.configureProbeBudget(try PlayoutBudget(targetMilliseconds: 10, maximumMilliseconds: 100, outputReserveMilliseconds: 1))
+        capture.begin(sessionID: Data(repeating: 1, count: 16), streamID: 7, durationSeconds: 60, networkProbe: true)
+        for sequence in 0..<8 {
+            let at = UInt64(1_000_000_000 + sequence * 2_500_000)
+            let packet = try TimedAudioRecord(streamID: 7, generation: 1, sequence: UInt32(sequence), frameCount: 120,
+                kind: .probe, capturedAt: at, sourceFrame: UInt64(sequence * 120), payload: Data(repeating: 0, count: 960))
+            capture.recordProbePacket(packet.encoded, receivedAt: at, mappedCapturedAt: at)
+        }
+        _ = capture.tickProbe(at: 1_025_000_000, roundTrip: 0)
+        _ = capture.tickProbe(at: 1_030_000_000, roundTrip: 0)
+        _ = try capture.finish(reason: "test", diagnostics: diagnostics)
+        let text = try XCTUnwrap(String(data: try XCTUnwrap(transfer.pendingReport()).data, encoding: .utf8))
+        let rows = text.components(separatedBy: "network_probe_playback_v1\n").last!
+            .components(separatedBy: "\nnetwork_probe_heartbeat_v1").first!
+            .split(separator: "\n").dropFirst().compactMap { row -> [Substring]? in
+                let columns = row.split(separator: "\t")
+                return columns.count == 12 ? columns : nil
+            }
+        XCTAssertGreaterThanOrEqual(rows.count, 2)
+        XCTAssertGreaterThan(rows.reduce(0) { $0 + (Int($1[6]) ?? 0) }, 240)
+    }
     func testReceiverCountsPacketsRejectedForMissingClockMapping() throws {
         let directory = try temporaryDirectory("UnmappedClock")
         let diagnostics = HearPortDiagnostics(directory: directory.appendingPathComponent("logs"))

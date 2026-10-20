@@ -25,6 +25,7 @@
 #include "hearport/windows/music_test.h"
 #include "hearport/windows/calibration.h"
 #include "hearport/windows/packetizer.h"
+#include "hearport/windows/live_audio_encoder.h"
 #include "hearport/windows/quic_server.h"
 #include "hearport/windows/reliable_audio_lag.h"
 #include "hearport/windows/wasapi_capture.h"
@@ -69,6 +70,7 @@ class SenderService {
   bool MarkStartStreamAckWritten(std::uint32_t stream_id);
   void ConfigureReliableAudio(bool enabled);
   void ConfigureCoordinatedAudio(bool enabled);
+  bool ConfigureAudioFormat(wire::ControlEnvelope& setup);
   bool ConfigurePlayoutBudget(std::uint32_t target_ms, std::uint32_t maximum_ms,
                               std::uint32_t output_reserve_ms);
   void ConfigureNetworkProbe(bool enabled);
@@ -173,6 +175,8 @@ class SenderService {
   std::optional<PcmNormalizer> normalizer_;
   std::optional<PcmFormat> normalizer_format_;
   AudioPacketizer packetizer_;
+  LiveAudioEncoder live_encoder_;
+  std::atomic<bool> live_opus_ = false;
   SessionState session_;
   ControlHandler control_handler_;
   ResetHandler reset_handler_;

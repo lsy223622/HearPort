@@ -39,6 +39,14 @@ public struct PlayoutDecision: Sendable {
     public let targetMilliseconds: Double
     public let prepareDeadline: UInt64?
     public let bufferTargetMilliseconds: Double
+
+    func startupTargetPackets(now: UInt64) -> Int {
+        let desired = max(1, Int(ceil(bufferTargetMilliseconds / 2.5)))
+        guard let deadline = prepareDeadline else { return desired }
+        let remaining = deadline > now ? Double(deadline - now) / 1_000_000 : 0
+        // Leave one preparation-timer horizon before the oldest source expires.
+        return min(desired, max(1, Int(floor(max(0, remaining - 6) / 2.5))))
+    }
 }
 
 public struct PlayoutController: Sendable {

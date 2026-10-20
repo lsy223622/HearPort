@@ -50,6 +50,7 @@ inline constexpr std::uint32_t kFeatureMusicTest = 32u;
 inline constexpr std::uint32_t kFeatureEnvironmentCalibration = 64u;
 inline constexpr std::uint32_t kFeatureTimedDiagnostics = 128u;
 inline constexpr std::uint32_t kFeatureCompressionMusic = 256u;
+inline constexpr std::uint32_t kFeatureLiveCompression = 512u;
 inline constexpr std::size_t kDiagnosticReportChunkMaxBytes = 60u * 1024u;
 
 // This is the small, schema-shaped value used at the platform boundary. The
@@ -76,6 +77,10 @@ struct ControlEnvelope {
   std::uint32_t target_ms = 0;
   std::uint32_t maximum_ms = 0;
   std::uint32_t output_reserve_ms = 0;
+  std::uint32_t audio_codec = 0;
+  std::uint32_t audio_bitrate = 0;
+  std::uint32_t audio_frame_count = 0;
+  std::uint32_t codec_lookahead_frames = 0;
   std::uint32_t request_id = 0;
   std::uint64_t local_sent_ns = 0;
   std::uint64_t remote_received_ns = 0;

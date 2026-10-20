@@ -843,6 +843,12 @@ void SenderService::ProbeWorker(std::uint32_t stream_id) {
     const auto round_start = began +
         std::chrono::seconds(index * (kNetworkProbeSecondsPerRound +
             (coordinated_audio_.load() ? kCoordinatedProbeRecoverySeconds : 0)));
+    // Keep the old stream alive during recovery so its tail can finish delivery.
+    while (Clock::now() < round_start) {
+      if (stop_probe_.load()) return;
+      std::this_thread::sleep_for(std::min(std::chrono::milliseconds(5),
+          std::chrono::duration_cast<std::chrono::milliseconds>(round_start - Clock::now())));
+    }
     {
       std::lock_guard send_lock(audio_send_mutex_);
       std::lock_guard reliable_lock(reliable_mutex_);
@@ -1040,6 +1046,21 @@ void SenderService::ConfigureReliableAudio(bool enabled) {
   reliable_generation_ = 0;
 }
 
+bool SenderService::ConfigureAudioFormat(wire::ControlEnvelope& setup) {
+  std::lock_guard lock(audio_send_mutex_);
+  if (!live_encoder_.Configure(setup.audio_codec ? setup.audio_bitrate : 0,
+                                setup.audio_frame_count)) return false;
+  if (setup.audio_codec && (setup.audio_frame_count + live_encoder_.lookahead()) / 48.0 +
+      2 + setup.output_reserve_ms >= setup.maximum_ms) return false;
+  live_opus_.store(setup.audio_codec != 0);
+  setup.codec_lookahead_frames = live_encoder_.lookahead();
+  LogDiagnostic("audio_format codec=" + std::string(setup.audio_codec ? "opus" : "pcm") +
+      " bitrate=" + std::to_string(setup.audio_bitrate) +
+      " frame_count=" + std::to_string(setup.audio_frame_count ? setup.audio_frame_count : 120) +
+      " lookahead_frames=" + std::to_string(setup.codec_lookahead_frames));
+  return true;
+}
+
 void SenderService::ConfigureCoordinatedAudio(bool enabled) {
   coordinated_audio_.store(enabled);
 }
@@ -1067,7 +1088,7 @@ bool SenderService::ObserveAudioProgress(
     std::optional<std::uint64_t> played_source, std::uint32_t buffered_ms) {
   std::unique_lock send_lock(audio_send_mutex_);
   if (calibration_options_ && !calibration_round_active_.load()) return true;
-  if (music_test()) {
+  if (music_test() || live_opus_.load()) {
     std::lock_guard reliable_lock(reliable_mutex_);
     if (generation == reliable_generation_ && latest_received && reliable_mode_.load())
       quic_->ConfirmReliableReceived(stream_id, generation, *latest_received);
@@ -1342,6 +1363,24 @@ void SenderService::AudioWorker() {
       }
     }
     std::vector<std::byte> encoded;
+    std::optional<wire::TimedAudioRecord> compressed;
+    if (live_opus_.load()) {
+      std::uint32_t generation;
+      { std::lock_guard lock(reliable_mutex_);
+        generation = reliable_mode_.load() ? std::max(1u, reliable_generation_) : 1; }
+      try {
+        compressed = live_encoder_.Push(queued.packet, queued.captured_at_ns, queued.source_frame, generation);
+      } catch (const std::exception& error) {
+        LogDiagnostic(std::string("live_audio_encode_failed error=") + error.what());
+        audio_metrics_.record_dropped(false); continue;
+      }
+      if (!compressed) continue;
+      if (AudioDeadline(maximum_ms_.load(), output_reserve_ms_.load()).Expired(
+          compressed->captured_at_ns, static_cast<std::uint64_t>(MonotonicNanoseconds()))) {
+        audio_metrics_.record_dropped(false); continue;
+      }
+      encoded = wire::EncodeTimedAudioRecord(*compressed);
+    } else
     if (coordinated_audio_.load()) {
       std::uint32_t generation = 1;
       if (reliable_mode_.load() || music_clip_) {
@@ -1373,7 +1412,9 @@ void SenderService::AudioWorker() {
       if (trace_this_packet && !reliable_mode_.load()) ++outstanding_debug_sends_;
     }
     const auto send_at_ns = MonotonicNanoseconds();
-    const bool sent = quic_->SendAudio(encoded);
+    const bool sent = compressed ? quic_->SendProbe(encoded, compressed->stream_id,
+        compressed->sequence, reliable_mode_.load()).status == ProbeSendStatus::accepted :
+        quic_->SendAudio(encoded);
     if (trace_this_packet) {
       debug_trace_.RecordPacket(queued.packet.sequence,
                                 queued.captured_at_ns,

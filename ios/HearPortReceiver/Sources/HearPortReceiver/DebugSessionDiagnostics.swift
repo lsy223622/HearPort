@@ -312,13 +312,19 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
                 UInt32(consumer.bufferedFrames / 48))
     }
 
+    private func flushProbePlayback(at now: UInt64) {
+        guard consumerRound >= 0, consumer != nil else { return }
+        guard playback.count < capacity else { dropped.increment(); return }
+        playback.append("\(consumerRound + 1)\t\(now)\t\(consumer?.playedSourceFrame ?? 0)\t\(consumer?.bufferedFrames ?? 0)\t0\t0\t\(accumulatedPlayed)\t\(accumulatedConcealed)\t\(accumulatedSkipped)\t\(maximumAge)\t\(consumer?.repairedPackets ?? 0)\t\(accumulatedWaiting)")
+        accumulatedPlayed = 0; accumulatedConcealed = 0; accumulatedWaiting = 0
+        accumulatedSkipped = 0; maximumAge = 0
+    }
+
     private func advanceProbeRound(at now: UInt64, plan: CoordinatedProbePlan) {
         guard let start = probeStartedAt, now >= start else { return }
         let index = min(plan.rounds.count - 1, Int((now - start) / (UInt64(30 + plan.recoverySeconds) * 1_000_000_000)))
         guard index > consumerRound else { return }
-        if consumerRound >= 0 {
-            playback.append("\(consumerRound + 1)\t\(now)\t\(consumer?.playedSourceFrame ?? 0)\t\(consumer?.bufferedFrames ?? 0)\t0\t0\t\(accumulatedPlayed)\t\(accumulatedConcealed)\t\(accumulatedSkipped)\t\(maximumAge)\t\(consumer?.repairedPackets ?? 0)\t\(accumulatedWaiting)")
-        }
+        flushProbePlayback(at: now)
         accumulatedPlayed = 0; accumulatedConcealed = 0; accumulatedWaiting = 0
         accumulatedSkipped = 0; maximumAge = 0
         let first = plan.rounds.prefix(index).reduce(UInt32(0)) { $0 + UInt32($1.packetsPerSecond * 30) }
@@ -475,6 +481,7 @@ public final class DebugSessionDiagnostics: @unchecked Sendable {
             lock.unlock()
             throw DebugSessionDiagnosticsError.noActiveSession
         }
+        flushProbePlayback(at: DispatchTime.now().uptimeNanoseconds)
         recording.store(0)
         metadata = current
         capturedRecords = records

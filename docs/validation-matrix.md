@@ -10,14 +10,20 @@ including cable disconnect and reconnect; repeated playback/tests on weak
 2.4 GHz Wi-Fi. These observations do not establish a timed soak, lock-screen
 behavior, a clean-machine install, or final Release acceptance.
 
-## Current compression test candidate evidence (2026-10-20)
+## Live compression development (2026-10-20)
+
+- Network/USB encoding preferences, negotiated live Opus and PCM, bitrate/frame duration settings implemented.
+- Local Release build: 24/24 CTest checks; focused Python: 17 analyzer and 4 package checks passed.
+- Matching Actions packages and live-path device acceptance are pending.
+
+## Compression test candidate evidence (2026-10-20)
 
 - Source commit: `53de0cd7eefa0afd9e63f549b50439c023172b51`, product version 0.1.0.
 - Windows Actions [39360465692](https://github.com/lsy223622/HearPort/actions/runs/39360465692): Release build, 23 CTest checks and 28 Python checks passed; portable ZIP, matching source ZIP and SHA-256 manifest uploaded.
 - iPad Actions [39360464729](https://github.com/lsy223622/HearPort/actions/runs/39360464729): 179 Swift tests passed, including real QUIC framing/mode-switch integration; unsigned Release IPA build 162 archived with Opus and Rust license notices.
 - CodeQL [39360464054](https://github.com/lsy223622/HearPort/actions/runs/39360464054) passed.
 - Download hashes, Windows per-file manifest, IPA commit/build metadata and bundled Opus license checked. The downloaded Windows package started, loaded its four runtime DLLs locally and listened on UDP 52137 plus the USB tunnel's loopback endpoint.
-- Physical iPad compression playback and weak-signal comparison remain unverified. Desktop/macOS codec timing and synthetic load tests do not establish iPad performance or a compression benefit on a real network. Test procedure: [compression-tests.md](compression-tests.md).
+- Physical build 162 tests completed: 32 USB music rounds and 32 network music rounds at target 225 ms / maximum 300 ms, 60 seconds per round. All music rounds have complete durable summaries and zero decode failures. Network results vary across repeats; startup trimming and transport pressure prevent declaring a universal winning profile. iPad Opus per-group decode p99 stayed below 0.50 ms. Raw reports and music remain local. Procedure: [compression-tests.md](compression-tests.md).
 
 ## Previous release candidate evidence (2026-10-18)
 

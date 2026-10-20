@@ -99,6 +99,20 @@ class EchoProtocol(QuicConnectionProtocol):
                 self.sent_audio = True
                 self.reliable_requests.clear()
                 break
+            if b"LIVE_OPUS" in self.reliable_requests:
+                stream = self._quic.get_next_available_stream_id(is_unidirectional=True)
+                preface = (1).to_bytes(4, "big") + (1).to_bytes(4, "big")
+                records = bytearray(preface)
+                for sequence in [0, 4]:
+                    packet = ((1).to_bytes(4, "big") + (1).to_bytes(4, "big") +
+                              sequence.to_bytes(4, "big") + (480).to_bytes(2, "big") +
+                              (5).to_bytes(2, "big") + (1).to_bytes(8, "big") +
+                              (sequence * 120).to_bytes(8, "big") + bytes(320))
+                    records += len(packet).to_bytes(2, "big") + packet
+                self._quic.send_stream_data(stream, records[:5], end_stream=False)
+                self._quic.send_stream_data(stream, records[5:], end_stream=True)
+                self.sent_audio = True
+                self.reliable_requests.clear()
             if b"NETWORK_PROBE" in self.reliable_requests:
                 probe_stream = self._quic.get_next_available_stream_id(is_unidirectional=True)
                 preface = (1).to_bytes(4, "big") + (1).to_bytes(4, "big")

@@ -5,7 +5,8 @@
 - [x] Matching source commit `53de0cd7eefa0afd9e63f549b50439c023172b51`: Windows Actions [39360465692](https://github.com/lsy223622/HearPort/actions/runs/39360465692), iPad Actions [39360464729](https://github.com/lsy223622/HearPort/actions/runs/39360464729).
 - [x] Windows Release build, 23 CTest checks, 28 Python checks, 179 Swift checks, unsigned IPA build 162 and CodeQL passed.
 - [x] Download checksums, Windows file hashes, matching IPA identity and bundled Opus license verified; extracted Windows package started and listened on UDP 52137.
-- [ ] Install build 162 and run paired compression comparisons under the intended real network conditions. Follow [compression-tests.md](compression-tests.md); no device compression result is inferred from CI.
+- [x] Build 162 physical comparisons: 32 USB and 32 network music rounds completed; repeated wireless results and startup trimming analyzed separately.
+- [ ] Verify the new normal-playback encoding settings, silence/resume and USB/network switching on device after installing matching builds.
 
 ## Baseline evidence (2026-10-18)
 

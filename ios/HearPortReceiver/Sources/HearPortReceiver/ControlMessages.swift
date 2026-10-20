@@ -30,6 +30,7 @@ public enum ControlFeature {
     public static let timedDiagnostics: UInt32 = 128
     public static let environmentCalibration: UInt32 = 64
     public static let compressionMusic: UInt32 = 256
+    public static let liveCompression: UInt32 = 512
 }
 
 public struct AudioProgressTiming: Equatable, Sendable {
@@ -65,7 +66,7 @@ public enum ControlMessage: Equatable, Sendable {
     case diagnosticsReportReceived(sessionID: Data)
     case audioProgress(streamID: UInt32, generation: UInt32,
                        latestReceivedSequence: UInt32?, timing: AudioProgressTiming? = nil)
-    case audioSetup(streamID: UInt32, budget: PlayoutBudget)
+    case audioSetup(streamID: UInt32, budget: PlayoutBudget, format: AudioStreamFormat = .pcm)
     case probeManifest(streamID: UInt32, manifest: Data)
     case clockRequest(requestID: UInt32, localSent: UInt64)
     case clockResponse(requestID: UInt32, localSent: UInt64,
@@ -268,13 +269,21 @@ public struct ControlEnvelope: Equatable, Sendable {
             }
             body = writer.data
             field = 39
-        case let .audioSetup(streamID, budget):
+        case let .audioSetup(streamID, budget, format):
             guard streamID != 0 else { throw ControlMessageError.invalidMessage }
             var writer = ProtoWriter()
             writer.writeVarintField(1, value: streamID)
             writer.writeVarintField(2, value: UInt32(budget.targetMilliseconds.rounded()))
             writer.writeVarintField(3, value: UInt32(budget.maximumMilliseconds.rounded()))
             writer.writeVarintField(4, value: UInt32(budget.outputReserveMilliseconds.rounded()))
+            if format.opus {
+                writer.writeVarintField(5, value: 1)
+                writer.writeVarintField(6, value: UInt32(format.bitrate))
+                writer.writeVarintField(7, value: UInt32(format.frameCount))
+                if format.lookaheadFrames != 0 {
+                    writer.writeVarintField(8, value: UInt32(format.lookaheadFrames))
+                }
+            }
             body = writer.data
             field = 40
         case let .probeManifest(streamID, manifest):
@@ -609,9 +618,18 @@ public struct ControlEnvelope: Equatable, Sendable {
         if field == 40 {
             guard let target = try scalar(fields[2]), let maximum = try scalar(fields[3]),
                   let output = try scalar(fields[4]) else { throw ControlMessageError.invalidMessage }
+            let codec = try scalar(fields[5]) ?? 0
+            let bitrate = try scalar(fields[6]) ?? 0
+            let frames = try scalar(fields[7]) ?? 0
+            let lookahead = try scalar(fields[8]) ?? 0
+            guard codec <= 1, codec != 0 || (bitrate == 0 && frames == 0 && lookahead == 0) else {
+                throw ControlMessageError.invalidMessage
+            }
+            let format = try AudioStreamFormat(opus: codec == 1, bitrate: Int(bitrate),
+                frameCount: Int(frames), lookaheadFrames: Int(lookahead))
             return .audioSetup(streamID: first, budget: try PlayoutBudget(
                 targetMilliseconds: Double(target), maximumMilliseconds: Double(maximum),
-                outputReserveMilliseconds: Double(output)))
+                outputReserveMilliseconds: Double(output)), format: format)
         }
         if field == 43 {
             guard let generation = try scalar(fields[2]), generation != 0,

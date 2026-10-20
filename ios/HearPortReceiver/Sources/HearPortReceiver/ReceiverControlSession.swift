@@ -56,6 +56,8 @@ public final class ReceiverControlSession {
     public var preparePlayoutBudget: (() throws -> PlayoutBudget)?
     public var requestedBudget = try! PlayoutBudget(targetMilliseconds: 50,
         maximumMilliseconds: 100, outputReserveMilliseconds: 10)
+    public var requestedFormat: AudioStreamFormat = .pcm
+    public private(set) var activeFormat: AudioStreamFormat = .pcm
     private let clockLock = NSLock()
     private var clockTimer: DispatchSourceTimer?
     private var clockRequestID: UInt32 = 0
@@ -119,7 +121,10 @@ public final class ReceiverControlSession {
         }
         self.transport.onAudioDatagram = { [weak self] data in
             guard let self else { return }
-            if self.musicTestRound?.isCompressionTest == true {
+            if self.activeFormat.opus && !self.isMusicTest && !self.isNetworkProbe {
+                guard let record = try? TimedAudioRecord(encoded: data) else { return }
+                self.receiver.receiveLiveRecord(record)
+            } else if self.musicTestRound?.isCompressionTest == true {
                 guard let record = try? TimedAudioRecord(encoded: data) else { return }
                 self.receiver.receiveMusicRecord(record)
             } else if (self.peerFeatures & ControlFeature.coordinatedAudio) != 0 {
@@ -398,7 +403,7 @@ public final class ReceiverControlSession {
         let peerID = credential?.peerID ?? Data()
         let features = ControlFeature.diagnosticsUpload | ControlFeature.networkProbe |
             ControlFeature.networkProbeRepeat | ControlFeature.coordinatedAudio | ControlFeature.musicTest | ControlFeature.environmentCalibration |
-            ControlFeature.compressionMusic |
+            ControlFeature.compressionMusic | ControlFeature.liveCompression |
             (audioMode == .reliable ? ControlFeature.reliableAudio : 0)
         let envelope = ControlEnvelope(.connectRequest(authMode: mode,
                                                        peerID: peerID,
@@ -708,19 +713,33 @@ public final class ReceiverControlSession {
                     requestedBudget = try PlayoutBudget(targetMilliseconds: Double(chosen.target), maximumMilliseconds: Double(chosen.maximum),
                         outputReserveMilliseconds: Double(reserve))
                 }
-                send(.audioSetup(streamID: streamID, budget: requestedBudget))
+                let format = !isNetworkProbe && !isMusicTest &&
+                    (peerFeatures & ControlFeature.liveCompression) != 0 ? requestedFormat : .pcm
+                guard format.fits(requestedBudget) else {
+                    onError?("Selected delay budget is too small for this audio output.")
+                    transport.cancel(); return
+                }
+                activeFormat = format
+                send(.audioSetup(streamID: streamID, budget: requestedBudget, format: format))
                 startClockUpdates()
                 requestClock()
             } else {
                 acknowledgeStream(streamID)
             }
-        case let .audioSetup(streamID, budget):
+        case let .audioSetup(streamID, budget, format):
             clockLock.lock()
-            let matches = pendingStreamAck == streamID && budget == requestedBudget
+            let matches = pendingStreamAck == streamID && budget == requestedBudget &&
+                format.opus == activeFormat.opus && format.bitrate == activeFormat.bitrate &&
+                format.frameCount == activeFormat.frameCount
             if matches { budgetAccepted = true }
             clockLock.unlock()
             guard matches else { throw ControlMessageError.invalidMessage }
             receiver.configurePlayout(budget)
+            activeFormat = format
+            if !isNetworkProbe && !isMusicTest {
+                try receiver.configureLiveAudio(streamID: streamID, format: format, budget: budget)
+                transport.configureLiveAudio(format)
+            }
             debugSessionDiagnostics.configureProbeBudget(budget)
             finishCoordinatedStart()
         case let .clockResponse(requestID, localSent, remoteReceived, remoteSent):

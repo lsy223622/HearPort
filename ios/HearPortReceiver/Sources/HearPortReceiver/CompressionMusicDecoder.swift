@@ -5,7 +5,7 @@ protocol CompressionOpusFrameDecoding: AnyObject {
     func decode(packet: Data?, frameCount: Int) -> [Float]?
 }
 
-private final class NativeCompressionOpusDecoder: CompressionOpusFrameDecoding {
+final class NativeCompressionOpusDecoder: CompressionOpusFrameDecoding {
     private let decoder: UnsafeMutableRawPointer
 
     init() throws {

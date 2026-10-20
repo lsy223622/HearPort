@@ -30,6 +30,7 @@ add_library(hearport_windows_platform STATIC
   src/network_probe.cpp
   src/calibration.cpp
   src/music_file.cpp
+  src/live_audio_encoder.cpp
   src/quic_server_msquic.cpp
   src/sender_options.cpp
   src/sender_authentication.cpp
@@ -97,6 +98,9 @@ if(BUILD_TESTING)
   add_executable(hearport_opus_codec_tests tests/opus_codec_tests.cpp)
   target_link_libraries(hearport_opus_codec_tests PRIVATE hearport_opus_bridge)
   add_test(NAME hearport_opus_codec_tests COMMAND hearport_opus_codec_tests)
+  add_executable(hearport_live_audio_encoder_tests tests/live_audio_encoder_tests.cpp)
+  target_link_libraries(hearport_live_audio_encoder_tests PRIVATE hearport_windows_platform)
+  add_test(NAME hearport_live_audio_encoder_tests COMMAND hearport_live_audio_encoder_tests)
   add_executable(hearport_shared_pairing_tests tests/shared_pairing_tests.cpp)
   target_link_libraries(hearport_shared_pairing_tests PRIVATE hearport_windows_platform)
   add_test(NAME hearport_shared_pairing_tests COMMAND hearport_shared_pairing_tests)
