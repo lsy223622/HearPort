@@ -22,7 +22,7 @@ behavior, a clean-machine install, or final Release acceptance.
   exercised the playback pump interaction.
 - The pump now advances source gaps only while a buffered packet establishes the
   future timeline; staged audio drains into the existing silent-rebuffer path.
-- Fixed-build Actions and physical switching-track acceptance are pending.
+- Fixed Actions [39392343378](https://github.com/lsy223622/HearPort/actions/runs/39392343378): all 187 Swift tests passed, including resumed playback on the original stream; unsigned IPA archived. CodeQL [39392343011](https://github.com/lsy223622/HearPort/actions/runs/39392343011) passed. Physical switching-track acceptance remains pending installation.
 
 - Network/USB encoding preferences, negotiated live Opus and PCM, bitrate/frame duration settings implemented.
 - Local Release build: 24/24 CTest checks; focused Python: 17 analyzer and 4 package checks passed.
