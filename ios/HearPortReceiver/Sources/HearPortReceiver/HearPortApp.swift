@@ -442,15 +442,11 @@ import SwiftUI
                         }
                         ProgressView(value: min(Double(round.seconds), roundElapsed), total: Double(round.seconds))
                             .tint(.teal)
-                        let roundTimeText: String
-                        if round.isCompressionTest {
-                            roundTimeText = String(format: Self.localize("Round remaining %.0f s"),
-                                max(0, Double(round.seconds) - roundElapsed))
-                        } else {
-                            roundTimeText = String(format: Self.localize("Round elapsed %.0f / %d s"),
-                                min(Double(round.seconds), roundElapsed), round.seconds)
-                        }
-                        Text(roundTimeText)
+                        Text(round.isCompressionTest
+                            ? String(format: Self.localize("Round remaining %.0f s"),
+                                     max(0, Double(round.seconds) - roundElapsed))
+                            : String(format: Self.localize("Round elapsed %.0f / %d s"),
+                                     min(Double(round.seconds), roundElapsed), round.seconds))
                             .font(.caption).foregroundStyle(.secondary).monospacedDigit()
                     }
                 } else if let progress = calibrationProgress {
