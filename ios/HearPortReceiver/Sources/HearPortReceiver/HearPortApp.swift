@@ -592,7 +592,7 @@ import SwiftUI
             }
             Section {
                 Button("Connect") {
-                    connect(selected: selectedEndpoint)
+                    connect(selected: selectedEndpoint, forCalibration: pendingCalibration != nil)
                     showingConnectionSetup = false
                     if canvasSheet == .pairing { canvasSheet = nil }
                 }
@@ -763,7 +763,7 @@ import SwiftUI
             selectedEndpoint = target.preferredEndpoint
             if hasRememberedCredential && connectionManager.isRemembered(target.identity) {
                 authMode = .remembered; canvasSheet = nil
-                connect(selected: target.preferredEndpoint)
+                connect(selected: target.preferredEndpoint, forCalibration: true)
             } else {
                 authMode = .pair; pin = ""
                 if target.preferredEndpoint.path == .network { host = target.preferredEndpoint.host }
@@ -887,10 +887,11 @@ import SwiftUI
         .onAppear { refreshDiagnostics() }
     }
 
-    private func connect(selected: ConnectionEndpoint? = nil) {
+    private func connect(selected: ConnectionEndpoint? = nil, forCalibration: Bool = false) {
         guard authMode == .remembered || PairingSecurity.validatePIN(pin) else {
             status = Self.localize("Enter the 6-digit PIN shown on Windows"); return
         }
+        if !forCalibration { pendingCalibration = nil; calibrationTarget = nil }
         completedTestStatus = nil; connectionError = nil
         completedAdaptiveConnection = nil
         adaptiveRunResult = nil; calibrationRunResult = nil; calibrationProgress = nil
@@ -1105,6 +1106,7 @@ import SwiftUI
             DispatchQueue.main.async {
                 if authenticatedIdentity == nil && connectionManager.isWaiting && control == nil && requestedAuthMode != .remembered {
                     connectionManager.stop(); isConnecting = false
+                    pendingCalibration = nil; calibrationTarget = nil
                     connectionError = Self.localize(message); status = connectionError ?? Self.localize("Connection failed")
                     return
                 }
@@ -1116,6 +1118,7 @@ import SwiftUI
                 try? audioOutput?.stop(); audioOutput = nil
                 control?.cancel(); control = nil
                 if connectionManager.isWaiting { showConnectionSearch(); return }
+                pendingCalibration = nil; calibrationTarget = nil
                 isConnecting = false
                 connectionError = Self.localize(reportInterrupted ? "Report transfer interrupted. Receipt not confirmed." : message)
                 status = connectionError ?? Self.localize("Connection failed")
