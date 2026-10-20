@@ -100,6 +100,7 @@ class SenderAuthentication {
   bool peer_coordinated_audio_ = false;
   bool peer_supports_music_test_ = false;
   bool peer_supports_compression_ = false;
+  bool peer_supports_adaptive_calibration_ = false;
   bool peer_supports_live_compression_ = false;
   bool peer_supports_calibration_ = false;
   bool report_upload_active_ = false;

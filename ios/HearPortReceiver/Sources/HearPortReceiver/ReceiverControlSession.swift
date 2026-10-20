@@ -15,6 +15,7 @@ public final class ReceiverControlSession {
     private var deferActivation = false
     private var activated = false
     public var onReady: (() -> Void)?
+    public var onAudioFormat: ((AudioStreamFormat) -> Void)?
     public var onError: ((String) -> Void)?
     public var onTransportState: ((QuicReceiverState) -> Void)?
     public var onDiagnosticReportReceived: ((UInt32) -> Void)?
@@ -22,12 +23,16 @@ public final class ReceiverControlSession {
     var onMusicTestRound: ((MusicTestRound) -> Void)?
     private(set) var musicTestRound: MusicTestRound?
     var onCalibrationProgress: ((CalibrationProgressSnapshot) -> Void)?
+    var onAdaptiveCalibrationResult: ((AdaptiveCalibrationResult) -> Void)?
+    private var adaptiveCalibration: AdaptiveCalibrationSession?
+    private var lastAdaptiveProgress: UInt64 = 0
     var onCalibrationResult: ((CalibrationResult) -> Void)?
     var calibrationContext: (() -> CalibrationContext)?
     var prepareCalibrationOutputReserve: (() throws -> Double)?
     private var calibration: EnvironmentCalibrationSession?
     var isEnvironmentCalibration: Bool { (peerFeatures & ControlFeature.environmentCalibration) != 0 }
     func interruptCalibration(forOutputChange: Bool = false) {
+        adaptiveCalibration?.cancel()
         if !forOutputChange || calibration?.hasStarted == true { calibration?.cancel() }
     }
     var isMusicTest: Bool { (peerFeatures & ControlFeature.musicTest) != 0 }
@@ -105,6 +110,11 @@ public final class ReceiverControlSession {
             guard let self else { return }
             let record = try? TimedAudioRecord(encoded: data)
             let mapped = record.flatMap { self.receiver.mappedCapture($0, at: receivedAt) }
+            if let adaptive = self.adaptiveCalibration, let record {
+                adaptive.receive(record, captured: mapped?.0, uncertainty: mapped?.1 ?? 0, at: receivedAt)
+                self.transport.noteProbeGeneration(record.generation)
+                return
+            }
             self.debugSessionDiagnostics.recordProbePacket(data, receivedAt: receivedAt,
                 callbackBytes: bytes, callbackPackets: count,
                 mappedCapturedAt: mapped?.0, uncertainty: mapped?.1 ?? 0)
@@ -112,6 +122,14 @@ public final class ReceiverControlSession {
         }
         self.transport.onProbeTick = { [weak self] at in
             guard let self else { return }
+            if let adaptive = self.adaptiveCalibration {
+                adaptive.tick(at: at, uncertainty: self.receiver.clockUncertainty)
+                if at >= self.lastAdaptiveProgress && at - self.lastAdaptiveProgress >= 500_000_000 {
+                    self.lastAdaptiveProgress = at
+                    self.onCalibrationProgress?(adaptive.progress())
+                }
+                return
+            }
             if let request = self.debugSessionDiagnostics.tickProbe(at: at, roundTrip: self.receiver.estimatedRoundTrip, uncertainty: self.receiver.clockUncertainty) {
                 self.send(request)
             }
@@ -139,7 +157,7 @@ public final class ReceiverControlSession {
         }
         self.transport.audioProgressTiming = { [weak self] in
             guard let self, let timing = self.receiver.progressTiming() else { return nil }
-            if self.isNetworkProbe, let progress = self.debugSessionDiagnostics.probeProgress() {
+            if self.isNetworkProbe, let progress = self.adaptiveCalibration?.feedback() ?? self.debugSessionDiagnostics.probeProgress() {
                 return AudioProgressTiming(playedSourceFrame: progress.played,
                     generatedAt: timing.generatedAt, bufferedMilliseconds: progress.buffered)
             }
@@ -166,6 +184,7 @@ public final class ReceiverControlSession {
             if state == .ready {
                 self.sendConnectIfPossible()
             } else if state == .failed || state == .closed {
+                self.adaptiveCalibration?.cancel()
                 self.calibration?.cancel()
                 self.stopClockUpdates()
                 if self.debugSessionDiagnostics.isRecording {
@@ -225,6 +244,7 @@ public final class ReceiverControlSession {
         debugSessionDiagnostics.configureProbePlan(nil)
         debugSessionDiagnostics.configureCalibration(nil)
         calibration = nil
+        adaptiveCalibration = nil
         setNetworkProbe(false)
         self.activeDebugSessionID = nil
         self.activeDebugStreamID = nil
@@ -310,11 +330,12 @@ public final class ReceiverControlSession {
         transport.perform { [weak self] in self?.beginActivatedSession() }
     }
 
-    public func requestEnvironmentCalibration(seconds: Int, maximum: Int,
+    public func requestEnvironmentCalibration(seconds: Int, maximum: Int, goal: Int,
                                                completion: @escaping @Sendable (Bool) -> Void) {
         transport.perform { [weak self] in
             guard let self, self.ready, !self.ending,
                   !self.calibrationRequestPending, !self.isEnvironmentCalibration,
+                  (self.peerFeatures & ControlFeature.adaptiveCalibration) != 0,
                   !self.isMusicTest, !self.isNetworkProbe, self.activeDebugSessionID == nil,
                   (self.peerFeatures & ControlFeature.timedDiagnostics) == 0,
                   let streamID = self.activeAudioStreamID else {
@@ -323,6 +344,7 @@ public final class ReceiverControlSession {
             }
             do {
                 var request = CalibrationMessage(kind: .request, planID: streamID)
+                request.goal = goal
                 request.seconds = seconds
                 request.budget = CalibrationBudget(target: 0, maximum: maximum)
                 let message = ControlMessage.probeManifest(streamID: streamID, manifest: try request.encoded())
@@ -404,7 +426,7 @@ public final class ReceiverControlSession {
         let peerID = credential?.peerID ?? Data()
         let features = ControlFeature.diagnosticsUpload | ControlFeature.networkProbe |
             ControlFeature.networkProbeRepeat | ControlFeature.coordinatedAudio | ControlFeature.musicTest | ControlFeature.environmentCalibration |
-            ControlFeature.compressionMusic | ControlFeature.liveCompression |
+            ControlFeature.compressionMusic | ControlFeature.liveCompression | ControlFeature.adaptiveCalibration |
             (audioMode == .reliable ? ControlFeature.reliableAudio : 0)
         let envelope = ControlEnvelope(.connectRequest(authMode: mode,
                                                        peerID: peerID,
@@ -686,7 +708,7 @@ public final class ReceiverControlSession {
             if isNetworkProbe {
                 transport.expectReliableAudio(streamID: streamID,
                                               latestReceivedSequence: { [weak self] in
-                    self?.debugSessionDiagnostics.probeProgress()?.sequence
+                    self?.adaptiveCalibration?.feedback()?.sequence ?? self?.debugSessionDiagnostics.probeProgress()?.sequence
                 })
             }
             if (peerFeatures & ControlFeature.coordinatedAudio) != 0 {
@@ -702,6 +724,11 @@ public final class ReceiverControlSession {
                         transport.cancel()
                         return
                     }
+                }
+                if let adaptiveCalibration {
+                    let reserve = adaptiveCalibration.outputReserve
+                    requestedBudget = try PlayoutBudget(targetMilliseconds: Double(max(reserve + 5, adaptiveCalibration.setup.budget.maximum / 2)),
+                        maximumMilliseconds: Double(adaptiveCalibration.setup.budget.maximum), outputReserveMilliseconds: Double(reserve))
                 }
                 if let calibration {
                     let reserve = Int(ceil(try prepareCalibrationOutputReserve?() ?? requestedBudget.outputReserveMilliseconds))
@@ -737,6 +764,7 @@ public final class ReceiverControlSession {
             guard matches else { throw ControlMessageError.invalidMessage }
             receiver.configurePlayout(budget)
             activeFormat = format
+            onAudioFormat?(format)
             if !isNetworkProbe && !isMusicTest {
                 try receiver.configureLiveAudio(streamID: streamID, format: format, budget: budget)
                 transport.configureLiveAudio(format)
@@ -785,6 +813,30 @@ public final class ReceiverControlSession {
             if isEnvironmentCalibration {
                 let message = try CalibrationMessage(encoded: manifest)
                 guard message.planID == streamID, isNetworkProbe else { throw ControlMessageError.invalidMessage }
+                if message.goal != 0 {
+                    switch message.kind {
+                    case .setup:
+                        guard adaptiveCalibration == nil, calibration == nil, activeDebugSessionID == nil else { throw ControlMessageError.invalidMessage }
+                        let reserve = Int(ceil(try prepareCalibrationOutputReserve?() ?? requestedBudget.outputReserveMilliseconds))
+                        guard message.budget.maximum >= reserve + 20 else { throw ControlMessageError.invalidMessage }
+                        adaptiveCalibration = AdaptiveCalibrationSession(setup: message, reserve: reserve)
+                    case .round:
+                        guard activeDebugStreamID == streamID, let adaptiveCalibration else { throw ControlMessageError.invalidMessage }
+                        let ack = try adaptiveCalibration.begin(message, at: DispatchTime.now().uptimeNanoseconds)
+                        transport.noteProbeGeneration(message.generation)
+                        send(.probeManifest(streamID: streamID, manifest: try ack.encoded()))
+                        onCalibrationProgress?(adaptiveCalibration.progress())
+                    case .analyze:
+                        guard activeDebugStreamID == streamID, let adaptiveCalibration else { throw ControlMessageError.invalidMessage }
+                        debugQueue.async { [weak self] in
+                            guard let self, self.activeDebugStreamID == streamID else { return }
+                            let choice = adaptiveCalibration.next(at: DispatchTime.now().uptimeNanoseconds)
+                            if let data = try? choice.encoded() { self.send(.probeManifest(streamID: streamID, manifest: data)) }
+                        }
+                    default: throw ControlMessageError.invalidMessage
+                    }
+                    return
+                }
                 switch message.kind {
                 case .setup:
                     guard calibration == nil, activeDebugSessionID == nil else { throw ControlMessageError.invalidMessage }
@@ -859,7 +911,7 @@ public final class ReceiverControlSession {
                   pendingReportSessionID == nil else {
                 throw PairingSecurityError.providerFailure(-9)
             }
-            debugSessionDiagnostics.begin(
+            if adaptiveCalibration == nil { debugSessionDiagnostics.begin(
                 sessionID: sessionID,
                 streamID: streamID,
                 durationSeconds: durationSeconds,
@@ -867,7 +919,7 @@ public final class ReceiverControlSession {
                 networkProbeRepeat: isNetworkProbe &&
                     (peerFeatures & ControlFeature.networkProbeRepeat) != 0,
                 compressionMusic: isMusicTest
-            )
+            ) }
             activeDebugSessionID = sessionID
             activeDebugStreamID = streamID
             _ = diagnostics.logAsync(
@@ -884,6 +936,17 @@ public final class ReceiverControlSession {
         case let .diagnosticsEnd(sessionID, reason):
             guard activeDebugSessionID == sessionID, activeDebugStreamID != nil else {
                 throw PairingSecurityError.providerFailure(-10)
+            }
+            if let adaptiveCalibration, let streamID = activeDebugStreamID {
+                activeDebugStreamID = nil; activeDebugSessionID = nil
+                if reason != 1 { adaptiveCalibration.cancel() }
+                let result = adaptiveCalibration.result(complete: reason == 1)
+                result.save()
+                onAdaptiveCalibrationResult?(result)
+                var ack = CalibrationMessage(kind: .complete, planID: streamID)
+                ack.goal = adaptiveCalibration.setup.goal
+                send(.probeManifest(streamID: streamID, manifest: try ack.encoded()))
+                return
             }
             activeDebugStreamID = nil
             debugEndReason = reason

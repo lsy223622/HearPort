@@ -27,7 +27,9 @@ func calibrationBudgets(maximum: Int, outputReserve: Int) -> [CalibrationBudget]
 }
 
 struct CalibrationMessage: Equatable, Sendable {
-    enum Kind: UInt8, Sendable { case setup, round, ack, analyze, selection, progress, request }
+    enum Kind: UInt8, Sendable { case setup, round, ack, analyze, selection, progress, request, complete }
+    var goal = 0
+    var format: AudioStreamFormat = .pcm
     var kind: Kind
     var planID: UInt32
     var phase = 0, index = 0, count = 0, profileMask = 0
@@ -43,15 +45,17 @@ struct CalibrationMessage: Equatable, Sendable {
 
     init(encoded: Data) throws {
         var r = CalibrationReader(bytes: Array(encoded))
-        guard try r.take(1) == 4, let kind = Kind(rawValue: UInt8(try r.take(1))) else {
+        let version = try r.take(1)
+        guard [4,5].contains(version), let kind = Kind(rawValue: UInt8(try r.take(1))) else {
             throw ControlMessageError.invalidMessage
         }
         self.init(kind: kind, planID: UInt32(try r.take(4)))
-        guard planID != 0 else { throw ControlMessageError.invalidMessage }
+        if version == 5 { goal = Int(try r.take(1)); guard [1,2,4].contains(goal) else { throw ControlMessageError.invalidMessage } }
+        guard planID != 0, goal != 0 || kind != .complete else { throw ControlMessageError.invalidMessage }
         switch kind {
         case .setup, .request:
             seconds = Int(try r.take(2)); budget = CalibrationBudget(target: 0, maximum: Int(try r.take(2)))
-            guard [30,60,120].contains(seconds), (20...2000).contains(budget.maximum) else {
+            guard (goal == 0 ? [30,60,120] : [15,30,60,120]).contains(seconds), (goal == 0 || seconds <= 60), (20...2000).contains(budget.maximum) else {
                 throw ControlMessageError.invalidMessage
             }
         case .round:
@@ -62,17 +66,17 @@ struct CalibrationMessage: Equatable, Sendable {
             budget = CalibrationBudget(target: Int(try r.take(2)), maximum: Int(try r.take(2)))
             outputReserve = Int(try r.take(2)); firstSequence = UInt32(try r.take(4))
             generation = UInt32(try r.take(4)); firstSourceFrame = try r.take(8)
-            guard phase <= 1, (1...10).contains(count), (1...count).contains(index), mode <= 1, reserved == 0,
-                  generation != 0, [30,60,120].contains(seconds), validCalibrationBudget(budget, reserve: outputReserve),
+            guard phase <= 1, (1...(goal == 0 ? 10 : 16)).contains(count), (1...count).contains(index), mode <= 1, reserved == 0,
+                  generation != 0, (goal == 0 ? [30,60,120] : [15,30,60,120]).contains(seconds), validCalibrationBudget(budget, reserve: outputReserve),
                   firstSourceFrame == UInt64(firstSequence) * 120,
                   UInt64(firstSequence) + UInt64(seconds * 400) <= UInt64(UInt32.max),
-                  (phase == 0 ? profileMask == 0 : (1...7).contains(profileMask)) else {
+                  (goal != 0 ? profileMask == goal : (phase == 0 ? profileMask == 0 : (1...7).contains(profileMask))) else {
                 throw ControlMessageError.invalidMessage
             }
         case .ack:
             phase = Int(try r.take(1)); index = Int(try r.take(1))
-            guard phase <= 1, (1...10).contains(index) else { throw ControlMessageError.invalidMessage }
-        case .analyze: break
+            guard phase <= 1, (1...(goal == 0 ? 10 : 16)).contains(index) else { throw ControlMessageError.invalidMessage }
+        case .complete, .analyze: break
         case .selection:
             let count = Int(try r.take(2))
             guard count <= 3 else { throw ControlMessageError.invalidMessage }
@@ -90,11 +94,18 @@ struct CalibrationMessage: Equatable, Sendable {
             completed = Int(try r.take(2)); total = Int(try r.take(2))
             guard (1...256).contains(total), completed <= total else { throw ControlMessageError.invalidMessage }
         }
+        if goal != 0 && (kind == .round || kind == .selection) {
+            let codec = try r.take(1), bitrate = Int(try r.take(4)), frames = Int(try r.take(2))
+            guard codec <= 1, codec != 0 || (bitrate == 0 && frames == 120) else { throw ControlMessageError.invalidMessage }
+            if kind == .selection { phase = Int(try r.take(1)); guard phase <= 1 else { throw ControlMessageError.invalidMessage } }
+            format = try AudioStreamFormat(opus: codec != 0, bitrate: bitrate, frameCount: frames)
+            if kind == .selection { guard choices.count <= 1, choices.allSatisfy({ $0.profileMask == goal }) else { throw ControlMessageError.invalidMessage } }
+        }
         guard r.at == r.bytes.count else { throw ControlMessageError.invalidMessage }
     }
 
     func encoded() throws -> Data {
-        var b = Data([4, kind.rawValue])
+        var b = Data([goal == 0 ? 4 : 5, kind.rawValue])
         func put(_ value: UInt64, _ size: Int) {
             for offset in (0..<size).reversed() { b.append(UInt8(truncatingIfNeeded: value >> (offset * 8))) }
         }
@@ -103,6 +114,7 @@ struct CalibrationMessage: Equatable, Sendable {
             put(UInt64(value), size)
         }
         put(UInt64(planID), 4)
+        if goal != 0 { try integer(goal,1) }
         switch kind {
         case .setup, .request: try integer(seconds,2); try integer(budget.maximum,2)
         case .round:
@@ -110,7 +122,7 @@ struct CalibrationMessage: Equatable, Sendable {
             for value in [seconds,budget.target,budget.maximum,outputReserve] { try integer(value,2) }
             put(UInt64(firstSequence),4); put(UInt64(generation),4); put(firstSourceFrame,8)
         case .ack: try integer(phase,1); try integer(index,1)
-        case .analyze: break
+        case .complete, .analyze: break
         case .selection:
             try integer(choices.count,2)
             for choice in choices {
@@ -118,6 +130,10 @@ struct CalibrationMessage: Equatable, Sendable {
                 try integer(choice.budget.target,2); try integer(choice.budget.maximum,2); try integer(choice.outputReserve,2)
             }
         case .progress: try integer(completed,2); try integer(total,2)
+        }
+        if goal != 0 && (kind == .round || kind == .selection) {
+            try integer(format.opus ? 1 : 0,1); try integer(format.bitrate,4); try integer(format.frameCount,2)
+            if kind == .selection { try integer(phase,1) }
         }
         _ = try CalibrationMessage(encoded: b)
         return b

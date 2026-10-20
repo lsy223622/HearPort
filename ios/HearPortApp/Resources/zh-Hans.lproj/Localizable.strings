@@ -313,3 +313,55 @@
 "Audio per packet" = "每包音频时长";
 
 "Longer packets reduce packet frequency and need more collection time. All processing uses the selected total delay budget. Changes take effect on the next connection." = "较长的包可减少发包次数，也需要更多收集时间。所有处理均计入所选总延迟预算。更改在下次连接时生效。";
+
+"Test goal" = "测试目标";
+
+"Profile" = "场景";
+
+"Search adjusts transport, encoding, bitrate, packet duration and delay budget for the selected goal." = "根据所选目标，逐步调整传输模式、编码、码率、每包时长和延迟预算。";
+
+"Observation window" = "每次观测时长";
+
+"15 seconds" = "15 秒";
+
+"Settings are repeated before selection. Final verification uses two windows of twice the selected duration. Remaining steps depend on observations." = "每套候选参数会重复观测；最终参数会再复核两次，每次时长加倍。后续步骤根据实测结果调整。";
+
+"Playback pauses while random traffic tests the network route. Results stay on this iPad. USB audio settings are independent." = "测试期间暂停播放，通过网络线路传输随机数据。结果保存在本机；USB 音频参数单独设置。";
+
+"Latest recommendation" = "最近的推荐";
+
+"Verification: gaps %.3f%% · longest %.1f ms" = "复核结果：缺口 %.3f%% · 最长 %.1f 毫秒";
+
+"Validation did not confirm the goal; test again when conditions settle." = "复核未能确认达到目标，可在网络条件平稳后重试。";
+
+"Insufficient valid observations. Check the connection and test again." = "有效观测不足，请检查连接后重试。";
+
+"Test observations" = "测试观测记录";
+
+"Gaps %.3f%% · longest %.1f ms" = "缺口 %.3f%% · 最长 %.1f 毫秒";
+
+"This is an observation of current network conditions, not a stability guarantee. Random payloads reserve codec preparation time but do not measure audio quality or decoder speed." = "结果仅代表本次网络状况，不保证未来稳定性。随机负载测试预留编码处理时间，不测量音质或解码性能。";
+
+"Verifying selected settings" = "正在复核选出的参数";
+
+"Searching suitable settings" = "正在逐步寻找合适参数";
+
+"Observation step %lld" = "第 %lld 次观测";
+
+"Verification %lld / 2" = "最终复核 %lld / 2";
+
+"Waiting for test traffic…" = "等待测试数据…";
+
+"Evaluating this observation and choosing the next step…" = "正在评估本次观测并选择下一步…";
+
+"Received %lld packets" = "已收到 %lld 个包";
+
+"Current window: gaps %.3f%% · longest %.1f ms" = "本次实时缺口 %.3f%% · 最长 %.1f 毫秒";
+
+"Previous window: gaps %.3f%% · longest %.1f ms" = "上次观测缺口 %.3f%% · 最长 %.1f 毫秒";
+
+"Estimated remaining: %lld–%lld observation windows, including this one. Final verification uses longer windows." = "预计还需 %lld–%lld 次观测（含当前）；最终复核的单次时长加倍。";
+
+"Parameters change in larger steps far from the goal and smaller steps near it. You can stop at any time." = "离目标较远时大步调整，接近目标时小步微调。可随时停止。";
+
+"Recommendations are ready to apply." = "推荐参数已生成，可以一键应用。";

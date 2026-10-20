@@ -134,6 +134,7 @@ bool SenderAuthentication::HandleConnect(
       (envelope.feature_bits & wire::kFeatureReliableAudio) != 0;
   peer_supports_music_test_ = (envelope.feature_bits & wire::kFeatureMusicTest) != 0;
   peer_supports_compression_ = (envelope.feature_bits & wire::kFeatureCompressionMusic) != 0;
+  peer_supports_adaptive_calibration_ = (envelope.feature_bits & wire::kFeatureAdaptiveCalibration) != 0;
   peer_supports_live_compression_ = (envelope.feature_bits & wire::kFeatureLiveCompression) != 0;
   wire::ControlEnvelope default_format;
   if (!service_.ConfigureAudioFormat(default_format)) return false;
@@ -283,6 +284,7 @@ bool SenderAuthentication::CompleteAuthentication(bool remember) {
   if (peer_coordinated_audio_) ready.feature_bits |= wire::kFeatureCoordinatedAudio;
   if (peer_coordinated_audio_ && peer_supports_live_compression_)
     ready.feature_bits |= wire::kFeatureLiveCompression;
+  if (peer_coordinated_audio_ && peer_supports_adaptive_calibration_) ready.feature_bits |= wire::kFeatureAdaptiveCalibration;
   if (service_.music_test()) ready.feature_bits |= wire::kFeatureMusicTest;
   if (service_.music_test()) ready.feature_bits |= wire::kFeatureCompressionMusic;
   if (service_.environment_calibration()) ready.feature_bits |= wire::kFeatureEnvironmentCalibration;
@@ -408,7 +410,7 @@ bool SenderAuthentication::HandleReportEnd(
   service_.LogDiagnostic(message.str());
   if (!Send(received)) return false;
   if (completing_debug) {
-    service_.MarkDebugReportCommitted(envelope.bytes1);
+    service_.MarkDebugResultReceived(envelope.bytes1);
   }
   return true;
 }
@@ -456,11 +458,18 @@ bool SenderAuthentication::HandleControlPayload(
             envelope->stream_id != stream_id_ || message->plan_id != stream_id_ ||
             service_.debug_duration() || service_.network_probe() || service_.music_test() ||
             service_.environment_calibration() || calibration_request_pending_ ||
-            !calibration_request_handler_) {
+            (message->goal && !peer_supports_adaptive_calibration_) || !calibration_request_handler_) {
           return Fail(ErrorCode::protocol, "unexpected calibration request");
         }
         calibration_request_pending_ = true;
-        calibration_request_handler_({message->seconds, message->budget.maximum_ms});
+        calibration_request_handler_({message->seconds, message->budget.maximum_ms, message->goal});
+        return true;
+      }
+      if (message->kind == CalibrationMessageKind::complete) {
+        if (!authenticated_ || !service_.adaptive_calibration() || flow_ != Flow::awaiting_debug_report ||
+            message->goal != service_.calibration_setup(stream_id_).goal || envelope->stream_id != stream_id_ || message->plan_id != stream_id_) return Fail(ErrorCode::protocol,"unexpected local calibration result");
+        flow_ = Flow::debug_complete;
+        service_.MarkDebugResultReceived(debug_session_id_);
         return true;
       }
       if (!authenticated_ || !service_.environment_calibration() || !peer_supports_calibration_ ||

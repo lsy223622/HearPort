@@ -192,7 +192,7 @@ enum CalibrationReplay {
                 guard p.sourceFrame >= firstSource, p.sourceFrame < sourceEnd,
                       let record = try? TimedAudioRecord(streamID: 1, generation: p.generation, sequence: p.sequence,
                         frameCount: 120, kind: p.kind, capturedAt: p.capturedAt, sourceFrame: p.sourceFrame, payload: payload) else { continue }
-                consumer.receive(record, capturedAt: p.capturedAt, uncertainty: p.uncertainty, now: p.receivedAt)
+                consumer.receive(record, capturedAt: p.capturedAt, uncertainty: p.uncertainty, now: p.availableAt)
             }
             consumer.updateUncertainty(tick.uncertainty)
             let result = consumer.tick(now: tick.at)

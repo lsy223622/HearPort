@@ -38,11 +38,16 @@ not measured speaker latency. They include transport, processing, and output;
 the maximum controls how long an interruption can be tolerated. Changes apply
 on the next connection.
 
-**Automatic test and recommendations** compares transport and playback-budget
-choices using the PC's LAN connection. It pauses playback while running and
-reports Low latency, Balanced, and Stability first recommendations; it does
-not test over USB. A recommendation is an observation of the tested network,
-not a guarantee for later conditions.
+**Automatic test and recommendations** first selects one goal: Low latency,
+Balanced, or Stability first. It pauses playback and tests random traffic over
+LAN, adapting transport, PCM/Opus encoding, bitrate, packet duration and playback
+budget. Candidates are repeated and the final settings receive two longer
+verification windows before one-click application. Progress includes current
+parameters, live gaps, countdown and a changing estimate of remaining steps.
+Results remain on iPad; full diagnostic tests and report collection are available
+from Windows. Random traffic matches the current constant-bitrate packet load,
+reserving codec preparation time; it does not benchmark decoder speed or audio
+quality. Recommendations describe the observed network, not future guarantees.
 
 HearPort captures the Windows default output using shared-mode WASAPI Loopback
 and sends audio to the iPad. The receiver uses QUIC, local buffering, and audio
