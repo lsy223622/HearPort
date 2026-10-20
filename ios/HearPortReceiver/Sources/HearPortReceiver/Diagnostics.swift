@@ -120,7 +120,8 @@ private struct AsyncDiagnosticEvent: Sendable {
 }
 
 public final class HearPortDiagnostics: @unchecked Sendable {
-    public static let shared = HearPortDiagnostics()
+    public static let shared = HearPortDiagnostics(initialLevel:
+        UserDefaults.standard.bool(forKey: "hearport.detailedLogging") ? .debug : .info)
 
     private static let sensitiveKeyFragments = [
         "pin", "password", "secret", "token", "key", "credential",
@@ -131,8 +132,10 @@ public final class HearPortDiagnostics: @unchecked Sendable {
     private let fileManager = FileManager.default
     private let directory: URL
     private let activeURL: URL
-    private let maxFileBytes: Int
-    private let maxRotatedFiles: Int
+    private let fileBytesOverride: Int?
+    private let rotatedFilesOverride: Int?
+    private var maxFileBytes: Int { fileBytesOverride ?? (configuredLevel == .debug ? 16 * 1_048_576 : 1_048_576) }
+    private var maxRotatedFiles: Int { rotatedFilesOverride ?? (configuredLevel == .debug ? 7 : 3) }
     private let clock: () -> Date
     private let formatter: ISO8601DateFormatter
     private let osLogger = Logger(subsystem: "com.hearport.receiver",
@@ -150,21 +153,25 @@ public final class HearPortDiagnostics: @unchecked Sendable {
     private let asyncWriterGroup = DispatchGroup()
 
     public init(directory: URL? = nil,
-                maxFileBytes: Int = 16 * 1_048_576,
-                maxRotatedFiles: Int = 7,
+                maxFileBytes: Int? = nil,
+                maxRotatedFiles: Int? = nil,
+                initialLevel: DiagnosticsLevel = .info,
                 asyncQueueCapacity: Int = 512,
                 clock: @escaping () -> Date = Date.init) {
         let baseDirectory = directory ?? Self.defaultDirectory()
         self.directory = baseDirectory
         self.activeURL = baseDirectory.appendingPathComponent("hearport.log")
-        self.maxFileBytes = max(1, maxFileBytes)
-        self.maxRotatedFiles = max(0, maxRotatedFiles)
+        fileBytesOverride = maxFileBytes.map { max(1, $0) }
+        rotatedFilesOverride = maxRotatedFiles.map { max(0, $0) }
+        configuredLevel = initialLevel
         self.clock = clock
         asyncQueue = DiagnosticsAsyncQueue(capacity: asyncQueueCapacity)
         formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        configuredLevelAtomic.exchange(UInt64(initialLevel.rawValue))
         try? fileManager.createDirectory(at: baseDirectory,
                                          withIntermediateDirectories: true)
+        lock.lock(); enforceRetentionLocked(); lock.unlock()
         loadTail()
         asyncWriterQueue.async { [weak self] in
             Self.runAsyncWriter(
@@ -193,6 +200,7 @@ public final class HearPortDiagnostics: @unchecked Sendable {
             lock.lock()
             configuredLevel = newValue
             configuredLevelAtomic.exchange(UInt64(newValue.rawValue))
+            enforceRetentionLocked()
             lock.unlock()
         }
     }
@@ -423,11 +431,33 @@ public final class HearPortDiagnostics: @unchecked Sendable {
             .suffix(tailLimit))
     }
 
+    private func enforceRetentionLocked() {
+        let urls = (try? fileManager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
+        for url in urls where url.lastPathComponent.hasPrefix("hearport.log.") {
+            if let index = Int(url.lastPathComponent.dropFirst("hearport.log.".count)), index >= maxRotatedFiles {
+                try? fileManager.removeItem(at: url)
+            }
+        }
+        for url in [activeURL] + rotatedURLsLocked() where fileSizeLocked(url) > maxFileBytes {
+            guard let input = try? FileHandle(forReadingFrom: url) else { continue }
+            do {
+                let length = try input.seekToEnd()
+                try input.seek(toOffset: length - UInt64(maxFileBytes))
+                let suffix = try input.read(upToCount: maxFileBytes) ?? Data()
+                try input.close()
+                // Drop the partial first line, including any split UTF-8 scalar.
+                let retained = suffix.firstIndex(of: 10).map { Data(suffix.suffix(from: suffix.index(after: $0))) } ?? Data()
+                try retained.write(to: url, options: .atomic)
+            } catch { try? input.close() }
+        }
+    }
+
     private func appendLocked(_ line: String) {
         var data = Data((line + "\n").utf8)
         if data.count > maxFileBytes {
-            let prefix = String(line.prefix(max(1, maxFileBytes - 1))) + "\n"
-            data = Data(prefix.utf8)
+            var prefix = Data(line.utf8.prefix(max(0, maxFileBytes - 1)))
+            while !prefix.isEmpty && String(data: prefix, encoding: .utf8) == nil { prefix.removeLast() }
+            data = prefix + Data([10])
         }
 
         let currentSize = fileSizeLocked(activeURL)

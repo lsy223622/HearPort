@@ -65,6 +65,7 @@ constexpr int kExitApplication = 113;
 constexpr int kMusicFile = 114;
 constexpr int kMusicTest = 115;
 constexpr int kCalibrationResults = 116;
+constexpr int kDetailedLogging = 117;
 constexpr int kTrayOpen = 201;
 constexpr int kTrayExit = 202;
 
@@ -581,6 +582,8 @@ class Application {
     Control(1, L"BUTTON", Tr(L"Open sender log", L"打开运行日志"), WS_TABSTOP | BS_PUSHBUTTON, kLog);
     Control(1, L"BUTTON", Tr(L"Open report folder", L"打开报告文件夹"), WS_TABSTOP | BS_PUSHBUTTON, kReports);
     Control(1, L"BUTTON", Tr(L"Recommendation results", L"推荐结果"), WS_TABSTOP | BS_PUSHBUTTON, kCalibrationResults);
+    detailed_logging_ = Control(1, L"BUTTON", Tr(L"Detailed logging (up to 128 MiB)", L"详细日志（最多 128 MiB）"),
+                                WS_TABSTOP | BS_AUTOCHECKBOX, kDetailedLogging);
 
     Control(2, L"STATIC", Tr(L"Connection settings", L"连接设置"), SS_LEFT, 0);
     certificate_ = Control(2, L"STATIC", L"", SS_LEFT, 0);
@@ -685,6 +688,7 @@ class Application {
     Place(diagnostics[7], width - 288, 359, 118, 29);
     Place(diagnostics[8], width - 162, 359, 118, 29);
     Place(diagnostics[9],44,359,118,29);
+    Place(diagnostics[10],44,326,group_width - 24,26);
 
     auto& settings = pages_[2];
     Place(settings[0], 44, 82, group_width - 24, 28);
@@ -1671,6 +1675,9 @@ class Application {
           case kLog: OpenPath(data_dir_ / L"HearPort-sender.log"); break;
           case kReports: OpenPath(data_dir_ / L"diagnostics"); break;
           case kCalibrationResults: ShowCalibrationResults(); break;
+          case kDetailedLogging:
+            logger_.SetDetailedLogging(SendMessageW(detailed_logging_, BM_GETCHECK, 0, 0) == BST_CHECKED);
+            break;
           case kSavePort: SavePortFromControl(); break;
           case kAutoStart:
             if (!SetAutoStart(SendMessageW(auto_start_, BM_GETCHECK, 0, 0) ==
@@ -1772,6 +1779,7 @@ class Application {
   HWND pin_ = nullptr;
   HWND toggle_ = nullptr;
   HWND diagnostic_status_ = nullptr;
+  HWND detailed_logging_ = nullptr;
   HWND certificate_ = nullptr;
   HWND port_frame_ = nullptr;
   HWND port_edit_ = nullptr;

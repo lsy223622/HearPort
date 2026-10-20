@@ -14,6 +14,7 @@ SenderDiagnosticLogger::SenderDiagnosticLogger(std::size_t capacity,
     : capacity_(std::max<std::size_t>(1, capacity)),
       max_file_bytes_(std::max<std::size_t>(1, max_file_bytes)),
       max_rotated_files_(max_rotated_files),
+      ordinary_file_bytes_(max_file_bytes_), ordinary_rotated_files_(max_rotated_files_),
       queue_(capacity_) {}
 
 SenderDiagnosticLogger::~SenderDiagnosticLogger() { Stop(); }
@@ -29,6 +30,8 @@ bool SenderDiagnosticLogger::Start(const std::filesystem::path& path) {
     return false;
   }
   file_bytes_ = 0;
+  ApplyRetention();
+  retention_changed_ = false;
   head_ = 0;
   tail_ = 0;
   count_ = 0;
@@ -47,6 +50,7 @@ bool SenderDiagnosticLogger::Start(const std::filesystem::path& path) {
 }
 
 bool SenderDiagnosticLogger::TryLog(std::string_view line) noexcept {
+  if (!detailed_.load(std::memory_order_relaxed) && IsDetailedEvent(line)) return true;
   std::unique_lock lock(mutex_);
   if (!started_ || stopping_ || line.size() >= QueueSlot{}.bytes.size() ||
       count_ >= capacity_) {
@@ -61,6 +65,60 @@ bool SenderDiagnosticLogger::TryLog(std::string_view line) noexcept {
   lock.unlock();
   condition_.notify_one();
   return true;
+}
+
+bool SenderDiagnosticLogger::IsDetailedEvent(std::string_view line) noexcept {
+  if (line.starts_with("path=")) {
+    const auto space = line.find(' ');
+    if (space != std::string_view::npos) line.remove_prefix(space + 1);
+  }
+  const auto event = line.substr(0, line.find(' '));
+  constexpr std::array events = {
+      std::string_view("quic_control_send_queued"), std::string_view("quic_control_send_complete"),
+      std::string_view("quic_control_receive"), std::string_view("quic_control_receive_handled"),
+      std::string_view("network_probe_transport"), std::string_view("network_probe_repair_final")};
+  return std::find(events.begin(), events.end(), event) != events.end();
+}
+
+void SenderDiagnosticLogger::SetDetailedLogging(bool enabled) {
+  {
+    std::lock_guard lock(mutex_);
+    detailed_.store(enabled, std::memory_order_relaxed);
+    retention_changed_ = true;
+  }
+  condition_.notify_one();
+}
+
+// Only the writer (or Start before launching it) changes files and limits.
+void SenderDiagnosticLogger::ApplyRetention() noexcept {
+  try {
+    max_file_bytes_ = detailed_.load(std::memory_order_relaxed) ? 16 * 1024 * 1024 : ordinary_file_bytes_;
+    max_rotated_files_ = detailed_.load(std::memory_order_relaxed) ? 7 : ordinary_rotated_files_;
+    file_.close(); file_.clear();
+    for (std::size_t index = 0; index <= std::max<std::size_t>(7, ordinary_rotated_files_); ++index) {
+      auto path = file_path_;
+      if (index) path += "." + std::to_string(index);
+      std::error_code error;
+      if (!std::filesystem::exists(path, error)) continue;
+      if (index > max_rotated_files_) { std::filesystem::remove(path, error); continue; }
+      const auto bytes = std::filesystem::file_size(path, error);
+      if (error || bytes <= max_file_bytes_) continue;
+      std::ifstream input(path, std::ios::binary);
+      input.seekg(static_cast<std::streamoff>(bytes - max_file_bytes_));
+      std::string suffix(max_file_bytes_, '\0');
+      input.read(suffix.data(), static_cast<std::streamsize>(suffix.size()));
+      if (!input) continue;
+      input.close();
+      const auto newline = suffix.find('\n');
+      suffix.erase(0, newline == std::string::npos ? suffix.size() : newline + 1);
+      std::ofstream output(path, std::ios::binary | std::ios::trunc);
+      output.write(suffix.data(), static_cast<std::streamsize>(suffix.size()));
+    }
+    file_.open(file_path_, std::ios::out | std::ios::binary | std::ios::app);
+    std::error_code error;
+    file_bytes_ = static_cast<std::size_t>(std::filesystem::file_size(file_path_, error));
+    if (error) file_bytes_ = 0;
+  } catch (...) { DisableFileLogging(); }
 }
 
 void SenderDiagnosticLogger::Stop() {
@@ -163,7 +221,9 @@ void SenderDiagnosticLogger::Writer() noexcept {
     QueueSlot slot;
     {
       std::unique_lock lock(mutex_);
-      condition_.wait(lock, [this] { return stopping_ || count_ != 0; });
+      condition_.wait(lock, [this] { return stopping_ || count_ != 0 || retention_changed_; });
+      if (retention_changed_) { ApplyRetention(); retention_changed_ = false; }
+      if (count_ == 0 && !stopping_) continue;
       if (count_ == 0 && stopping_) break;
       slot = queue_[head_];
       head_ = (head_ + 1) % capacity_;

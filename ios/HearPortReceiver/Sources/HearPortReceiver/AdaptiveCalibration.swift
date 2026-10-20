@@ -23,6 +23,7 @@ struct AdaptiveCalibrationResult: Codable, Sendable {
     let observations: [AdaptiveObservation]
     let selected: AdaptiveParameters?
     let complete: Bool
+    var transportComparison: String? = nil
     static let storageKey = "hearport.adaptiveCalibration.v1"
 
     var validation: [CalibrationMeasurement] {
@@ -59,11 +60,12 @@ struct AdaptiveCalibrationResult: Codable, Sendable {
 }
 
 /// Sequential observations cannot establish causation. Every candidate is repeated;
-/// transport baselines use ABBA, and the selected settings receive two longer repeats.
+/// every load/budget uses ABBA, and the selected settings receive two longer repeats.
 struct AdaptiveCalibrationSearch: Sendable {
     let goal: Int
     let maximum: Int
     let reserve: Int
+    var preferredReliable = false
     private(set) var observations: [AdaptiveObservation] = []
     private(set) var selected: AdaptiveParameters?
     private(set) var validating = false
@@ -97,14 +99,46 @@ struct AdaptiveCalibrationSearch: Sendable {
         return (rows.map(\.gapRatio).max() ?? 1, rows.map(\.longestGapMilliseconds).max() ?? .infinity,
                 rows.compactMap(\.ageP95Milliseconds).max() ?? .infinity)
     }
-    private func best() -> AdaptiveParameters? {
-        let candidates = observations.filter { !$0.validation && $0.measurement.valid }.map(\.parameters)
-        return candidates.filter { samples($0).count >= 2 && samples($0).allSatisfy(\.valid) }.min {
-            let a = worst($0), b = worst($1)
-            if qualifies($0) != qualifies($1) { return qualifies($0) }
-            if qualifies($0) && goal != 4 { return a.2 < b.2 }
-            return a < b
+    private func spread(_ p: AdaptiveParameters, _ metric: (CalibrationMeasurement) -> Double) -> Double {
+        let values = samples(p).map(metric)
+        return (values.max() ?? 0) - (values.min() ?? 0)
+    }
+    // Conservative indifference bands include observed repeat variation. These
+    // are selection tolerances, not confidence intervals or future guarantees.
+    private func shortlist(_ candidates: [AdaptiveParameters]) -> [AdaptiveParameters] {
+        var pool: [AdaptiveParameters] = []
+        for p in candidates where !pool.contains(p) && samples(p).count >= 2 && samples(p).allSatisfy(\.valid) {
+            pool.append(p)
         }
+        if pool.contains(where: qualifies) { pool = pool.filter(qualifies) }
+        func retainNearBest(_ metric: (CalibrationMeasurement) -> Double, floor: Double) {
+            guard let reference = pool.min(by: {
+                (samples($0).map(metric).max()!, spread($0, metric)) <
+                    (samples($1).map(metric).max()!, spread($1, metric))
+            }) else { return }
+            let best = samples(reference).map(metric).max()!
+            pool = pool.filter {
+                samples($0).map(metric).max()! - best <=
+                    max(floor, spread(reference, metric) + spread($0, metric))
+            }
+        }
+        if let first = pool.first, qualifies(first), goal != 4 {
+            retainNearBest({ $0.ageP95Milliseconds! }, floor: 5)
+        }
+        retainNearBest({ $0.gapRatio }, floor: 0.0001)
+        retainNearBest({ $0.longestGapMilliseconds }, floor: 5)
+        retainNearBest({ $0.ageP95Milliseconds! }, floor: 5)
+        return pool
+    }
+    private func best(_ candidates: [AdaptiveParameters]? = nil) -> AdaptiveParameters? {
+        let pool = shortlist(candidates ?? observations.filter { !$0.validation }.map(\.parameters))
+        return pool.first { $0.reliable == preferredReliable } ?? pool.first
+    }
+    var transportComparison: String {
+        guard let selected else { return "insufficient" }
+        var peer = selected; peer.reliable.toggle()
+        guard samples(peer).count >= 2, samples(peer).allSatisfy(\.valid) else { return "insufficient" }
+        return shortlist([selected, peer]).count == 2 ? "similar" : "measured"
     }
     mutating func next() -> AdaptiveParameters? {
         if validating {
@@ -115,10 +149,15 @@ struct AdaptiveCalibrationSearch: Sendable {
         if explored.count < 4 {
             var p = initial; p.reliable = [false,true,true,false][explored.count]; return p
         }
-        // Repeat each changed setting before using it to guide the next step.
-        if let last = explored.last, samples(last.parameters).count < 2 { return last.parameters }
-        guard let best = best() else { return nil }
-        let base = qualifies(best) ? best : explored.last!.parameters
+        // Every changed load/budget receives the same four-window comparison.
+        let offset = explored.count % 4
+        if offset != 0 {
+            var p = explored[explored.count - offset].parameters
+            if offset == 1 || offset == 2 { p.reliable.toggle() }
+            return p
+        }
+        guard let best = best(), let recent = self.best(Array(explored.suffix(4)).map(\.parameters)) else { return nil }
+        let base = qualifies(best) ? best : recent
         var next = base
         let passing = qualifies(best)
         if !passing {
@@ -158,6 +197,7 @@ final class AdaptiveCalibrationSession: @unchecked Sendable {
     let setup: CalibrationMessage
     private let lock = NSLock()
     private var search: AdaptiveCalibrationSearch
+    private let diagnostics: HearPortDiagnostics
     private var current: CalibrationRoundTrace?
     private var parameters: AdaptiveParameters?
     private var consumer: ProbeConsumer?
@@ -170,9 +210,10 @@ final class AdaptiveCalibrationSession: @unchecked Sendable {
     private var expected: AdaptiveParameters?
     private var expectedValidation = false
 
-    init(setup: CalibrationMessage, reserve: Int) {
-        self.setup = setup
-        search = AdaptiveCalibrationSearch(goal: setup.goal, maximum: setup.budget.maximum, reserve: reserve)
+    init(setup: CalibrationMessage, reserve: Int, diagnostics: HearPortDiagnostics = .shared) {
+        self.setup = setup; self.diagnostics = diagnostics
+        search = AdaptiveCalibrationSearch(goal: setup.goal, maximum: setup.budget.maximum, reserve: reserve,
+            preferredReliable: AudioTransportMode.load(usb: false) == .reliable)
     }
     var outputReserve: Int { search.reserve }
     func cancel() { lock.lock(); cancelled = true; lock.unlock() }
@@ -180,13 +221,22 @@ final class AdaptiveCalibrationSession: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         if var trace = current, let parameters {
             trace.endAt = at
-            search.record(parameters, measurement: CalibrationReplay.evaluate(trace: trace, budget: trace.round.budget),
-                          validation: trace.round.phase == 1)
+            let measurement = CalibrationReplay.evaluate(trace: trace, budget: trace.round.budget)
+            search.record(parameters, measurement: measurement, validation: trace.round.phase == 1)
+            logDetail("adaptive_observation", parameters: parameters, measurement: measurement,
+                fields: ["round": "\(trace.round.index)", "validation": "\(trace.round.phase == 1)"])
+
         }
         current = nil; consumer = nil; parameters = nil
         var m = CalibrationMessage(kind: .selection, planID: setup.planID); m.goal = setup.goal
         guard !cancelled, let next = search.next() else { expected = nil; return m }
         expected = next; expectedValidation = search.validating
+        logDetail("adaptive_selection", parameters: next, fields: [
+            "round": "\(search.observations.count + 1)", "validation": "\(search.validating)",
+            "comparison": search.validating ? search.transportComparison : "paired_search",
+            "preferred_transport": search.preferredReliable ? "reliable" : "datagram",
+            "goal": "\(search.goal)", "age_tolerance_ms": "5", "gap_ratio_tolerance": "0.0001",
+            "longest_gap_tolerance_ms": "5", "tolerance_policy": "max_floor_or_sum_of_repeat_ranges"])
         var choice = next.choice; choice.profileMask = setup.goal
         m.choices = [choice]; m.format = next.format; m.phase = search.validating ? 1 : 0
         return m
@@ -276,23 +326,39 @@ final class AdaptiveCalibrationSession: @unchecked Sendable {
         p.liveLongestGap = longestLiveGap
         let observed = search.observations.count
         let verified = search.observations.filter(\.validation).count
-        p.minimumWindows = search.validating ? max(0, 2 - verified) : max(1, 4 - observed) + 2
+        p.minimumWindows = search.validating ? max(0, 2 - verified) : (4 - observed % 4) + 2
         p.maximumWindows = search.validating ? max(0, 2 - verified) : max(0, 12 - observed) + 2
         p.validationIndex = verified + 1
         p.baseSeconds = setup.seconds
         if search.validating { p.action = "Checking the selected settings with longer observations." }
         else if observed < 4 { p.action = "Comparing transport modes in ABBA order." }
         else if let previous = search.observations.last?.parameters, let parameters {
-            if parameters == previous { p.action = "Repeating the same settings to check network variation." }
+            if parameters.reliable != previous.reliable { p.action = "Comparing transport modes at the same settings." }
+            else if parameters == previous { p.action = "Repeating the same settings to check network variation." }
             else if parameters.format != previous.format { p.action = "Testing a different encoding and packet load." }
             else { p.action = parameters.budget.maximum > previous.budget.maximum ?
                 "Increasing the delay allowance to reduce gaps." : "Reducing the delay allowance toward the goal." }
         }
         return p
     }
+    private func logDetail(_ event: String, parameters: AdaptiveParameters,
+                           measurement: CalibrationMeasurement? = nil, fields: [String: String] = [:]) {
+        guard diagnostics.level == .debug else { return }
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        var fields = fields
+        fields["plan_id"] = "\(setup.planID)"
+        fields["parameters"] = (try? encoder.encode(parameters)).flatMap { String(data: $0, encoding: .utf8) }
+        if let measurement {
+            fields["measurement"] = (try? encoder.encode(measurement)).flatMap { String(data: $0, encoding: .utf8) }
+            fields["gap_ratio"] = "\(measurement.gapRatio)"
+            fields["longest_gap_ms"] = "\(measurement.longestGapMilliseconds)"
+        }
+        diagnostics.log(.debug, category: .transport, message: event, fields: fields)
+    }
     func result(complete: Bool) -> AdaptiveCalibrationResult {
         lock.lock(); defer { lock.unlock() }
         return AdaptiveCalibrationResult(testedAt: Date(), goal: setup.goal, maximum: setup.budget.maximum,
-            observations: search.observations, selected: search.selected, complete: complete && !cancelled)
+            observations: search.observations, selected: search.selected, complete: complete && !cancelled,
+            transportComparison: search.transportComparison)
     }
 }

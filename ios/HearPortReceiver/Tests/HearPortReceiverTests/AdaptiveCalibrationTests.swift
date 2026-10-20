@@ -46,6 +46,11 @@ final class AdaptiveCalibrationTests: XCTestCase {
         let p = try XCTUnwrap(search.next())
         XCTAssertEqual(p.format.frameCount, 120)
         search.record(p, measurement: measurement(p), validation: false)
+        var peer = p; peer.reliable.toggle()
+        XCTAssertEqual(search.next(), peer)
+        search.record(peer, measurement: measurement(peer), validation: false)
+        XCTAssertEqual(search.next(), peer)
+        search.record(peer, measurement: measurement(peer), validation: false)
         XCTAssertEqual(search.next(), p)
     }
 
@@ -98,6 +103,36 @@ final class AdaptiveCalibrationTests: XCTestCase {
         XCTAssertFalse(try XCTUnwrap(search.next()).reliable)
     }
 
+    func testCloseTransportResultsRetainEitherConfiguredPreferenceRegardlessOfRecordOrder() throws {
+        for preferred in [false, true] {
+            for reverse in [false, true] {
+                var search = AdaptiveCalibrationSearch(goal: 2, maximum: 31, reserve: 11,
+                    preferredReliable: preferred)
+                let p = try XCTUnwrap(search.next())
+                for reliable in reverse ? [true,false,false,true] : [false,true,true,false] {
+                    var candidate = p; candidate.reliable = reliable
+                    search.record(candidate, measurement: measurement(candidate), validation: false)
+                }
+                while let next = search.next() {
+                    search.record(next, measurement: measurement(next), validation: search.validating)
+                    XCTAssertLessThanOrEqual(search.observations.count, 16)
+                }
+                XCTAssertEqual(search.selected?.reliable, preferred)
+                XCTAssertEqual(search.transportComparison, "similar")
+            }
+        }
+    }
+
+    func testMaterialLatencyDifferenceCanOverrideTheConfiguredPreference() throws {
+        var search = AdaptiveCalibrationSearch(goal: 2, maximum: 300, reserve: 11)
+        for _ in 0..<4 {
+            let p = try XCTUnwrap(search.next())
+            var m = measurement(p); m.ageP95Milliseconds = p.reliable ? 110 : 140
+            search.record(p, measurement: m, validation: false)
+        }
+        XCTAssertTrue(try XCTUnwrap(search.next()).reliable)
+    }
+
     func testInvalidClockCannotGenerateRecommendation() throws {
         var search = AdaptiveCalibrationSearch(goal: 2, maximum: 300, reserve: 11)
         for _ in 0..<4 {
@@ -145,7 +180,11 @@ final class AdaptiveCalibrationTests: XCTestCase {
     func testVariablePacketsExpandIntoSourceUnitsAndFinishObservation() throws {
         var setup = CalibrationMessage(kind: .setup, planID: 7)
         setup.goal = 2; setup.seconds = 15; setup.budget = CalibrationBudget(target: 0, maximum: 300)
-        let session = AdaptiveCalibrationSession(setup: setup, reserve: 11)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let diagnostics = HearPortDiagnostics(directory: directory)
+        diagnostics.level = .debug
+        let session = AdaptiveCalibrationSession(setup: setup, reserve: 11, diagnostics: diagnostics)
         let selection = session.next(at: 1_000_000_000)
         let choice = try XCTUnwrap(selection.choices.first)
         var round = CalibrationMessage(kind: .round, planID: 7)
@@ -171,5 +210,14 @@ final class AdaptiveCalibrationTests: XCTestCase {
         XCTAssertEqual(result.observations.count, 1)
         XCTAssertTrue(try XCTUnwrap(result.observations.first).measurement.valid)
         XCTAssertFalse(result.canApply)
+        let url = try diagnostics.export()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let text = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertTrue(text.contains("adaptive_observation"))
+        XCTAssertTrue(text.contains("measurement="))
+        XCTAssertTrue(text.contains("inputFingerprint"))
+        XCTAssertTrue(text.contains("gap_ratio="))
+        XCTAssertTrue(text.contains("adaptive_selection"))
+        XCTAssertFalse(text.contains("payload="))
     }
 }
