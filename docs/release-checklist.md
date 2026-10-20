@@ -1,5 +1,13 @@
 # HearPort 0.1.0 release checklist
 
+## USB recovery and runtime log candidate (2026-10-20)
+
+- [x] Matching source `82bdaee35a7d32a72a6edfabc3abe56491e40bd8`: Windows Actions [39417771470](https://github.com/lsy223622/HearPort/actions/runs/39417771470), iPad Actions [39417768450](https://github.com/lsy223622/HearPort/actions/runs/39417768450).
+- [x] 24 CTest, 28 Python and 197 Swift checks passed; unsigned build 173 archived; CodeQL passed.
+- [x] Release hashes, 100 Windows packaged-file hashes and matching IPA identity verified; Actions Windows executable started and listened on UDP 52137.
+- [x] Runtime logs retain approximately 128 MiB per endpoint; background streamed iPad export includes USB state.
+- [ ] Install build 173 and observe USB priority after extended use, foreground return and cable reconnect. The original physical listener transition was not retained in build 170's export.
+
 ## Adaptive client recommendation candidate (2026-10-20)
 
 - [x] Matching source `4de8694f96a76537d518556dccff93f849acd149`: Windows Actions [39399070518](https://github.com/lsy223622/HearPort/actions/runs/39399070518), iPad Actions [39399056345](https://github.com/lsy223622/HearPort/actions/runs/39399056345).
