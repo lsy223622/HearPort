@@ -106,6 +106,17 @@ struct CalibrationProgressSnapshot: Sendable {
     var receivedPackets = 0
     var liveGapRatio: Double?, liveLongestGap = 0.0
     var minimumWindows = 0, maximumWindows = 0, validationIndex = 0
+    var baseSeconds = 15
+    var action = ""
+    func adaptiveRemainingSeconds(at: UInt64) -> ClosedRange<Int> {
+        let current = remainingRoundSeconds(at: at)
+        func estimate(_ windows: Int) -> Int {
+            let longer = validating ? 0 : 2
+            let ordinary = max(0, windows - 1 - longer)
+            return current + ordinary * seconds + longer * baseSeconds * 2 + windows * 3
+        }
+        return estimate(minimumWindows)...estimate(maximumWindows)
+    }
 
     var phaseIndex: Int { stage == "validation" ? max(0, index - 4) : index }
     var phaseCount: Int { stage == "validation" ? max(0, count - 4) : 4 }

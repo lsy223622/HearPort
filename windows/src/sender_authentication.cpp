@@ -586,6 +586,7 @@ void SenderAuthentication::Reset() noexcept {
   peer_wants_reliable_ = false;
   peer_coordinated_audio_ = false;
   peer_supports_calibration_ = false;
+  peer_supports_adaptive_calibration_ = false;
   report_upload_active_ = false;
   report_upload_session_id_.fill(std::byte{0});
   debug_session_id_.fill(std::byte{0});
