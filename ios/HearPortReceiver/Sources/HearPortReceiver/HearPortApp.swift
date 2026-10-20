@@ -639,8 +639,8 @@ import SwiftUI
                     targetLatencyMs = UserDefaults.standard.integer(forKey: "hearport.targetLatencyMs")
                     maximumLatencyMs = UserDefaults.standard.integer(forKey: "hearport.maximumLatencyMs")
                     networkCodec = UserDefaults.standard.string(forKey: "hearport.networkAudio.codec") ?? "opus"
-                    networkBitrate = UserDefaults.standard.integer(forKey: "hearport.networkAudio.bitrate")
-                    networkFrames = UserDefaults.standard.integer(forKey: "hearport.networkAudio.frames")
+                    networkBitrate = UserDefaults.standard.object(forKey: "hearport.networkAudio.bitrate") as? Int ?? 256_000
+                    networkFrames = UserDefaults.standard.object(forKey: "hearport.networkAudio.frames") as? Int ?? 240
                     return true
                 })
         }
