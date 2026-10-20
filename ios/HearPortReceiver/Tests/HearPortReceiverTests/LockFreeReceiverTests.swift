@@ -3,6 +3,42 @@ import XCTest
 @testable import HearPortReceiver
 
 final class LockFreeReceiverTests: XCTestCase {
+    func testCoordinatedPlaybackResumesAfterCaptureStopsWithoutReconnect() throws {
+        let receiver = readyReceiver(target: 4)
+        _ = receiver.renderFrames(240)
+        receiver.configurePlayout(try PlayoutBudget(targetMilliseconds: 20,
+            maximumMilliseconds: 100, outputReserveMilliseconds: 1))
+        let start = DispatchTime.now().uptimeNanoseconds
+        XCTAssertTrue(receiver.observeClock(localSent: start - 2_000_000,
+            remoteReceived: start - 1_000_000, remoteSent: start - 1_000_000, localReceived: start))
+        func feed(_ first: UInt32) throws {
+            let captured = DispatchTime.now().uptimeNanoseconds - 50_000_000
+            for offset in UInt32(0)..<20 {
+                let seq = first + offset
+                let packet = try AudioDatagram(encoded: datagram(stream: 7, sequence: seq, value: 2))
+                _ = receiver.receiveTimedRecord(try TimedAudioRecord(streamID: 7, generation: 1,
+                    sequence: seq, frameCount: 120, kind: .audio,
+                    capturedAt: captured + UInt64(offset) * 2_500_000,
+                    sourceFrame: UInt64(seq) * 120, payload: packet.pcm))
+            }
+        }
+        try feed(0)
+        XCTAssertTrue(receiver.renderFrames(240).contains { abs($0) > 0.1 })
+        for _ in 0..<50 {
+            Thread.sleep(forTimeInterval: 0.005)
+            _ = receiver.renderFrames(240)
+        }
+        let lateBefore = receiver.jitterStats?.latePackets ?? 0
+        try feed(20)
+        XCTAssertEqual(receiver.jitterStats?.latePackets, lateBefore,
+                       "Fresh source after capture silence must not trail an invented playback sequence")
+        var heardResume = false
+        for _ in 0..<15 {
+            if receiver.renderFrames(240).contains(where: { abs($0) > 0.1 }) { heardResume = true }
+            Thread.sleep(forTimeInterval: 0.005)
+        }
+        XCTAssertTrue(heardResume, "Playback resumes on the existing stream")
+    }
     func testTimedAudioQueuedBeforeClockUpdateIsAccepted() throws {
         let receiver = readyReceiver(target: 4)
         let now = DispatchTime.now().uptimeNanoseconds
