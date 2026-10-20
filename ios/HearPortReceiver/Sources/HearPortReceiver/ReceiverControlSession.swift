@@ -219,6 +219,7 @@ public final class ReceiverControlSession {
         self.calibrationRequestPending = false
         self.receiverReadyNotified = false
         self.peerFeatures = 0
+        self.activeFormat = .pcm
         self.musicTestRound = nil
         stopClockUpdates()
         debugSessionDiagnostics.configureProbePlan(nil)

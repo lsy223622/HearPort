@@ -5,7 +5,7 @@ import XCTest
 final class DebugSessionDiagnosticsTests: XCTestCase {
     func testFinalProbePlaybackFlushesUnpublishedConsumption() throws {
         let directory = try temporaryDirectory("FinalProbe")
-        let diagnostics = HearPortDiagnostics(directory: directory, maximumEntries: 32)
+        let diagnostics = HearPortDiagnostics(directory: directory, capacity: 32)
         let transfer = DebugReportTransfer(directory: directory.appendingPathComponent("reports"))
         let capture = DebugSessionDiagnostics(capacity: 100, reportTransfer: transfer, diagnostics: diagnostics)
         let plan = try CoordinatedProbePlan(encoded: Data([1,1,30,0,3,224,1,144,1,1,1,1,2,0,5,0]))
