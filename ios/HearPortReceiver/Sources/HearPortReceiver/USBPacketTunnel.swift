@@ -69,7 +69,13 @@ public final class USBPacketTunnel {
     private var maximum: UInt64 = 100_000_000
     private var timer: DispatchSourceTimer?
     private let diagnostics: HearPortDiagnostics
-    public init(diagnostics: HearPortDiagnostics = .shared) { self.diagnostics = diagnostics }
+    private let makeTCPListener: (NWParameters) throws -> NWListener
+    public convenience init(diagnostics: HearPortDiagnostics = .shared) {
+        self.init(diagnostics: diagnostics, makeTCPListener: { try NWListener(using: $0) })
+    }
+    init(diagnostics: HearPortDiagnostics, makeTCPListener: @escaping (NWParameters) throws -> NWListener) {
+        self.diagnostics = diagnostics; self.makeTCPListener = makeTCPListener
+    }
     public func start() {
         queue.async { [weak self] in self?.wantsListener = true; self?.startOnQueue() }
     }
@@ -95,7 +101,7 @@ public final class USBPacketTunnel {
             let options = NWProtocolTCP.Options(); options.noDelay = true
             let parameters = NWParameters(tls: nil, tcp: options)
             parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: 52138)
-            let server = try NWListener(using: parameters)
+            let server = try makeTCPListener(parameters)
             listener = server
             server.newConnectionHandler = { [weak self] connection in self?.accept(connection) }
             server.stateUpdateHandler = { [weak self, weak server] state in
