@@ -63,8 +63,8 @@
 "Diagnostics" = "诊断";
 "Current log" = "当前日志";
 "Logging level" = "日志级别";
-"Retained entries" = "已保存的记录";
-"Active log size" = "当前日志大小";
+"Recent entries (memory)" = "最近记录（内存预览）";
+"Saved log size" = "已保存日志大小";
 "Detailed logging" = "详细日志";
 "Secrets, authentication material, and raw audio are excluded from logs." = "日志不包含密钥、验证材料或原始音频。";
 "Actions" = "操作";

@@ -49,7 +49,6 @@ import SwiftUI
     @State private var exportingDiagnostics = false
     @State private var diagnosticsStatus: String?
     @State private var showingClearConfirmation = false
-    @State private var showingConnectionSetup = false
     @State private var calibrationResult: CalibrationResult? = CalibrationResult.load()
     @State private var calibrationRunResult: CalibrationResult?
     @State private var adaptiveResult = AdaptiveCalibrationResult.load()
@@ -125,12 +124,6 @@ import SwiftUI
                 }
                 .tint(Color.primary)
             }
-        }
-        .sheet(isPresented: $showingConnectionSetup) {
-            NavigationStack {
-                connectionSetupView
-            }
-            .tint(Color.primary)
         }
         .onAppear {
             connectionManager.onRequest = { id, route in beginConnection(id: id, route: route) }
@@ -420,7 +413,7 @@ import SwiftUI
                     selectedEndpoint = nil; host = lastHost
                     if hasRememberedCredential && lastHost == rememberedHost {
                         authMode = .remembered; connect()
-                    } else { authMode = .oneTime; showingConnectionSetup = true }
+                    } else { authMode = .oneTime; canvasSheet = .pairing }
                 } label: {
                     HStack(spacing: 16) {
                         Image(systemName: "wifi").font(.title2).frame(width: 36)
@@ -431,7 +424,7 @@ import SwiftUI
                 }.buttonStyle(.plain)
             }
             Button {
-                selectedEndpoint = nil; showingConnectionSetup = true
+                selectedEndpoint = nil; canvasSheet = .pairing
             } label: {
                 Label("Enter PC address", systemImage: "plus")
                     .font(.subheadline.weight(.medium)).frame(maxWidth: .infinity).frame(minHeight: 48)
@@ -471,7 +464,7 @@ import SwiftUI
         if hasRememberedCredential && (endpoint.identity == nil || connectionManager.isRemembered(endpoint.identity)) { authMode = .remembered; connect(selected: endpoint) }
         else {
             if endpoint.path == .network { host = endpoint.host }
-            authMode = .pair; showingConnectionSetup = true
+            authMode = .pair; canvasSheet = .pairing
         }
     }
 
@@ -593,9 +586,9 @@ import SwiftUI
             Section {
                 Button("Connect") {
                     connect(selected: selectedEndpoint, forCalibration: pendingCalibration != nil)
-                    showingConnectionSetup = false
                     if canvasSheet == .pairing { canvasSheet = nil }
                 }
+                .foregroundStyle(.blue).buttonStyle(.borderless)
                 .disabled((host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && connectionManager.endpoints.isEmpty) ||
                           (authMode != .remembered && !PairingSecurity.validatePIN(pin)))
             }
@@ -604,7 +597,7 @@ import SwiftUI
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
-                Button("Done") { showingConnectionSetup = false; if canvasSheet == .pairing { canvasSheet = nil; pendingCalibration = nil; calibrationTarget = nil } }
+                Button("Done") { canvasSheet = nil; pendingCalibration = nil; calibrationTarget = nil }
             }
         }
     }
@@ -843,8 +836,8 @@ import SwiftUI
         Form {
             Section {
                 LabeledContent("Logging level", value: Self.label(for: diagnosticsSnapshot.level))
-                LabeledContent("Retained entries", value: "\(diagnosticsSnapshot.entryCount)")
-                LabeledContent("Active log size", value: Self.byteLabel(diagnosticsSnapshot.activeBytes))
+                LabeledContent("Recent entries (memory)", value: "\(diagnosticsSnapshot.entryCount)")
+                LabeledContent("Saved log size", value: Self.byteLabel(diagnosticsSnapshot.totalBytes))
                 Toggle("Detailed logging", isOn: $detailedLogging)
                     .tint(.green)
             } header: {
@@ -885,6 +878,7 @@ import SwiftUI
         .frame(maxWidth: .infinity)
         .background(Color(uiColor: .systemGroupedBackground))
         .onAppear { refreshDiagnostics() }
+        .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in refreshDiagnostics() }
     }
 
     private func connect(selected: ConnectionEndpoint? = nil, forCalibration: Bool = false) {

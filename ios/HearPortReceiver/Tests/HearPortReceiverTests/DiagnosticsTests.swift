@@ -21,6 +21,20 @@ final class DiagnosticsTests: XCTestCase {
         XCTAssertTrue(text.contains(message))
         XCTAssertGreaterThan(text.utf8.count, 4 * 1_048_576)
         XCTAssertEqual(diagnostics.recentLines(limit: 3000).count, 2000)
+        XCTAssertGreaterThan(diagnostics.snapshot().totalBytes, 4 * 1_048_576)
+        XCTAssertTrue(text.contains("Recent in-memory entries: 2000"))
+    }
+
+    func testSavedSizeIncludesRotatedLogsAndClearsWithThem() throws {
+        let diagnostics = try makeDiagnostics(maxFileBytes: 512, maxRotatedFiles: 3)
+        for index in 0..<80 {
+            diagnostics.log(.info, category: .app, message: "retention size test", fields: ["index": "\(index)"])
+        }
+        let snapshot = diagnostics.snapshot()
+        XCTAssertGreaterThan(snapshot.rotatedFileCount, 0)
+        XCTAssertGreaterThan(snapshot.totalBytes, snapshot.activeBytes)
+        try diagnostics.clear()
+        XCTAssertEqual(diagnostics.snapshot().totalBytes, 0)
     }
 
     func testOrdinaryRetentionIsSmallAndDowngradePrunesDetailedFiles() throws {
