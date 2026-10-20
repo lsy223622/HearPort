@@ -396,3 +396,11 @@
 "Test segment duration" = "Test segment duration";
 
 "Encoding" = "Encoding";
+
+"Keep screen awake" = "Keep screen awake";
+
+"Unpair" = "Unpair";
+
+"Unpair this PC?" = "Unpair this PC?";
+
+"Could not remove the saved pairing." = "Could not remove the saved pairing.";

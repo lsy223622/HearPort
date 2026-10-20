@@ -70,6 +70,8 @@ class SenderService {
   bool MarkStartStreamAckWritten(std::uint32_t stream_id);
   void ConfigureReliableAudio(bool enabled);
   void ConfigureCoordinatedAudio(bool enabled);
+  struct AudioFormat { bool opus; std::uint32_t bitrate, frames; };
+  AudioFormat audio_format() const;
   bool ConfigureAudioFormat(wire::ControlEnvelope& setup);
   bool ConfigurePlayoutBudget(std::uint32_t target_ms, std::uint32_t maximum_ms,
                               std::uint32_t output_reserve_ms);
@@ -177,6 +179,7 @@ class SenderService {
   std::optional<PcmFormat> normalizer_format_;
   AudioPacketizer packetizer_;
   LiveAudioEncoder live_encoder_;
+  AudioFormat negotiated_format_{false, 3072000, 120};
   std::atomic<bool> live_opus_ = false;
   SessionState session_;
   ControlHandler control_handler_;

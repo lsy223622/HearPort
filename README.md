@@ -39,17 +39,25 @@ the maximum controls how long an interruption can be tolerated. Changes apply
 on the next connection.
 
 **Automatic test and recommendations** first selects one goal: Low latency,
-Balanced, or Stability first. It pauses playback and tests random traffic over
+Balanced, or Stability first. Long-press an available PC on the iPad homepage to
+start; an unpaired PC asks for its pairing PIN first. It pauses playback and tests random traffic over
 LAN, adapting transport, PCM/Opus encoding, bitrate, packet duration and playback
 budget. Each load/budget compares both transports twice in ABBA order; differences
 within a conservative repeat-variation band retain the existing transport preference.
 The final settings receive two longer
 verification windows before one-click application. Progress includes current
 parameters, live gaps, countdown and a changing estimate of remaining steps.
-Results remain on iPad; full diagnostic tests and report collection are available
+Normal playback reconnects automatically when testing finishes. Results remain on iPad;
+full diagnostic tests and report collection are available
 from Windows. Random traffic matches the current constant-bitrate packet load,
 reserving codec preparation time; it does not benchmark decoder speed or audio
 quality. Recommendations describe the observed network, not future guarantees.
+
+The same long-press menu can remove the iPad's saved pairing. Windows provides
+**Unpair iPad** in its pairing panel; this removes its saved credential and ends
+the connection. Each action clears the pairing stored on that device. The iPad's
+**Keep screen awake** setting applies while HearPort is in the foreground;
+automatic tests also keep the screen awake while running.
 
 HearPort captures the Windows default output using shared-mode WASAPI Loopback
 and sends audio to the iPad. The receiver uses QUIC, local buffering, and audio

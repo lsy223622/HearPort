@@ -19,6 +19,7 @@ struct ConnectionSelectionPolicy {
         if pinned { wantsConnection = false }
         return true
     }
+    mutating func resumeAfterTest() { pinned = false; wantsConnection = true }
     mutating func stop() { wantsConnection = false; active = nil; path = nil; identity = nil; pinned = false }
     func acceptsStop(from peer: Data) -> Bool { wantsConnection && !peer.isEmpty && identity == peer }
 }
@@ -175,6 +176,14 @@ public struct ConnectionEndpoint: Identifiable {
     }
     public func pinActive() { policy.pinned = true }
     public func acceptsStop(from identity: Data) -> Bool { policy.acceptsStop(from: identity) }
+    public func resumeAfterTest() {
+        policy.resumeAfterTest()
+        networkTestOnly = false
+    }
+    public func isRemembered(_ identity: String?) -> Bool {
+        guard let identity = computerIdentity(identity) else { return false }
+        return identity == rememberedIdentity
+    }
     public func completed() { policy.wantsConnection = false; retry?.cancel(); retry = nil; cancelPending() }
     public func stop() {
         let old = policy.active

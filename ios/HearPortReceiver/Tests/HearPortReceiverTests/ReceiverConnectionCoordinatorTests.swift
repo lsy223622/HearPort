@@ -50,6 +50,22 @@ final class ReceiverConnectionCoordinatorTests: XCTestCase {
         XCTAssertTrue(policy.promote(UUID(), path: .network, identity: Data([1])))
         policy.stop(); XCTAssertFalse(policy.wantsConnection)
     }
+    func testAutomaticTestCompletionRestoresReconnectAndUSBPromotion() {
+        var policy = ConnectionSelectionPolicy(); policy.wantsConnection = true
+        let test = UUID(), network = UUID(), usb = UUID()
+        XCTAssertTrue(policy.promote(test, path: .network, identity: Data([1])))
+        policy.pinned = true
+        policy.resumeAfterTest()
+        XCTAssertTrue(policy.closed(test))
+        XCTAssertTrue(policy.wantsConnection)
+        XCTAssertTrue(policy.promote(network, path: .network, identity: Data([1])))
+        XCTAssertTrue(policy.promote(usb, path: .usb, identity: Data([1])))
+        XCTAssertFalse(policy.closed(test))
+        XCTAssertEqual(policy.active, usb)
+        policy.stop()
+        XCTAssertFalse(policy.wantsConnection)
+    }
+
     func testDiscoveryGetsAnAttemptAfterRememberedAddressFails() {
         var history = ConnectionAttemptHistory()
         history.started("old-ip", at: Date(timeIntervalSince1970: 1))
