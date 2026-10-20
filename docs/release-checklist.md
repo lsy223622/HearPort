@@ -1,5 +1,14 @@
 # HearPort 0.1.0 release checklist
 
+## Connection actions and repaint candidate (2026-10-21)
+
+- [x] Windows source `3e8543a8bcea881d7bfb066a5080c6f9932af8c0`: Actions [39473183485](https://github.com/lsy223622/HearPort/actions/runs/39473183485), 24 CTest, 28 Python checks and packaged GUI startup/clipping/order/unchanged-status checks passed.
+- [x] Windows archive/source and 100 file hashes verified. Downloaded Actions package passed the local window check and listened on UDP 52137.
+- [x] Final iPad source `9f45c551e44456996aaf242d425d32f28a11e1f2`: Actions [39473786709](https://github.com/lsy223622/HearPort/actions/runs/39473786709), 205 Swift tests, unsigned build 179 and CodeQL passed. IPA hash, source/build identity and unsigned packaging verified.
+- [ ] Install build 179; check context-menu testing both with and without saved pairing, wrong-PIN cancellation, test completion/resumed playback, and no stale test on the next ordinary connection.
+- [ ] Check both local unpair actions and subsequent pairing. Check foreground keep-awake, connection-action placement, blue USB readiness and green test progress.
+- [ ] Observe Windows during an iPad-started test without switching tabs; inspect frames/icon, negotiated format on return to playback, system theme and DPI changes.
+
 ## iPad menu presentation candidate (2026-10-20)
 
 - [x] iPad source `d8977fa9d6b3bb9946baa1f1724cac3b1cbc28ec`: Actions [39440168724](https://github.com/lsy223622/HearPort/actions/runs/39440168724), 204 Swift tests and unsigned build 177 archive passed. CodeQL passed.

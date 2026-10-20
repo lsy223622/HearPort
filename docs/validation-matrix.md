@@ -10,6 +10,15 @@ including cable disconnect and reconnect; repeated playback/tests on weak
 2.4 GHz Wi-Fi. These observations do not establish a timed soak, lock-screen
 behavior, a clean-machine install, or final Release acceptance.
 
+## Connection actions and Windows painting (2026-10-21)
+
+- Windows executable source `3e8543a8bcea881d7bfb066a5080c6f9932af8c0`: Actions [39473183485](https://github.com/lsy223622/HearPort/actions/runs/39473183485), 24 CTest and 28 Python checks passed. The extracted release package also passed GUI startup, clipping, background order and unchanged-status invalidation checks.
+- Final iPad source `9f45c551e44456996aaf242d425d32f28a11e1f2`: Actions [39473786709](https://github.com/lsy223622/HearPort/actions/runs/39473786709), 205 Swift tests and unsigned IPA build 179 passed. CodeQL [39473788094](https://github.com/lsy223622/HearPort/actions/runs/39473788094) passed. The downloaded IPA hash, source/build identity and unsigned packaging were verified; the follow-up commit only changes iPad pending-test cleanup.
+- The same window check fails on the previous package: the parent can erase child pixels, and overlapping group/tab backgrounds have incorrect sibling clipping/order. Backgrounds now own their regions, groups fill their background, unchanged status text does not invalidate controls, and selecting the current page does not repeat visibility changes. Timer-driven full-window invalidation is absent.
+- Downloaded archive hashes, source identity and all 100 Windows packaged-file hashes verified. The Actions executable passed the local GUI check, remained responsive and listened on UDP 52137. Its connected status displayed the negotiated PCM/Opus format rather than a preset name.
+- The iPad changes add available-computer context actions for testing and local unpairing, PIN-first test startup, foreground keep-awake control, automatic ordinary reconnection after quick testing, and preservation of results across that reconnection. A policy regression checks reconnect intent, USB promotion, stale test closure and explicit stop. Terminal pairing errors and ordinary connection selection discard a pending test.
+- Physical acceptance remains pending installation of build 179: long-press actions, incorrect-PIN recovery without a stale test, unpair/re-pair on both endpoints, test completion followed by ordinary playback, keep-awake behavior, and light/dark layout/colors. Runtime window checks do not establish every device interaction or prolonged visual behavior during calibration.
+
 ## iPad menu presentation (2026-10-20)
 
 - iPad executable source `d8977fa9d6b3bb9946baa1f1724cac3b1cbc28ec`.
