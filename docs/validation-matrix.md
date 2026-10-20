@@ -14,7 +14,9 @@ behavior, a clean-machine install, or final Release acceptance.
 
 - Network/USB encoding preferences, negotiated live Opus and PCM, bitrate/frame duration settings implemented.
 - Local Release build: 24/24 CTest checks; focused Python: 17 analyzer and 4 package checks passed.
-- Matching Actions packages and live-path device acceptance are pending.
+- Matching source `21b3848312e16aa652c55704991839502698feee`: Windows Actions [39386364549](https://github.com/lsy223622/HearPort/actions/runs/39386364549) passed 24 CTest and 28 Python checks; iPad Actions [39386215008](https://github.com/lsy223622/HearPort/actions/runs/39386215008) passed 186 Swift tests and archived unsigned IPA build 165; CodeQL [39386214238](https://github.com/lsy223622/HearPort/actions/runs/39386214238) passed.
+- Download hashes, all 100 Windows file hashes, IPA build identity and bundled Opus notices verified. Downloaded Windows Release started, loaded its runtime DLLs locally, and listened on network and tunnel endpoints.
+- New live-path iPad listening, silence/resume and route-switch acceptance remain pending installation on the device.
 
 ## Compression test candidate evidence (2026-10-20)
 

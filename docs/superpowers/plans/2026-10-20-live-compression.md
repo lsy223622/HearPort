@@ -24,7 +24,7 @@ network defaulting to Opus and USB defaulting to PCM. Work stays in the main che
 - [x] Protocol, settings model, live encoder and meaningful regression tests.
 - [x] Sender negotiation/capture/send and receiver decode/transport integration.
 - [x] Playback settings, diagnostics, deadline-aware startup and test finalization.
-- [ ] Focused native verification, final review, docs, Actions builds and artifacts.
+- [x] Focused native verification, final review, docs, Actions builds and artifacts.
 
 Validation covers malformed negotiation, codec/frame combinations, sequence and
 lookahead accounting, loss/reordering, silence/resume, bounded pending state,
@@ -41,3 +41,11 @@ and USB/Wi-Fi switching remain device checks, not inferred from compilation.
   4 release-package Python checks passed.
 - Swift/iOS compile and runtime checks require the Actions runners.
 - Final review performed inline to honor the user's request to avoid costly agents.
+
+- Actions final verification: Windows 39386364549 (24 CTest + 28 Python), iPad
+  39386215008 (186 Swift, unsigned IPA 165), CodeQL 39386214238: all passed.
+- Both packages match 21b3848312e16aa652c55704991839502698feee; hashes and
+  notices verified; downloaded Windows package started and endpoints checked.
+- First Swift attempts rejected the new diagnostics fixture initializer; it was
+  corrected to the actual public API before the passing full run.
+- Physical acceptance remains the device checks in the validation matrix.
