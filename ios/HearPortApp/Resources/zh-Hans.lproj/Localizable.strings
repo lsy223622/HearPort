@@ -379,3 +379,5 @@
 "Reducing the delay allowance toward the goal." = "逐步降低延迟预算，逼近所选目标。";
 
 "Estimated remaining: %lld–%lld seconds; updated after each observation." = "预计剩余 %lld–%lld 秒；每次观测后更新。";
+
+"Exporting diagnostics…" = "正在导出诊断日志…";

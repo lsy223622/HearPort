@@ -55,6 +55,10 @@ output timing to keep playback responsive through ordinary network variation.
 
 ## Diagnostics and evidence
 
+Both endpoints retain up to approximately 128 MiB of rotating runtime logs
+(16 MiB per file, seven backups). iPad export streams a fixed-length file snapshot
+in the background and includes current USB listener/forwarder status.
+
 Diagnostics are stored locally. A log or exported report can contain network
 details such as a hostname, IP address, or port; review it before sharing.
 

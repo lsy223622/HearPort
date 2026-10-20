@@ -18,8 +18,8 @@ class SenderDiagnosticLogger {
  public:
   explicit SenderDiagnosticLogger(
       std::size_t capacity = 1024,
-      std::size_t max_file_bytes = 4 * 1024 * 1024,
-      std::size_t max_rotated_files = 3);
+      std::size_t max_file_bytes = 16 * 1024 * 1024,
+      std::size_t max_rotated_files = 7);
   ~SenderDiagnosticLogger();
   SenderDiagnosticLogger(const SenderDiagnosticLogger&) = delete;
   SenderDiagnosticLogger& operator=(const SenderDiagnosticLogger&) = delete;

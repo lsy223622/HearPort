@@ -155,11 +155,13 @@ struct UsbTunnel::Impl {
   std::atomic<bool> stop{false}; std::atomic<long long> maximum_ms{100};
   std::thread worker; std::uint16_t port=0; StatusHandler status; LogHandler log;
   std::string last_status;
+  std::chrono::steady_clock::time_point last_status_logged{};
   std::vector<std::byte> peer_identity_frame;
   void ReportStatus(std::string message) {
-    if(message!=last_status) {
+    const auto now=std::chrono::steady_clock::now();
+    if(message!=last_status || now-last_status_logged>=std::chrono::seconds(30)) {
       if(log) log("usb_tunnel_status reason="+message);
-      last_status=message;
+      last_status=message; last_status_logged=now;
     }
     if(status) status(std::move(message));
   }

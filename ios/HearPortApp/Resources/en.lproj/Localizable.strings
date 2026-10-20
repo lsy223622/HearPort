@@ -379,3 +379,5 @@
 "Reducing the delay allowance toward the goal." = "Reducing the delay allowance toward the goal.";
 
 "Estimated remaining: %lld–%lld seconds; updated after each observation." = "Estimated remaining: %lld–%lld seconds; updated after each observation.";
+
+"Exporting diagnostics…" = "Exporting diagnostics…";

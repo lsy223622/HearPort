@@ -45,6 +45,7 @@ import SwiftUI
     @State private var activeMaximumLatencyMs = 100
     @State private var diagnosticsSnapshot = HearPortDiagnostics.shared.snapshot()
     @State private var exportedDiagnosticsURL: URL?
+    @State private var exportingDiagnostics = false
     @State private var diagnosticsStatus: String?
     @State private var showingClearConfirmation = false
     @State private var showingConnectionSetup = false
@@ -182,6 +183,7 @@ import SwiftUI
             refreshDiagnostics()
         }
         .onChange(of: scenePhase) { phase in
+            if phase == .active { connectionManager.resumeUSBDiscovery() }
             if phase == .background { control?.interruptCalibration() }
             if phase != .active { qualityTracker = LinkStabilityTracker(); linkSample = nil }
         }
@@ -799,8 +801,8 @@ import SwiftUI
                 Button {
                     exportDiagnostics()
                 } label: {
-                    Label("Export diagnostics", systemImage: "square.and.arrow.down")
-                }
+                    Label(exportingDiagnostics ? LocalizedStringKey("Exporting diagnostics…") : LocalizedStringKey("Export diagnostics"), systemImage: "square.and.arrow.down")
+                }.disabled(exportingDiagnostics)
                 if let exportedDiagnosticsURL {
                     ShareLink(item: exportedDiagnosticsURL,
                               subject: Text("HearPort diagnostics"),
@@ -1197,20 +1199,33 @@ import SwiftUI
     }
 
     private func exportDiagnostics() {
+        guard !exportingDiagnostics else { return }
+        exportingDiagnostics = true
+        diagnosticsStatus = Self.localize("Exporting diagnostics…")
         diagnostics.log(
             .info,
             category: .app,
             message: "ui_export_requested",
             fields: ["event": "ui_export_requested"]
         )
-        do {
-            exportedDiagnosticsURL = try diagnostics.export()
-            diagnosticsStatus = Self.localize("Diagnostics export is ready to share.")
-        } catch {
-            exportedDiagnosticsURL = nil
-            diagnosticsStatus = Self.localize("Unable to export diagnostics.")
+        let log = diagnostics
+        connectionManager.recordUSBStatus {
+            DispatchQueue.global(qos: .utility).async {
+                let result = Result { try log.export() }
+                DispatchQueue.main.async {
+                    exportingDiagnostics = false
+                    switch result {
+                    case let .success(url):
+                        exportedDiagnosticsURL = url
+                        diagnosticsStatus = Self.localize("Diagnostics export is ready to share.")
+                    case .failure:
+                        exportedDiagnosticsURL = nil
+                        diagnosticsStatus = Self.localize("Unable to export diagnostics.")
+                    }
+                    refreshDiagnostics()
+                }
+            }
         }
-        refreshDiagnostics()
     }
 
     private func clearDiagnostics() {

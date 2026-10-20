@@ -77,7 +77,28 @@ public final class USBPacketTunnel {
         self.diagnostics = diagnostics; self.makeTCPListener = makeTCPListener
     }
     public func start() {
-        queue.async { [weak self] in self?.wantsListener = true; self?.startOnQueue() }
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.recordStatusOnQueue()
+            if self.wantsListener && self.tcp == nil {
+                let old = self.listener; self.listener = nil; old?.cancel()
+                self.diagnostics.log(.info, category: .transport, message: "usb_listener_resuming")
+            }
+            self.wantsListener = true
+            self.startOnQueue()
+        }
+    }
+    public func recordStatus(completion: @escaping () -> Void) {
+        queue.async { [weak self] in self?.recordStatusOnQueue(); completion() }
+    }
+    private func recordStatusOnQueue() {
+        diagnostics.log(.info, category: .transport, message: "usb_listener_status", fields: [
+            "listener": listener.map { String(describing: $0.state) } ?? "absent",
+            "tcp": tcp.map { String(describing: $0.state) } ?? "absent",
+            "udp_listener": udpListener.map { String(describing: $0.state) } ?? "absent",
+            "wants_listener": "\(wantsListener)", "retry_pending": "\(listenerRetry != nil)",
+            "to_tcp_bytes": "\(toTCP.bytes)", "to_udp_bytes": "\(toUDP.bytes)"
+        ])
     }
     public func stop(completion: (() -> Void)? = nil) {
         queue.async { [weak self] in
@@ -103,16 +124,23 @@ public final class USBPacketTunnel {
             parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: 52138)
             let server = try makeTCPListener(parameters)
             listener = server
-            server.newConnectionHandler = { [weak self] connection in self?.accept(connection) }
+            server.newConnectionHandler = { [weak self, weak server] connection in
+                guard let self, let server, self.wantsListener, self.listener === server else { connection.cancel(); return }
+                self.accept(connection)
+            }
             server.stateUpdateHandler = { [weak self, weak server] state in
                 guard let self, let server, self.listener === server else { return }
                 switch state {
                 case .ready:
+                    self.listenerRetry?.cancel(); self.listenerRetry = nil
                     self.listenerRetrySeconds = 1
                     self.diagnostics.log(.info, category: .transport, message: "usb_listener_ready", fields: ["port": "52138"])
                 case let .waiting(error):
                     self.diagnostics.log(.warning, category: .transport, message: "usb_listener_waiting", fields: ["error": "\(error)"])
                     if self.tcp == nil { self.onUnavailable?("USB listener unavailable") }
+                    self.scheduleListenerRetry()
+                case .cancelled:
+                    self.listenerFailed(NWError.posix(.ECANCELED))
                 case let .failed(error):
                     self.listenerFailed(error)
                 default: break
@@ -123,12 +151,18 @@ public final class USBPacketTunnel {
     }
     private func listenerFailed(_ error: Error) {
         diagnostics.log(.error, category: .transport, message: "usb_listener_failed", fields: ["error": "\(error)"])
-        listener?.cancel(); listener = nil
-        let connected = tcp != nil
-        close("USB listener unavailable")
-        if !connected { onUnavailable?("USB listener unavailable") }
-        guard wantsListener else { return }
-        let retry = DispatchWorkItem { [weak self] in self?.startOnQueue() }
+        let old = listener; listener = nil; old?.cancel()
+        if tcp == nil { onUnavailable?("USB listener unavailable") }
+        scheduleListenerRetry()
+    }
+    private func scheduleListenerRetry() {
+        guard wantsListener, listenerRetry == nil else { return }
+        let retry = DispatchWorkItem { [weak self] in
+            guard let self, self.wantsListener else { return }
+            self.listenerRetry = nil
+            let old = self.listener; self.listener = nil; old?.cancel()
+            self.startOnQueue()
+        }
         listenerRetry = retry
         queue.asyncAfter(deadline: .now() + listenerRetrySeconds, execute: retry)
         listenerRetrySeconds = min(10, listenerRetrySeconds * 2)

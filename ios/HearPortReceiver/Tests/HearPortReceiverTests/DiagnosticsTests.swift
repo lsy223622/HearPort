@@ -3,6 +3,25 @@ import XCTest
 @testable import HearPortReceiver
 
 final class DiagnosticsTests: XCTestCase {
+    func testDefaultRetentionKeepsStartupBeyondThePreviousLimitAndExportsUnicode() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let diagnostics = HearPortDiagnostics(directory: directory)
+        diagnostics.log(.info, category: .transport, message: "usb_startup_retention_marker")
+        let message = String(repeating: "音频", count: 180)
+        for index in 0..<6000 {
+            diagnostics.log(.info, category: .realtime, message: message, fields: ["sequence": "\(index)"])
+        }
+        let url = try diagnostics.export()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let text = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertTrue(text.contains("usb_startup_retention_marker"))
+        XCTAssertTrue(text.contains("sequence=5999"))
+        XCTAssertTrue(text.contains(message))
+        XCTAssertGreaterThan(text.utf8.count, 4 * 1_048_576)
+        XCTAssertEqual(diagnostics.recentLines(limit: 3000).count, 2000)
+    }
+
     func testLogRedactsSensitiveFieldsAndKeepsSafeMetadata() throws {
         let diagnostics = try makeDiagnostics()
         diagnostics.level = .debug

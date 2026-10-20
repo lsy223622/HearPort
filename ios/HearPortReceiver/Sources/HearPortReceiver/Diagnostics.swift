@@ -150,8 +150,8 @@ public final class HearPortDiagnostics: @unchecked Sendable {
     private let asyncWriterGroup = DispatchGroup()
 
     public init(directory: URL? = nil,
-                maxFileBytes: Int = 1_048_576,
-                maxRotatedFiles: Int = 3,
+                maxFileBytes: Int = 16 * 1_048_576,
+                maxRotatedFiles: Int = 7,
                 asyncQueueCapacity: Int = 512,
                 clock: @escaping () -> Date = Date.init) {
         let baseDirectory = directory ?? Self.defaultDirectory()
@@ -302,7 +302,6 @@ public final class HearPortDiagnostics: @unchecked Sendable {
                                         "Diagnostics writer did not drain in time"])
         }
         lock.lock()
-        defer { lock.unlock() }
 
         let exportURL = fileManager.temporaryDirectory
             .appendingPathComponent("HearPort-diagnostics-\(UUID().uuidString).log")
@@ -322,23 +321,44 @@ public final class HearPortDiagnostics: @unchecked Sendable {
             "--- retained log files ---"
         ])
 
-        var retainedFileCount = 0
+        // Open a fixed-length snapshot under the writer lock. Open handles remain
+        // valid across rotation; copying large logs does not hold up audio logging.
+        var files: [(String, FileHandle, UInt64)] = []
         for url in Array(rotatedURLsLocked().reversed()) + [activeURL] {
-            guard let data = try? Data(contentsOf: url),
-                  let text = String(data: data, encoding: .utf8) else {
-                continue
-            }
-            retainedFileCount += 1
-            output.append("\n--- \(url.lastPathComponent) ---")
-            output.append(text.trimmingCharacters(in: .newlines))
+            guard let input = try? FileHandle(forReadingFrom: url) else { continue }
+            do {
+                let length = try input.seekToEnd()
+                try input.seek(toOffset: 0)
+                files.append((url.lastPathComponent, input, length))
+            } catch { try? input.close() }
         }
-
-        if retainedFileCount == 0 {
+        if files.isEmpty {
             output.append("\n--- in-memory tail ---")
             output.append(contentsOf: tail)
         }
-        try output.joined(separator: "\n").appending("\n")
-            .write(to: exportURL, atomically: true, encoding: .utf8)
+        lock.unlock()
+        defer { for (_, input, _) in files { try? input.close() } }
+        do {
+            try Data((output.joined(separator: "\n") + "\n").utf8).write(to: exportURL, options: .atomic)
+            let destination = try FileHandle(forWritingTo: exportURL)
+            defer { try? destination.close() }
+            try destination.seekToEnd()
+            for (name, input, length) in files {
+                try destination.write(contentsOf: Data("\n--- \(name) ---\n".utf8))
+                var remaining = length
+                while remaining > 0 {
+                    guard let chunk = try input.read(upToCount: Int(min(remaining, 65_536))), !chunk.isEmpty else {
+                        throw CocoaError(.fileReadCorruptFile)
+                    }
+                    try destination.write(contentsOf: chunk)
+                    remaining -= UInt64(chunk.count)
+                }
+                try destination.write(contentsOf: Data([10]))
+            }
+        } catch {
+            try? fileManager.removeItem(at: exportURL)
+            throw error
+        }
         return exportURL
     }
 

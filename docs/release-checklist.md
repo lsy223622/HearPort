@@ -33,7 +33,7 @@
 
 - [x] Windows Actions run [39052133439](https://github.com/lsy223622/HearPort/actions/runs/39052133439): Release build, 22/22 CTest checks and 6/6 package/document checks passed, with test assertions enabled.
 - [x] Python suite: 65 checks run, 3 optional checks skipped; release dependency-closure tests passed.
-- [x] Windows log rotation bounded to 4 MiB plus three backups; retry backoff and authenticated route switching inspected.
+- [x] Windows log rotation, retry backoff and authenticated route switching inspected.
 - [x] Release DLL closure inspected: MsQuic and required VC runtime DLLs; no Debug CRT imports.
 - [x] Third-party license collection and version alignment at 0.1.0 prepared.
 - [x] GitHub Actions run [39052135647](https://github.com/lsy223622/HearPort/actions/runs/39052135647): 156 Swift package tests passed; unsigned iOS Release IPA build 158 was created with bundled license notices and validated.
