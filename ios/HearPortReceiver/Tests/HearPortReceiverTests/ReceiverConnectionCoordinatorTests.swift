@@ -88,7 +88,11 @@ final class ReceiverConnectionCoordinatorTests: XCTestCase {
 import Network
 extension ReceiverConnectionCoordinatorTests {
     @MainActor func testUSBIsRetriedAfterCooldownWhileNetworkKeepsPlaying() {
-        let tunnel = USBPacketTunnel()
+        let tunnel = USBPacketTunnel(diagnostics: .shared, makeTCPListener: { _ in
+            let parameters = NWParameters.tcp
+            parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
+            return try NWListener(using: parameters)
+        })
         let coordinator = ReceiverConnectionCoordinator(tunnel: tunnel)
         let identity = Data(repeating: 0xab, count: 32)
         let identityText = String(repeating: "ab", count: 32)
