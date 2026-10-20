@@ -1,6 +1,6 @@
 import Foundation
 
-public struct AudioStreamFormat: Equatable, Sendable {
+public struct AudioStreamFormat: Codable, Equatable, Sendable {
     public let opus: Bool
     public let bitrate: Int
     public let frameCount: Int

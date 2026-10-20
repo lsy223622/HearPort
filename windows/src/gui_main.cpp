@@ -851,7 +851,11 @@ class Application {
             std::to_wstring(minimum) + (minimum == maximum ? L"" : L"–" + std::to_wstring(maximum)) +
             Tr(L" s; ",L" 秒；") + extra;
       };
-      if (progress.stage >= 4) detail = Tr(L"Preparing and receiving the iPad report.", L"正在准备并回收 iPad 报告。");
+      if (service_->adaptive_calibration()) {
+        detail = Tr(L"Adaptive search · step ",L"自适应搜索 · 步骤 ") + std::to_wstring(progress.completed_rounds + (progress.round_pending ? 1 : 0));
+        if (progress.round_started) detail += Tr(L" · this round remaining ",L" · 本轮剩余 ") + std::to_wstring(progress.remaining_seconds) + Tr(L" s",L" 秒");
+        detail += Tr(L". Current parameters and recommendations are shown on iPad.",L"。当前参数和推荐结果显示在 iPad 上。");
+      } else if (progress.stage >= 4) detail = Tr(L"Preparing and receiving the iPad report.", L"正在准备并回收 iPad 报告。");
       else if (progress.stage == 2) {
         detail = std::to_wstring(progress.completed) + L" / " + std::to_wstring(progress.total);
         estimate(0, 6 * (calibration_seconds_ + 5) + 5,
@@ -899,7 +903,7 @@ class Application {
               Tr(L"known validation rounds, plus report upload.",L"已知数量的复核组，另加报告回传。"));
         }
       } else detail = Tr(L"Connect the iPad; sampling and validation run automatically.", L"连接 iPad 后自动完成采样与复核。");
-      audio_label = Tr(L"Random data · 992 B · 400 packets/s · no audio", L"随机数据 · 992 字节 · 400 包/秒 · 不播放音频");
+      audio_label = service_->adaptive_calibration() ? Tr(L"Adaptive packet sizes and rates · no audio",L"动态包大小与发包频率 · 不播放音频") : Tr(L"Random data · 992 B · 400 packets/s · no audio", L"随机数据 · 992 字节 · 400 包/秒 · 不播放音频");
     } else if (running_ && network_probe_active_ && connected_) {
       const std::uint32_t processed = service_->network_probe_packets_processed();
       const auto rounds = service_->network_probe_rounds();
@@ -1058,7 +1062,7 @@ class Application {
     host_->Configure([&](SenderService& service) {
       service.ConfigureNetworkProbe(network_probe);
       service.ConfigureDebugDuration(diagnostics);
-      if (calibration) service.ConfigureCalibration({static_cast<std::uint16_t>(calibration_seconds_), static_cast<std::uint16_t>(calibration_maximum_)});
+      if (calibration) service.ConfigureCalibration({static_cast<std::uint16_t>(calibration_seconds_), static_cast<std::uint16_t>(calibration_maximum_), calibration_goal_});
       if (music) service.ConfigureMusicTest(*music);
       service.SetDebugOutputDirectory(data_dir_ / L"diagnostics");
     });
@@ -1068,7 +1072,7 @@ class Application {
       PostMessageW(hwnd_, kConnectionMessage, connected, (reliable ? 1 : 0) | (path == hearport::windows::PhysicalPath::usb ? 2 : 0));
     });
     host_->SetCalibrationRequestHandler([this](hearport::windows::CalibrationOptions options) {
-      PostMessageW(hwnd_, kCalibrationRequestMessage, options.seconds, options.maximum_ms);
+      PostMessageW(hwnd_, kCalibrationRequestMessage, options.seconds | (options.goal << 16), options.maximum_ms);
     });
     if (!host_->Start()) {
       host_.reset();
@@ -1191,6 +1195,7 @@ class Application {
           return !text.empty() && *end == L'\0' && value <= ceiling;
         };
         if (app->settings_kind_ == kNetworkProbe) {
+          app->calibration_goal_ = 0;
           app->calibration_selected_ = SendMessageW(app->settings_purpose_, CB_GETCURSEL,0,0) == 0;
           const auto maximum = read(app->settings_maximum_);
           const auto seconds = SendMessageW(app->settings_duration_,CB_GETCURSEL,0,0);
@@ -1505,15 +1510,16 @@ class Application {
       const bool succeeded = service_->debug_test_succeeded();
       const int completed_test = music_test_active_ ? kMusicTest :
           network_probe_active_ ? kNetworkProbe : kDiagnostics;
-      if (service_->environment_calibration()) calibration_report_path_ = service_->debug_session_directory() / L"ipad-report.txt";
+      const bool local_calibration = service_->adaptive_calibration();
+      if (service_->environment_calibration() && !local_calibration) calibration_report_path_ = service_->debug_session_directory() / L"ipad-report.txt";
       completed_test_ = succeeded ? completed_test : 0;
       music_test_active_ = false;
       network_probe_active_ = false;
       connected_ = false;
       UpdateStatus();
       SetWindowTextW(diagnostic_status_,
-                     Tr(L"Diagnostic report saved in the report folder.",
-                        L"诊断报告已保存到报告文件夹。")
+                     (local_calibration ? Tr(L"Automatic test completed; results are available on iPad.",L"自动测试已完成；结果在 iPad 上查看和应用。") : Tr(L"Diagnostic report saved in the report folder.",
+                        L"诊断报告已保存到报告文件夹。"))
                          .c_str());
       RedrawWindow(hwnd_, nullptr, nullptr,
                    RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
@@ -1565,8 +1571,9 @@ class Application {
       case kCalibrationRequestMessage:
         if (running_ && service_ && !service_->debug_duration() &&
             !service_->network_probe() && !service_->music_test() && !service_->environment_calibration() &&
-            (wparam == 30 || wparam == 60 || wparam == 120) && lparam >= 20 && lparam <= 2000) {
-          calibration_seconds_ = static_cast<unsigned>(wparam);
+            ((LOWORD(wparam) == 15 && HIWORD(wparam)) || LOWORD(wparam) == 30 || LOWORD(wparam) == 60 || LOWORD(wparam) == 120) && lparam >= 20 && lparam <= 2000) {
+          calibration_seconds_ = LOWORD(wparam);
+          calibration_goal_ = static_cast<std::uint8_t>(HIWORD(wparam));
           calibration_maximum_ = static_cast<unsigned>(lparam);
           StopService();
           StartService(std::nullopt, true, std::nullopt, true);
@@ -1777,6 +1784,7 @@ class Application {
   HWND calibration_window_ = nullptr;
   HWND settings_maximum_ = nullptr, settings_purpose_ = nullptr;
   bool calibration_selected_ = true;
+  std::uint8_t calibration_goal_ = 0;
   unsigned calibration_seconds_ = 30, calibration_maximum_ = 100;
   std::filesystem::path calibration_report_path_;
   std::optional<hearport::windows::CalibrationReport> calibration_report_;

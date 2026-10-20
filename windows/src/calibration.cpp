@@ -48,8 +48,9 @@ std::vector<CalibrationBudget> MakeCalibrationBudgets(std::uint16_t maximum, std
 }
 
 std::vector<std::byte> EncodeCalibrationMessage(const CalibrationMessage& m) {
-  std::vector<std::byte> b{std::byte{4}, std::byte(m.kind)};
+  std::vector<std::byte> b{std::byte(m.goal ? 5 : 4), std::byte(m.kind)};
   Put(b, m.plan_id, 4);
+  if (m.goal) Put(b,m.goal,1);
   switch (m.kind) {
     case CalibrationMessageKind::setup:
     case CalibrationMessageKind::request:
@@ -60,6 +61,7 @@ std::vector<std::byte> EncodeCalibrationMessage(const CalibrationMessage& m) {
       Put(b,m.first_sequence,4); Put(b,m.generation,4); Put(b,m.first_source_frame,8); break;
     case CalibrationMessageKind::ack:
       Put(b,m.phase,1); Put(b,m.index,1); break;
+    case CalibrationMessageKind::complete:
     case CalibrationMessageKind::analyze: break;
     case CalibrationMessageKind::selection:
       Put(b,m.choices.size(),2);
@@ -70,6 +72,10 @@ std::vector<std::byte> EncodeCalibrationMessage(const CalibrationMessage& m) {
       break;
     case CalibrationMessageKind::progress: Put(b,m.completed,2); Put(b,m.total,2); break;
   }
+  if (m.goal && (m.kind == CalibrationMessageKind::round || m.kind == CalibrationMessageKind::selection)) {
+    Put(b,m.codec,1); Put(b,m.bitrate,4); Put(b,m.frames,2);
+    if (m.kind == CalibrationMessageKind::selection) Put(b,m.phase,1);
+  }
   if (!DecodeCalibrationMessage(b)) throw std::invalid_argument("invalid calibration message");
   return b;
 }
@@ -77,17 +83,20 @@ std::vector<std::byte> EncodeCalibrationMessage(const CalibrationMessage& m) {
 std::optional<CalibrationMessage> DecodeCalibrationMessage(std::span<const std::byte> b) noexcept {
   try {
     Reader r{b};
-    if (r.get(1) != 4) return std::nullopt;
+    const auto version = r.get(1);
+    if (version != 4 && version != 5) return std::nullopt;
     const auto kind = r.get(1);
-    if (kind > 6) return std::nullopt;
+    if (kind > (version == 5 ? 7 : 6)) return std::nullopt;
     CalibrationMessage m;
     m.kind = static_cast<CalibrationMessageKind>(kind); m.plan_id = static_cast<std::uint32_t>(r.get(4));
     if (!m.plan_id) return std::nullopt;
+    if (version == 5) { m.goal = static_cast<std::uint8_t>(r.get(1)); if (m.goal != 1 && m.goal != 2 && m.goal != 4) return std::nullopt; }
+    const auto seconds = [&](unsigned v) { return Seconds(v) || (m.goal && v == 15); };
     switch (m.kind) {
       case CalibrationMessageKind::setup:
       case CalibrationMessageKind::request:
         m.seconds = static_cast<std::uint16_t>(r.get(2)); m.budget.maximum_ms = static_cast<std::uint16_t>(r.get(2));
-        if (!Seconds(m.seconds) || m.budget.maximum_ms < 20 || m.budget.maximum_ms > 2000) return std::nullopt;
+        if (!seconds(m.seconds) || (m.goal && m.seconds > 60) || m.budget.maximum_ms < 20 || m.budget.maximum_ms > 2000) return std::nullopt;
         break;
       case CalibrationMessageKind::round: {
         m.phase = static_cast<std::uint8_t>(r.get(1)); m.index = static_cast<std::uint8_t>(r.get(1));
@@ -97,18 +106,19 @@ std::optional<CalibrationMessage> DecodeCalibrationMessage(std::span<const std::
         m.budget.maximum_ms = static_cast<std::uint16_t>(r.get(2)); m.output_reserve_ms = static_cast<std::uint16_t>(r.get(2));
         m.first_sequence = static_cast<std::uint32_t>(r.get(4)); m.generation = static_cast<std::uint32_t>(r.get(4));
         m.first_source_frame = r.get(8);
-        if (m.phase > 1 || !m.index || m.index > m.count || m.count > 10 || reliable > 1 || reserved || !m.generation ||
-            !Seconds(m.seconds) || !Budget(m.budget,m.output_reserve_ms) ||
+        if (m.phase > 1 || !m.index || m.index > m.count || m.count > (m.goal ? 16 : 10) || reliable > 1 || reserved || !m.generation ||
+            !seconds(m.seconds) || !Budget(m.budget,m.output_reserve_ms) ||
             m.first_source_frame != std::uint64_t(m.first_sequence) * 120 ||
             std::uint64_t(m.first_sequence) + std::uint64_t(m.seconds) * 400 > UINT32_MAX ||
-            (m.phase == 0 ? m.profile_mask != 0 : m.profile_mask == 0 || m.profile_mask > 7)) return std::nullopt;
+            (m.goal ? m.profile_mask != m.goal : (m.phase == 0 ? m.profile_mask != 0 : m.profile_mask == 0 || m.profile_mask > 7))) return std::nullopt;
         break;
       }
       case CalibrationMessageKind::ack:
         m.phase = static_cast<std::uint8_t>(r.get(1)); m.index = static_cast<std::uint8_t>(r.get(1));
-        if (m.phase > 1 || !m.index || m.index > 10) return std::nullopt;
+        if (m.phase > 1 || !m.index || m.index > (m.goal ? 16 : 10)) return std::nullopt;
         break;
-      case CalibrationMessageKind::analyze: break;
+      case CalibrationMessageKind::complete:
+    case CalibrationMessageKind::analyze: break;
       case CalibrationMessageKind::selection: {
         const auto count = r.get(2);
         if (count > 3) return std::nullopt;
@@ -128,6 +138,14 @@ std::optional<CalibrationMessage> DecodeCalibrationMessage(std::span<const std::
         if (!m.total || m.total > 256 || m.completed > m.total) return std::nullopt;
         break;
     }
+    if (m.goal && (m.kind == CalibrationMessageKind::round || m.kind == CalibrationMessageKind::selection)) {
+      m.codec = static_cast<std::uint8_t>(r.get(1)); m.bitrate = static_cast<std::uint32_t>(r.get(4)); m.frames = static_cast<std::uint16_t>(r.get(2));
+      if (m.kind == CalibrationMessageKind::selection) { m.phase = static_cast<std::uint8_t>(r.get(1)); if (m.phase > 1) return std::nullopt; }
+      if (m.codec > 1 || (m.codec == 0 ? m.bitrate != 0 || m.frames != 120 :
+          (m.bitrate != 192000 && m.bitrate != 256000) || (m.frames != 120 && m.frames != 240 && m.frames != 480))) return std::nullopt;
+      if (m.kind == CalibrationMessageKind::selection && (m.choices.size() > 1 ||
+          std::any_of(m.choices.begin(),m.choices.end(),[&](const auto& c) { return c.profile_mask != m.goal; }))) return std::nullopt;
+    }
     if (r.at != b.size()) return std::nullopt;
     return m;
   } catch (...) { return std::nullopt; }
@@ -137,6 +155,17 @@ CalibrationExchange::CalibrationExchange(std::uint32_t plan_id, CalibrationOptio
 
 std::optional<CalibrationMessage> CalibrationExchange::NextRound(std::uint32_t generation) {
   if (pending_ || finished() || awaiting_selection() || generation == 0) return std::nullopt;
+  if (options_.goal) {
+    if (!adaptive_next_) return std::nullopt;
+    auto m = *adaptive_next_; m.kind = CalibrationMessageKind::round;
+    const auto c = m.choices.front(); m.choices.clear();
+    m.reliable = c.reliable; m.budget = c.budget; m.output_reserve_ms = c.output_reserve_ms;
+    m.profile_mask = options_.goal; m.index = static_cast<std::uint8_t>(completed_ + 1); m.count = 16;
+    m.seconds = options_.seconds * (m.phase ? 2 : 1); m.generation = generation;
+    m.first_sequence = completed_ * options_.seconds * 800;
+    m.first_source_frame = std::uint64_t(m.first_sequence) * 120;
+    adaptive_next_.reset(); acked_ = false; pending_ = m; return m;
+  }
   const auto candidates = MakeCalibrationBudgets(options_.maximum_ms, reserve_);
   const auto sampling = std::find_if(candidates.begin(), candidates.end(), [&](const auto& b) { return b.maximum_ms == options_.maximum_ms; });
   if (sampling == candidates.end()) return std::nullopt;
@@ -159,12 +188,20 @@ std::optional<CalibrationMessage> CalibrationExchange::NextRound(std::uint32_t g
 }
 
 bool CalibrationExchange::Handle(const CalibrationMessage& m) {
-  if (m.plan_id != plan_id_) return false;
+  if (m.plan_id != plan_id_ || m.goal != options_.goal) return false;
   if (m.kind == CalibrationMessageKind::ack) {
     if (!awaiting_ack() || pending_->index != m.index || pending_->phase != m.phase) return false;
     acked_ = true; return true;
   }
   if (!awaiting_selection()) return false;
+  if (options_.goal) {
+    if (m.kind != CalibrationMessageKind::selection || m.choices.size() > 1) return false;
+    if (m.choices.empty()) { adaptive_done_ = true; return true; }
+    const auto& c = m.choices.front();
+    if (completed_ >= 16 || c.profile_mask != options_.goal || c.output_reserve_ms != reserve_ ||
+        !Budget(c.budget,reserve_) || c.budget.maximum_ms > options_.maximum_ms || m.phase > 1) return false;
+    adaptive_next_ = m; adaptive_waiting_ = false; return true;
+  }
   if (m.kind == CalibrationMessageKind::progress) {
     if (!m.total || m.completed > m.total || m.completed < analysis_completed_ ||
         (analysis_total_ != 0 && m.total != analysis_total_)) return false;
@@ -191,7 +228,9 @@ bool CalibrationExchange::Handle(const CalibrationMessage& m) {
 
 bool CalibrationExchange::CompleteRound() {
   if (!pending_ || !acked_) return false;
-  ++completed_; pending_.reset(); acked_ = false; return true;
+  ++completed_; pending_.reset(); acked_ = false;
+  if (options_.goal) adaptive_waiting_ = true;
+  return true;
 }
 
 std::optional<CalibrationReport> ParseCalibrationReport(std::string_view text) {

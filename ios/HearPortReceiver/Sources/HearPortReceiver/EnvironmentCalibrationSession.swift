@@ -100,6 +100,12 @@ struct CalibrationProgressSnapshot: Sendable {
     let index, count, completed, total: Int
     var seconds = 30
     var roundStartedAt: UInt64 = 0
+    var adaptive = false, validating = false
+    var parameters: AdaptiveParameters?
+    var lastGapRatio: Double?, lastLongestGap: Double?
+    var receivedPackets = 0
+    var liveGapRatio: Double?, liveLongestGap = 0.0
+    var minimumWindows = 0, maximumWindows = 0, validationIndex = 0
 
     var phaseIndex: Int { stage == "validation" ? max(0, index - 4) : index }
     var phaseCount: Int { stage == "validation" ? max(0, count - 4) : 4 }

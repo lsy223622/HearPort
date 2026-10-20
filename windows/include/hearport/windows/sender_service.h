@@ -75,6 +75,7 @@ class SenderService {
                               std::uint32_t output_reserve_ms);
   void ConfigureNetworkProbe(bool enabled);
   void ConfigureCalibration(CalibrationOptions options);
+  bool adaptive_calibration() const { return calibration_options_ && calibration_options_->goal; }
   bool environment_calibration() const noexcept { return calibration_options_.has_value(); }
   CalibrationMessage calibration_setup(std::uint32_t plan_id) const;
   CalibrationProgress calibration_progress() const;
@@ -124,7 +125,7 @@ class SenderService {
     }
     return true;
   }
-  void MarkDebugReportCommitted(std::span<const std::byte> session_id);
+  void MarkDebugResultReceived(std::span<const std::byte> session_id);
   void LogDiagnostic(std::string_view line) const;
 
   void SetControlHandler(ControlHandler handler);

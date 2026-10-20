@@ -313,3 +313,55 @@
 "Audio per packet" = "Audio per packet";
 
 "Longer packets reduce packet frequency and need more collection time. All processing uses the selected total delay budget. Changes take effect on the next connection." = "Longer packets reduce packet frequency and need more collection time. All processing uses the selected total delay budget. Changes take effect on the next connection.";
+
+"Test goal" = "Test goal";
+
+"Profile" = "Profile";
+
+"Search adjusts transport, encoding, bitrate, packet duration and delay budget for the selected goal." = "Search adjusts transport, encoding, bitrate, packet duration and delay budget for the selected goal.";
+
+"Observation window" = "Observation window";
+
+"15 seconds" = "15 seconds";
+
+"Settings are repeated before selection. Final verification uses two windows of twice the selected duration. Remaining steps depend on observations." = "Settings are repeated before selection. Final verification uses two windows of twice the selected duration. Remaining steps depend on observations.";
+
+"Playback pauses while random traffic tests the network route. Results stay on this iPad. USB audio settings are independent." = "Playback pauses while random traffic tests the network route. Results stay on this iPad. USB audio settings are independent.";
+
+"Latest recommendation" = "Latest recommendation";
+
+"Verification: gaps %.3f%% · longest %.1f ms" = "Verification: gaps %.3f%% · longest %.1f ms";
+
+"Validation did not confirm the goal; test again when conditions settle." = "Validation did not confirm the goal; test again when conditions settle.";
+
+"Insufficient valid observations. Check the connection and test again." = "Insufficient valid observations. Check the connection and test again.";
+
+"Test observations" = "Test observations";
+
+"Gaps %.3f%% · longest %.1f ms" = "Gaps %.3f%% · longest %.1f ms";
+
+"This is an observation of current network conditions, not a stability guarantee. Random payloads reserve codec preparation time but do not measure audio quality or decoder speed." = "This is an observation of current network conditions, not a stability guarantee. Random payloads reserve codec preparation time but do not measure audio quality or decoder speed.";
+
+"Verifying selected settings" = "Verifying selected settings";
+
+"Searching suitable settings" = "Searching suitable settings";
+
+"Observation step %lld" = "Observation step %lld";
+
+"Verification %lld / 2" = "Verification %lld / 2";
+
+"Waiting for test traffic…" = "Waiting for test traffic…";
+
+"Evaluating this observation and choosing the next step…" = "Evaluating this observation and choosing the next step…";
+
+"Received %lld packets" = "Received %lld packets";
+
+"Current window: gaps %.3f%% · longest %.1f ms" = "Current window: gaps %.3f%% · longest %.1f ms";
+
+"Previous window: gaps %.3f%% · longest %.1f ms" = "Previous window: gaps %.3f%% · longest %.1f ms";
+
+"Estimated remaining: %lld–%lld observation windows, including this one. Final verification uses longer windows." = "Estimated remaining: %lld–%lld observation windows, including this one. Final verification uses longer windows.";
+
+"Parameters change in larger steps far from the goal and smaller steps near it. You can stop at any time." = "Parameters change in larger steps far from the goal and smaller steps near it. You can stop at any time.";
+
+"Recommendations are ready to apply." = "Recommendations are ready to apply.";

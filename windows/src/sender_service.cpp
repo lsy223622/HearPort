@@ -386,8 +386,8 @@ void SenderService::ConfigureNetworkProbe(bool enabled) {
 }
 
 void SenderService::ConfigureCalibration(CalibrationOptions options) {
-  if (started_ || music_clip_ || (options.seconds != 30 && options.seconds != 60 && options.seconds != 120) ||
-      options.maximum_ms < 20 || options.maximum_ms > 2000) throw std::invalid_argument("invalid calibration options");
+  if (started_ || music_clip_ || (options.seconds != 30 && options.seconds != 60 && options.seconds != 120 && !(options.goal && options.seconds == 15)) ||
+      options.maximum_ms < 20 || options.maximum_ms > 2000 || (options.goal && options.seconds > 60) || (options.goal && options.goal != 1 && options.goal != 2 && options.goal != 4)) throw std::invalid_argument("invalid calibration options");
   calibration_options_ = options; network_probe_ = true;
   ConfigureDebugDuration(std::chrono::seconds(3600));
 }
@@ -396,6 +396,7 @@ CalibrationMessage SenderService::calibration_setup(std::uint32_t plan_id) const
   CalibrationMessage message;
   message.kind = CalibrationMessageKind::setup; message.plan_id = plan_id;
   if (calibration_options_) {
+    message.goal = calibration_options_->goal;
     message.seconds = calibration_options_->seconds;
     message.budget.maximum_ms = calibration_options_->maximum_ms;
   }
@@ -413,17 +414,17 @@ CalibrationProgress SenderService::calibration_progress() const {
     if (calibration_round_pending_ && calibration_display_round_) {
       const auto& round = *calibration_display_round_;
       message.round_pending = true;
-      message.index = round.phase == 0 ? round.index : round.index - 4;
+      message.index = calibration_options_->goal || round.phase == 0 ? round.index : round.index - 4;
       message.count = calibration_exchange_->phase_total();
       if (calibration_round_started_at_) {
         const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
             std::chrono::steady_clock::now() - *calibration_round_started_at_).count();
         message.round_started = true;
         message.elapsed_seconds = static_cast<unsigned>(std::max<std::int64_t>(elapsed, 0));
-        message.remaining_seconds = elapsed >= calibration_options_->seconds ? 0 :
-            calibration_options_->seconds - static_cast<unsigned>(std::max<std::int64_t>(elapsed, 0));
+        message.remaining_seconds = elapsed >= round.seconds ? 0 :
+            round.seconds - static_cast<unsigned>(std::max<std::int64_t>(elapsed, 0));
       } else {
-        message.remaining_seconds = calibration_options_->seconds;
+        message.remaining_seconds = round.seconds;
       }
     } else if (message.stage == 1 || message.stage == 3) {
       message.count = calibration_exchange_->phase_total();
@@ -708,7 +709,7 @@ void SenderService::CalibrationWorker(std::uint32_t stream_id) {
       if (calibration_exchange_->awaiting_selection()) {
         calibration_stage_.store(2);
         CalibrationMessage request;
-        request.kind = CalibrationMessageKind::analyze; request.plan_id = stream_id;
+        request.kind = CalibrationMessageKind::analyze; request.plan_id = stream_id; request.goal = options.goal;
         lock.unlock();
         if (!send_message(request)) { finish(false); return; }
         lock.lock();
@@ -769,26 +770,30 @@ void SenderService::CalibrationWorker(std::uint32_t stream_id) {
         " transport=" + (round->reliable ? std::string("reliable_stream") : std::string("datagram")) +
         " target_ms=" + std::to_string(round->budget.target_ms) + " maximum_ms=" + std::to_string(round->budget.maximum_ms) +
         " output_reserve_ms=" + std::to_string(round->output_reserve_ms));
-    for (std::uint32_t packet = 0; packet < std::uint32_t(options.seconds) * 400; ++packet) {
-      const auto target = began + std::chrono::nanoseconds(std::uint64_t(packet) * 2'500'000);
+    const auto frame_count = options.goal ? round->frames : 120;
+    const auto packet_count = std::uint32_t(round->seconds) * 48000 / frame_count;
+    const auto payload_size = options.goal && round->codec ? round->bitrate * frame_count / 48000 / 8 : 960u;
+    for (std::uint32_t packet = 0; packet < packet_count; ++packet) {
+      const auto target = began + std::chrono::nanoseconds(std::uint64_t(packet) * frame_count * 1'000'000'000 / 48000);
       if (!wait_until(target)) return;
       const auto woke = MonotonicNanoseconds();
-      const auto sequence = round->first_sequence + packet;
-      auto random = MakeNetworkProbeDatagram(stream_id,sequence,968);
+      const auto sequence = round->first_sequence + packet * (frame_count / 120);
+      auto random = MakeNetworkProbeDatagram(stream_id,sequence,payload_size + 8);
       std::lock_guard send_lock(audio_send_mutex_);
       {
         std::lock_guard debug_lock(debug_mutex_);
         if (!debug_trace_.IsActive() || active_debug_stream_id_ != stream_id || debug_ending_) return;
         ++outstanding_debug_sends_;
       }
-      const auto capture = std::chrono::duration_cast<std::chrono::nanoseconds>(target.time_since_epoch()).count();
+      const auto capture = std::chrono::duration_cast<std::chrono::nanoseconds>(target.time_since_epoch()).count() -
+          (options.goal && round->codec ? std::int64_t(frame_count) * 1'000'000'000 / 48000 : 0);
       const auto sent_at = MonotonicNanoseconds();
-      wire::TimedAudioRecord record{stream_id,reliable_generation_,sequence,120,wire::AudioRecordKind::probe,
-          static_cast<std::uint64_t>(capture),round->first_source_frame + std::uint64_t(packet) * 120,
+      wire::TimedAudioRecord record{stream_id,reliable_generation_,sequence,static_cast<std::uint16_t>(frame_count),wire::AudioRecordKind::probe,
+          static_cast<std::uint64_t>(capture),round->first_source_frame + std::uint64_t(packet) * frame_count,
           std::vector<std::byte>(random.begin() + 8,random.end())};
       if (round->reliable) {
         std::lock_guard reliable_lock(reliable_mutex_);
-        reliable_lag_.Produced(sequence,record.source_frame + 120,120);
+        reliable_lag_.Produced(sequence,record.source_frame + frame_count,frame_count);
         reliable_lag_.Retain(record,static_cast<std::uint64_t>(sent_at));
       }
       const auto bytes = wire::EncodeTimedAudioRecord(record);
@@ -799,14 +804,14 @@ void SenderService::CalibrationWorker(std::uint32_t stream_id) {
       if (!accepted) CompleteDebugSend(stream_id);
       probe_packets_processed_.store(sequence + 1);
     }
-    if (!wait_until(began + std::chrono::seconds(options.seconds))) return;
+    if (!wait_until(began + std::chrono::seconds(round->seconds))) return;
     bool finished;
     {
       std::lock_guard lock(calibration_mutex_);
       finished = calibration_exchange_->CompleteRound() && calibration_exchange_->finished();
     }
     // Retain the current receiver and feedback during the bounded drain interval.
-    if (!wait_until(Clock::now() + std::chrono::seconds(finished ? 10 : 5))) return;
+    if (!wait_until(Clock::now() + std::chrono::milliseconds(options.goal ? round->budget.maximum_ms + 100 : (finished ? 10000 : 5000)))) return;
     {
       std::lock_guard lock(calibration_mutex_);
       calibration_round_pending_ = false;
@@ -1236,7 +1241,7 @@ bool SenderService::WaitForDebugCompletion(
   return debug_completed_;
 }
 
-void SenderService::MarkDebugReportCommitted(
+void SenderService::MarkDebugResultReceived(
     std::span<const std::byte> session_id) {
   std::lock_guard lock(debug_mutex_);
   if (!debug_duration_.has_value() || session_id.size() != active_debug_session_id_.size() ||

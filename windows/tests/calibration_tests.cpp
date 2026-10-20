@@ -111,5 +111,32 @@ int main() {
   envelope.type = hearport::wire::ControlMessageType::probe_manifest;
   envelope.stream_id = 0x01020304; envelope.bytes1 = request_fixture;
   if (authentication.HandleControlPayload(hearport::wire::EncodeControlEnvelope(envelope)) || requested) return 32;
+  CalibrationMessage quick;
+  quick.kind = CalibrationMessageKind::request; quick.plan_id = 0x01020304;
+  quick.goal = 2; quick.seconds = 15; quick.budget.maximum_ms = 300;
+  const std::vector<std::byte> quick_fixture{std::byte{5},std::byte{6},std::byte{1},std::byte{2},std::byte{3},std::byte{4},std::byte{2},std::byte{0},std::byte{15},std::byte{1},std::byte{44}};
+  if (EncodeCalibrationMessage(quick) != quick_fixture || !DecodeCalibrationMessage(quick_fixture)) return 33;
+  CalibrationExchange adaptive(7,{15,300,2},11);
+  if (!adaptive.awaiting_selection() || adaptive.NextRound(1)) return 34;
+  CalibrationMessage pick;
+  pick.kind = CalibrationMessageKind::selection; pick.plan_id = 7; pick.goal = 2; pick.phase = 1;
+  pick.codec = 1; pick.bitrate = 192000; pick.frames = 480;
+  pick.choices = {{2,true,{90,150},11}};
+  const std::vector<unsigned> selection_bytes{5,4,0,0,0,7,2,0,1,2,1,0,90,0,150,0,11,1,0,2,238,0,1,224,1};
+  const auto encoded_pick = EncodeCalibrationMessage(pick);
+  for (std::size_t i = 0; i < selection_bytes.size(); ++i) if (std::to_integer<unsigned>(encoded_pick.at(i)) != selection_bytes[i]) return 35;
+  const auto decoded_pick = DecodeCalibrationMessage(encoded_pick);
+  if (!decoded_pick || !adaptive.Handle(*decoded_pick)) return 36;
+  const auto adaptive_round = adaptive.NextRound(3);
+  if (!adaptive_round || adaptive_round->frames != 480 || adaptive_round->bitrate != 192000 ||
+      adaptive_round->seconds != 30 || !adaptive_round->reliable || adaptive_round->phase != 1 ||
+      adaptive_round->budget != CalibrationBudget{90,150} || !DecodeCalibrationMessage(EncodeCalibrationMessage(*adaptive_round))) return 37;
+  CalibrationMessage quick_ack;
+  quick_ack.kind = CalibrationMessageKind::ack; quick_ack.plan_id = 7; quick_ack.goal = 2; quick_ack.index = 1; quick_ack.phase = 1;
+  if (!adaptive.Handle(quick_ack) || !adaptive.CompleteRound() || !adaptive.awaiting_selection()) return 38;
+  pick.choices.clear();
+  if (!adaptive.Handle(pick) || !adaptive.finished() || adaptive.NextRound(4)) return 39;
+  for (std::size_t length = 0; length < encoded_pick.size(); ++length)
+    if (DecodeCalibrationMessage(std::span(encoded_pick).first(length))) return 40;
   std::cout << "calibration codec and budgets passed\n";
 }

@@ -8,7 +8,7 @@
 #include <vector>
 
 namespace hearport::windows {
-struct CalibrationOptions { std::uint16_t seconds = 30, maximum_ms = 100; };
+struct CalibrationOptions { std::uint16_t seconds = 30, maximum_ms = 100; std::uint8_t goal = 0; };
 struct CalibrationBudget {
   std::uint16_t target_ms = 0, maximum_ms = 0;
   bool operator==(const CalibrationBudget&) const = default;
@@ -24,8 +24,11 @@ struct CalibrationProgress {
   unsigned completed_rounds = 0, elapsed_seconds = 0, remaining_seconds = 0;
   bool round_pending = false, round_started = false;
 };
-enum class CalibrationMessageKind : std::uint8_t { setup, round, ack, analyze, selection, progress, request };
+enum class CalibrationMessageKind : std::uint8_t { setup, round, ack, analyze, selection, progress, request, complete };
 struct CalibrationMessage {
+  std::uint8_t goal = 0, codec = 0;
+  std::uint32_t bitrate = 0;
+  std::uint16_t frames = 120;
   CalibrationMessageKind kind = CalibrationMessageKind::setup;
   std::uint32_t plan_id = 0;
   std::uint8_t phase = 0, index = 0, count = 0, profile_mask = 0;
@@ -64,12 +67,12 @@ class CalibrationExchange {
   bool Handle(const CalibrationMessage& message);
   bool CompleteRound();
   bool awaiting_ack() const { return pending_.has_value() && !acked_; }
-  bool awaiting_selection() const { return completed_ == 4 && !selected_; }
-  bool finished() const { return selected_ && completed_ == 4 + validation_.size(); }
+  bool awaiting_selection() const { return options_.goal ? adaptive_waiting_ && !adaptive_done_ : completed_ == 4 && !selected_; }
+  bool finished() const { return options_.goal ? adaptive_done_ : selected_ && completed_ == 4 + validation_.size(); }
   unsigned completed() const { return completed_; }
-  unsigned total() const { return selected_ ? 4 + static_cast<unsigned>(validation_.size()) : 10; }
-  unsigned phase_completed() const { return selected_ ? completed_ - 4 : completed_; }
-  unsigned phase_total() const { return selected_ ? static_cast<unsigned>(validation_.size()) : 4; }
+  unsigned total() const { return options_.goal ? 16 : selected_ ? 4 + static_cast<unsigned>(validation_.size()) : 10; }
+  unsigned phase_completed() const { return options_.goal ? completed_ : selected_ ? completed_ - 4 : completed_; }
+  unsigned phase_total() const { return options_.goal ? 16 : selected_ ? static_cast<unsigned>(validation_.size()) : 4; }
   unsigned analysis_completed() const { return analysis_completed_; }
   unsigned analysis_total() const { return analysis_total_; }
  private:
@@ -78,6 +81,8 @@ class CalibrationExchange {
   std::uint16_t reserve_;
   unsigned completed_ = 0, analysis_completed_ = 0, analysis_total_ = 0;
   bool selected_ = false, acked_ = false;
+  bool adaptive_waiting_ = true, adaptive_done_ = false;
+  std::optional<CalibrationMessage> adaptive_next_;
   std::optional<CalibrationMessage> pending_;
   std::vector<CalibrationChoice> validation_;
 };
