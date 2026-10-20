@@ -45,3 +45,17 @@ Local Release build and 24 CTest checks passed, including adaptive protocol fixt
 format/phase preservation, dynamic exchange, and old full-test compatibility.
 Actions and physical-device acceptance are recorded in the validation matrix after
 their actual results are available.
+
+
+## Final delivery
+
+- Source `4de8694f96a76537d518556dccff93f849acd149`; Windows Actions 39399070518
+  passed 24 CTest and 28 Python checks; iPad Actions 39399056345 passed 194 Swift
+  checks and archived unsigned build 170. CodeQL 39399055960 passed.
+- Both downloaded source identities, checksums and all 100 packaged Windows file
+  hashes verified; the Actions Windows package was started and bound UDP 52137.
+- Stability-first application accepts the best valid observed continuity; the two
+  threshold profiles require their targets in both final repeats. Failed runs do
+  not overwrite an applicable stored result.
+- Initial iOS archive caught a Section initializer mismatch, fixed before final
+  packaging. Physical-device acceptance remains explicitly pending in the matrix.

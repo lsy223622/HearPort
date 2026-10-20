@@ -10,6 +10,17 @@ including cable disconnect and reconnect; repeated playback/tests on weak
 2.4 GHz Wi-Fi. These observations do not establish a timed soak, lock-screen
 behavior, a clean-machine install, or final Release acceptance.
 
+## Adaptive client recommendations (2026-10-20)
+
+- Final executable source: `4de8694f96a76537d518556dccff93f849acd149`.
+- Windows Actions [39399070518](https://github.com/lsy223622/HearPort/actions/runs/39399070518): Release package, 24 CTest and 28 Python checks passed.
+- iPad Actions [39399056345](https://github.com/lsy223622/HearPort/actions/runs/39399056345): 194 Swift checks passed, including adaptive search, shared v5 fixtures, dynamic frame sizes, invalid-clock rejection, preference application and progress estimates; unsigned IPA build 170 archived.
+- CodeQL [39399055960](https://github.com/lsy223622/HearPort/actions/runs/39399055960) passed.
+- Download checksums, all 100 packaged Windows file hashes, matching Windows/IPA source identities, IPA build 170 and unsigned packaging verified. Downloaded Windows Actions executable started and listened on UDP 52137.
+- Quick tests choose one goal, repeat settings, adjust network format/bitrate/frame duration and budget, and verify one candidate with two longer windows. Results are local; the completion acknowledgement contains no report. Full Windows diagnostic calibration retains the existing v4 path.
+- Stability first selects the best observed continuity within the budget; nonzero gaps remain visible. Low latency and Balanced require their selection targets in both verification windows before application. These are finite observations, not established future loss rates or causal proof against network variation.
+- Physical acceptance remains pending: USB unplug/insert with authoritative negotiated-format display; 5 ms latency controls; quick-test progress, local completion and application; normal audio after reconnection. Random CBR-shaped traffic reserves codec preparation time but does not verify decoder throughput or acoustic latency.
+
 ## Live compression development (2026-10-20)
 
 ### Capture-silence recovery regression

@@ -1,5 +1,13 @@
 # HearPort 0.1.0 release checklist
 
+## Adaptive client recommendation candidate (2026-10-20)
+
+- [x] Matching source `4de8694f96a76537d518556dccff93f849acd149`: Windows Actions [39399070518](https://github.com/lsy223622/HearPort/actions/runs/39399070518), iPad Actions [39399056345](https://github.com/lsy223622/HearPort/actions/runs/39399056345).
+- [x] 24 CTest, 28 Python and 194 Swift checks passed; unsigned IPA build 170 archived; CodeQL passed.
+- [x] Package hashes, 100 Windows file hashes, matching build identities and unsigned IPA verified. Windows Actions package started and listened on UDP 52137.
+- [ ] Install build 170; verify unplugged USB shows the confirmed network codec, latency controls reach round values, and quick testing shows live progress, finishes locally and applies all network parameters.
+- [ ] Reconnect and check ordinary audio with the applied recommendation. Physical network variation and codec processing remain separate from the synthetic transport observation.
+
 ## Capture-silence recovery fix (2026-10-20)
 
 - [x] Regression reproduced fresh resumed audio rejected as late on the existing stream.
