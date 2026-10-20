@@ -1,11 +1,17 @@
 # HearPort 0.1.0 release checklist
 
+## Capture-silence recovery fix (2026-10-20)
+
+- [x] Regression reproduced fresh resumed audio rejected as late on the existing stream.
+- [x] Actions [39392343378](https://github.com/lsy223622/HearPort/actions/runs/39392343378): 187 Swift checks passed and unsigned IPA archived; CodeQL passed.
+- [ ] Install this fixed IPA and check repeated track changes, pause/resume and cable handover. The current Actions Windows sender remains compatible.
+
 ## Configurable live compression candidate (2026-10-20)
 
 - [x] Matching source `21b3848312e16aa652c55704991839502698feee`: Windows [39386364549](https://github.com/lsy223622/HearPort/actions/runs/39386364549), iPad [39386215008](https://github.com/lsy223622/HearPort/actions/runs/39386215008).
 - [x] Windows Release with 24 CTest / 28 Python checks; iPad with 186 Swift checks, unsigned IPA build 165; CodeQL passed.
 - [x] Download/file hashes, IPA identity and licenses verified; Windows Actions package started and listened.
-- [ ] Install build 165 and check normal live playback, per-path encoding selection, silence/resume and USB/network handover.
+- [ ] Check normal live playback, per-path encoding selection, silence/resume and USB/network handover with the capture-silence fix above.
 
 ## Compression test candidate (2026-10-20)
 

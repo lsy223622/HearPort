@@ -58,4 +58,4 @@ and USB/Wi-Fi switching remain device checks, not inferred from compilation.
   late, resumed-output assertion failed; all other tests passed.
 - Fix is limited to the coordinated pump: no source advancement without any
   buffered packet, allowing real ring content to drain into silent rebuffer.
-- Fixed-build verification is pending.
+- Fixed Actions 39392343378: 187/187 Swift tests passed, regression RED→GREEN, unsigned IPA archived; CodeQL 39392343011 passed. Desktop sender code is unchanged. Physical acceptance remains pending installation.
