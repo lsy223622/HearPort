@@ -1,5 +1,13 @@
 # HearPort 0.1.0 release checklist
 
+## Automatic-test startup candidate (2026-10-21)
+
+- [x] Matching source `ea1683110ccd80181d6205716bc35b163c8e95c4`: Windows Actions [39478078837](https://github.com/lsy223622/HearPort/actions/runs/39478078837), iPad Actions [39478078798](https://github.com/lsy223622/HearPort/actions/runs/39478078798), 24 CTest, 28 Python, 209 Swift checks, unsigned IPA build 180 and CodeQL passed.
+- [x] Archive hashes, matching source identities, 100 Windows file hashes and unsigned IPA packaging verified. Actions Windows package passed the local window check and was started.
+- [x] Local Windows Release, 24 CTest, 28 Python checks and real-window regression checks passed.
+- [ ] Install build 180; start a quick test from the home context menu with USB available and without USB. Check that stream readiness does not reject the request.
+- [ ] Check ordinary music startup, retained-report recovery, compact pairing and its blue Connect action, one Windows pairing action, and changing total log size beyond the 2,000-entry preview.
+
 ## Connection actions and repaint candidate (2026-10-21)
 
 - [x] Windows source `3e8543a8bcea881d7bfb066a5080c6f9932af8c0`: Actions [39473183485](https://github.com/lsy223622/HearPort/actions/runs/39473183485), 24 CTest, 28 Python checks and packaged GUI startup/clipping/order/unchanged-status checks passed.

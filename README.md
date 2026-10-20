@@ -71,6 +71,9 @@ file, three backups). Detailed logging increases this to approximately 128 MiB
 Detailed iPad logs include each recommendation observation, parameters and selection
 outcome for manual export. iPad export streams a fixed-length file snapshot
 in the background and includes current USB listener/forwarder status.
+The diagnostics page shows the recent in-memory preview count and the total
+size of retained log files. The 2,000-entry preview does not limit file logging
+or export; its displayed statistics refresh while the page is open.
 
 Diagnostics are stored locally. A log or exported report can contain network
 details such as a hostname, IP address, or port; review it before sharing.

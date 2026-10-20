@@ -10,6 +10,15 @@ including cable disconnect and reconnect; repeated playback/tests on weak
 2.4 GHz Wi-Fi. These observations do not establish a timed soak, lock-screen
 behavior, a clean-machine install, or final Release acceptance.
 
+## Automatic-test startup and diagnostic size display (2026-10-21)
+
+- Matching executable source `ea1683110ccd80181d6205716bc35b163c8e95c4`: Windows Actions [39478078837](https://github.com/lsy223622/HearPort/actions/runs/39478078837) passed 24 CTest, 28 Python checks and packaged GUI checks. iPad Actions [39478078798](https://github.com/lsy223622/HearPort/actions/runs/39478078798) passed 209 Swift tests and archived unsigned build 180. CodeQL [39478077872](https://github.com/lsy223622/HearPort/actions/runs/39478077872) passed.
+- Downloaded archive/IPA hashes, both source identities, IPA build/unsigned status and all 100 Windows packaged-file hashes verified. The downloaded Windows package passed the local startup/window checks and was launched for use.
+- The supplied build 179 device export contains over 500,000 records. Its 2,000-entry count describes the bounded in-memory preview, not file retention. The diagnostics page now labels that count explicitly, sums active and rotated file sizes and refreshes while open. Retention limits remain approximately 4 MiB normally and 128 MiB with detailed logging.
+- Normal audio readiness previously notified the UI after writing `ReceiverReady`, before an accepted `StartStreamAck` established the active stream ID required by a calibration request. Readiness now waits for both writes, in either order, and notifies once. Probe sessions do not require an audio stream acknowledgement. New gate tests cover both completion orders, probe readiness and reset for another connection; request outcomes are recorded in runtime logs.
+- Pairing uses the same narrow form presenter as settings/details, with a blue text Connect action. Windows uses one pairing action in the original right-hand position, selecting pair or unpair according to its saved credential.
+- Local Windows Release build, 24 CTest, 28 Python checks and real-window startup/clipping/order/unchanged-status checks passed. Physical acceptance remains pending installation of build 180: home-started tests, ordinary music startup, retained-report recovery, pairing form width/color and live diagnostic totals. The readiness tests exercise the shared gate; the iOS control-session path is archive-compiled, not a device handshake test.
+
 ## Connection actions and Windows painting (2026-10-21)
 
 - Windows executable source `3e8543a8bcea881d7bfb066a5080c6f9932af8c0`: Actions [39473183485](https://github.com/lsy223622/HearPort/actions/runs/39473183485), 24 CTest and 28 Python checks passed. The extracted release package also passed GUI startup, clipping, background order and unchanged-status invalidation checks.
