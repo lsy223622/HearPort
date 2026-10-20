@@ -77,13 +77,15 @@ extension USBPacketTunnelTests {
 
     func testStartReplacesAnIdleListenerThatNoLongerAcceptsConnections() throws {
         let parameters = NWParameters.tcp
-        parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: 52138)
+        parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: 52139)
         let original = try NWListener(using: parameters)
         var constructions = 0
         let tunnel = USBPacketTunnel(diagnostics: .shared, makeTCPListener: { parameters in
             constructions += 1
             if constructions == 1 { return original }
-            return try NWListener(using: parameters)
+            let isolated = NWParameters.tcp
+            isolated.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: 52139)
+            return try NWListener(using: isolated)
         })
         tunnel.start(); waitFor(original)
         original.cancel(); waitFor(original, cancelled: true)
@@ -97,7 +99,7 @@ extension USBPacketTunnelTests {
         for attempt in 0..<30 {
             clientQueue.asyncAfter(deadline: .now() + Double(attempt + 1) * 0.1) {
                 guard !stoppedClients else { return }
-                let client = NWConnection(host: "127.0.0.1", port: 52138, using: .tcp)
+                let client = NWConnection(host: "127.0.0.1", port: 52139, using: .tcp)
                 clients.append(client); client.start(queue: clientQueue)
             }
         }
