@@ -58,6 +58,11 @@ import SwiftUI
     @State private var calibrationNow: UInt64 = 0
     @State private var sendingReport = false
     @State private var canvasSheet: CanvasSheet?
+    @State private var calibrationTarget: ComputerConnectionTarget?
+    @State private var pendingCalibration: (goal: Int, seconds: Int, maximum: Int)?
+    @State private var completedAdaptiveConnection: UUID?
+    @State private var unpairTarget: ComputerConnectionTarget?
+    @AppStorage("hearport.keepScreenAwake") private var keepScreenAwake = false
     @State private var currentComputerName = ""
     @State private var currentComputerIdentity = ""
     @State private var calibrationRequestID: UUID?
@@ -73,7 +78,7 @@ import SwiftUI
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private enum CanvasSheet: String, Identifiable {
-        case settings, details, recommendations
+        case settings, details, recommendations, pairing
         var id: String { rawValue }
     }
 
@@ -107,11 +112,14 @@ import SwiftUI
                         case .settings: settingsView
                         case .details: connectionDetailsView
                         case .recommendations: calibrationResults
+                        case .pairing: connectionSetupView
                         }
                     }
                     .toolbar {
                         ToolbarItem(placement: .navigationBarTrailing) {
-                            Button("Done") { canvasSheet = nil }
+                            if sheet != .pairing {
+                                Button("Done") { canvasSheet = nil; pendingCalibration = nil; calibrationTarget = nil }
+                            }
                         }
                     }
                 }
@@ -137,6 +145,7 @@ import SwiftUI
                 if completedTestStatus == nil { showConnectionSearch() }
             }
             connectionManager.start()
+            updateIdleTimer()
             if control == nil {
                 status = Self.localize("Disconnected")
             }
@@ -185,7 +194,24 @@ import SwiftUI
             )
             refreshDiagnostics()
         }
+        .confirmationDialog("Unpair this PC?", isPresented: Binding(get: { unpairTarget != nil }, set: { if !$0 { unpairTarget = nil } }), titleVisibility: .visible) {
+            if let target = unpairTarget {
+                Button("Unpair", role: .destructive) { forgetComputer(target) }
+            }
+            Button("Cancel", role: .cancel) { unpairTarget = nil }
+        } message: {
+            Text(unpairTarget?.title ?? "")
+        }
+        .onChange(of: keepScreenAwake) { _ in updateIdleTimer() }
+        .onChange(of: testRunning) { _ in updateIdleTimer() }
+        .onChange(of: pendingCalibration != nil) { _ in updateIdleTimer() }
+        .onChange(of: canvasSheet) { sheet in
+            if sheet == nil && !isConnecting {
+                pendingCalibration = nil; calibrationTarget = nil
+            }
+        }
         .onChange(of: scenePhase) { phase in
+            updateIdleTimer()
             if phase == .active { connectionManager.resumeUSBDiscovery() }
             if phase == .background { control?.interruptCalibration() }
             if phase != .active { qualityTracker = LinkStabilityTracker(); linkSample = nil }
@@ -333,7 +359,7 @@ import SwiftUI
         if showsConnections {
             if connectionManager.hasUSB {
                 Label("USB available", systemImage: "cable.connector")
-                    .font(.subheadline).foregroundStyle(.teal)
+                    .font(.subheadline).foregroundStyle(.blue)
             }
         } else if presentationStage == .recovering {
             Label("Searching network and USB…", systemImage: "arrow.triangle.2.circlepath")
@@ -377,6 +403,17 @@ import SwiftUI
                     }
                     .frame(minHeight: 34).padding(20).background(canvasSurface).contentShape(Rectangle())
                 }.buttonStyle(.plain)
+                .contextMenu {
+                    Button {
+                        calibrationTarget = computer
+                        calibrationRunResult = nil
+                        canvasSheet = .recommendations
+                    } label: { Label("Automatic test and recommendations", systemImage: "slider.horizontal.3") }
+                    .disabled(!computer.hasNetwork)
+                    if hasRememberedCredential && connectionManager.isRemembered(computer.identity) {
+                        Button(role: .destructive) { unpairTarget = computer } label: { Label("Unpair", systemImage: "link") }
+                    }
+                }
             }
             if !lastHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !lastHostIsDiscovered {
                 Button {
@@ -431,7 +468,7 @@ import SwiftUI
 
     private func selectConnection(_ endpoint: ConnectionEndpoint) {
         selectedEndpoint = endpoint
-        if hasRememberedCredential { authMode = .remembered; connect(selected: endpoint) }
+        if hasRememberedCredential && (endpoint.identity == nil || connectionManager.isRemembered(endpoint.identity)) { authMode = .remembered; connect(selected: endpoint) }
         else {
             if endpoint.path == .network { host = endpoint.host }
             authMode = .pair; showingConnectionSetup = true
@@ -456,7 +493,7 @@ import SwiftUI
                                 .font(.headline)
                         }
                         ProgressView(value: min(Double(round.seconds), roundElapsed), total: Double(round.seconds))
-                            .tint(.teal)
+                            .tint(.hearPortGreen)
                         Text(round.isCompressionTest
                             ? String(format: Self.localize("Round remaining %.0f s"),
                                      max(0, Double(round.seconds) - roundElapsed))
@@ -496,10 +533,10 @@ import SwiftUI
             Label("Playback settings", systemImage: "slider.horizontal.3").frame(minHeight: 44)
         }
         .disabled(presentationStage == .reporting)
-        Spacer(minLength: 0)
         Button { canvasSheet = .details } label: {
             Label("Connection details", systemImage: "info.circle").frame(minHeight: 44)
         }
+        Spacer(minLength: 0)
         Button("Disconnect", role: .destructive) { disconnect() }
             .frame(minHeight: 44)
 
@@ -539,11 +576,11 @@ import SwiftUI
             }
             Section("Connection method") {
                 Picker("Authentication", selection: $authMode) {
-                    if hasRememberedCredential && (host == rememberedHost || connectionManager.hasUSB || !connectionManager.endpoints.isEmpty) {
+                    if pendingCalibration == nil && hasRememberedCredential && (host == rememberedHost || connectionManager.hasUSB || !connectionManager.endpoints.isEmpty) {
                         Text("Remembered").tag(AuthMode.remembered)
                     }
                     Text("Pair and remember").tag(AuthMode.pair)
-                    Text("One-time").tag(AuthMode.oneTime)
+                    if pendingCalibration == nil { Text("One-time").tag(AuthMode.oneTime) }
                 }
                 if authMode != .remembered {
                     TextField("6-digit PIN", text: $pin)
@@ -557,6 +594,7 @@ import SwiftUI
                 Button("Connect") {
                     connect(selected: selectedEndpoint)
                     showingConnectionSetup = false
+                    if canvasSheet == .pairing { canvasSheet = nil }
                 }
                 .disabled((host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && connectionManager.endpoints.isEmpty) ||
                           (authMode != .remembered && !PairingSecurity.validatePIN(pin)))
@@ -566,7 +604,7 @@ import SwiftUI
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
-                Button("Done") { showingConnectionSetup = false }
+                Button("Done") { showingConnectionSetup = false; if canvasSheet == .pairing { canvasSheet = nil; pendingCalibration = nil; calibrationTarget = nil } }
             }
         }
     }
@@ -654,7 +692,7 @@ import SwiftUI
                 Text("\(p.reliable ? "Reliable" : "Datagram") · \(p.budget.target)/\(p.budget.maximum) ms")
             }
             let remaining = progress.remainingRoundSeconds(at: calibrationNow)
-            ProgressView(value: Double(progress.seconds - remaining), total: Double(progress.seconds)).tint(.teal)
+            ProgressView(value: Double(progress.seconds - remaining), total: Double(progress.seconds)).tint(.hearPortGreen)
             if progress.roundStartedAt == 0 { Text("Waiting for test traffic…") }
             else if remaining > 0 { Text("This round: \(remaining) seconds remaining").monospacedDigit() }
             else { Text("Evaluating this observation and choosing the next step…") }
@@ -676,10 +714,10 @@ import SwiftUI
         } else if progress.stage == "analyzing" {
             Text("Analyzing recommendations").font(.headline)
             if progress.total > 0 {
-                ProgressView(value: Double(progress.completed), total: Double(progress.total)).tint(.teal)
+                ProgressView(value: Double(progress.completed), total: Double(progress.total)).tint(.hearPortGreen)
                 Text("Compared \(progress.completed) / \(progress.total) candidates")
                     .font(.caption).foregroundStyle(.secondary).monospacedDigit()
-            } else { ProgressView() }
+            } else { ProgressView().tint(.hearPortGreen) }
             Text("Validation rounds will be selected after analysis.").font(.footnote).foregroundStyle(.secondary)
         } else if progress.stage == "interrupted" {
             Text("Calibration interrupted")
@@ -687,7 +725,7 @@ import SwiftUI
             let remaining = progress.remainingRoundSeconds(at: calibrationNow)
             Text(progress.stage == "validation" ? "Validating recommendations" : "Sampling network").font(.headline)
             Text("Round \(progress.phaseIndex) / \(progress.phaseCount)").font(.subheadline)
-            ProgressView(value: Double(progress.seconds - remaining), total: Double(progress.seconds)).tint(.teal)
+            ProgressView(value: Double(progress.seconds - remaining), total: Double(progress.seconds)).tint(.hearPortGreen)
             if remaining > 0 {
                 Text("This round: \(remaining) seconds remaining").monospacedDigit()
             } else { Text("Finishing this round and draining queued data…") }
@@ -706,16 +744,35 @@ import SwiftUI
         } else { Text("Starting calibration…") }
     }
 
-    private var canStartCalibration: Bool {
+    private var canSendCalibration: Bool {
         hasRememberedCredential && authMode == .remembered && connectionEstablished &&
-            !isConnecting && audioOutput != nil && !testRunning && !sendingReport &&
+            control != nil && !isConnecting && !testRunning && !sendingReport &&
             completedTestStatus == nil && (activePath == .network || connectionManager.computers.contains {
                 $0.identity == currentComputerIdentity && $0.hasNetwork
             })
     }
+    private var canStartCalibration: Bool {
+        canSendCalibration || (calibrationTarget?.hasNetwork == true && pendingCalibration == nil && !testRunning)
+    }
 
     private func startCalibration(goal: Int, seconds: Int, maximum: Int) {
-        guard canStartCalibration, let control else { return }
+        guard canStartCalibration else { return }
+        if !canSendCalibration {
+            guard let target = calibrationTarget else { return }
+            pendingCalibration = (goal, seconds, maximum)
+            selectedEndpoint = target.preferredEndpoint
+            if hasRememberedCredential && connectionManager.isRemembered(target.identity) {
+                authMode = .remembered; canvasSheet = nil
+                connect(selected: target.preferredEndpoint)
+            } else {
+                authMode = .pair; pin = ""
+                if target.preferredEndpoint.path == .network { host = target.preferredEndpoint.host }
+                canvasSheet = .pairing
+            }
+            return
+        }
+        guard let control else { return }
+        completedAdaptiveConnection = nil
         let id = UUID()
         calibrationRequestID = id; calibrationStartStatus = nil
         adaptiveRunResult = nil; calibrationRunResult = nil; calibrationProgress = nil
@@ -727,6 +784,7 @@ import SwiftUI
                 else {
                     calibrationRequestID = nil; testRunning = false
                     calibrationStartStatus = Self.localize("Could not start calibration. Reconnect and try again.")
+                    if audioOutput == nil && connectionEstablished { control.onReady?() }
                 }
             }
         }
@@ -735,6 +793,7 @@ import SwiftUI
             calibrationRequestID = nil; testRunning = false
             calibrationStartStatus = Self.localize("The PC did not start calibration. Reconnect and try again.")
             status = calibrationStartStatus ?? Self.localize("Connection failed")
+            if audioOutput == nil && connectionEstablished { control.onReady?() }
         }
     }
 
@@ -744,6 +803,7 @@ import SwiftUI
             Section {
                 Toggle("Connect on launch", isOn: $autoConnect)
                     .tint(.green)
+                Toggle("Keep screen awake", isOn: $keepScreenAwake).tint(.green)
             } header: {
                 Text("Connection")
             } footer: {
@@ -832,6 +892,7 @@ import SwiftUI
             status = Self.localize("Enter the 6-digit PIN shown on Windows"); return
         }
         completedTestStatus = nil; connectionError = nil
+        completedAdaptiveConnection = nil
         adaptiveRunResult = nil; calibrationRunResult = nil; calibrationProgress = nil
         sendingReport = false; retainingConnection = false
         calibrationRequestID = nil; calibrationStartStatus = nil
@@ -930,7 +991,8 @@ import SwiftUI
                     calibrationRequestID = nil; calibrationStartStatus = nil
                 }
                 qualityTracker = LinkStabilityTracker(); linkSample = nil; musicRound = nil; testRunning = false
-                calibrationProgress = nil; calibrationRunResult = nil; adaptiveRunResult = nil
+                calibrationProgress = nil
+                if completedAdaptiveConnection == nil { calibrationRunResult = nil; adaptiveRunResult = nil }
                 connectionEstablished = false; connectionError = nil; completedTestStatus = nil
                 activeAudioMode = audioMode; activeBufferTargetPackets = normalizedJitter.targetPackets
                 activeTargetLatencyMs = target; activeMaximumLatencyMs = maximum
@@ -943,6 +1005,15 @@ import SwiftUI
         }
         session.onSessionEnded = { reason in
             DispatchQueue.main.async {
+                if completedAdaptiveConnection == id {
+                    if connectionID == id {
+                        control?.cancel(); control = nil
+                        try? audioOutput?.stop(); audioOutput = nil
+                    }
+                    connectionManager.ended(id)
+                    if connectionManager.isWaiting { showConnectionSearch() }
+                    return
+                }
                 guard connectionID == id || (reason == 1 && authenticatedIdentity.map { connectionManager.acceptsStop(from: $0) } == true) else { return }
                 if reason == 1 {
                     if calibrationRequestID != nil {
@@ -978,9 +1049,10 @@ import SwiftUI
                 guard connectionID == activeConnectionID else { return }
                 adaptiveRunResult = result
                 if result.canApply { adaptiveResult = result }
-                connectionManager.completed()
-                completedTestStatus = Self.localize(result.canApply ? "Recommendations are ready to apply." :
-                    "Validation did not confirm the goal; test again when conditions settle.")
+                completedAdaptiveConnection = activeConnectionID
+                connectionManager.resumeAfterTest()
+                completedTestStatus = nil
+                calibrationRequestID = nil
                 testCompletedNormally = result.complete
                 testRunning = false; isConnecting = false; sendingReport = false
                 canvasSheet = .recommendations
@@ -1083,6 +1155,11 @@ import SwiftUI
                     refreshDiagnostics()
                     return
                 }
+                if let request = pendingCalibration {
+                    pendingCalibration = nil
+                    startCalibration(goal: request.goal, seconds: request.seconds, maximum: request.maximum)
+                    return
+                }
                 do {
                     let output = PlatformAudioOutputController(receiver: activeReceiver)
                     try output.start()
@@ -1159,7 +1236,30 @@ import SwiftUI
         status = Self.localize("Searching network and USB…")
     }
 
+    private func updateIdleTimer() {
+        UIApplication.shared.isIdleTimerDisabled = scenePhase == .active &&
+            (keepScreenAwake || testRunning || pendingCalibration != nil)
+    }
+
+    private func forgetComputer(_ target: ComputerConnectionTarget) {
+        guard connectionManager.isRemembered(target.identity) else { return }
+        unpairTarget = nil
+        do {
+            try KeychainRememberedCredentialStore().remove()
+            disconnect()
+            hasRememberedCredential = false; authMode = .pair; pin = ""
+            rememberedHost = ""
+            connectionManager.setRememberedIdentity(nil)
+            diagnostics.log(.info, category: .pairing, message: "pairing_removed")
+        } catch {
+            connectionError = Self.localize("Could not remove the saved pairing.")
+            status = connectionError ?? Self.localize("Connection failed")
+        }
+    }
+
     private func disconnect() {
+        pendingCalibration = nil; calibrationTarget = nil
+        completedAdaptiveConnection = nil
         control?.end(reason: 1)
         connectionManager.stop()
         let hadActiveSession = control != nil || audioOutput != nil

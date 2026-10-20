@@ -1,9 +1,24 @@
 #include "hearport/windows/live_audio_encoder.h"
 #include "HearPortOpusBridge.h"
 #include <cassert>
+#include "hearport/windows/sender_service.h"
 
 int main() {
   using hearport::windows::LiveAudioEncoder;
+  hearport::windows::SenderService service({});
+  hearport::wire::ControlEnvelope setup{};
+  setup.audio_codec = 1; setup.audio_bitrate = 192000; setup.audio_frame_count = 480;
+  setup.maximum_ms = 150; setup.output_reserve_ms = 11;
+  assert(service.ConfigureAudioFormat(setup));
+  auto format = service.audio_format();
+  assert(format.opus && format.bitrate == 192000 && format.frames == 480);
+  setup.maximum_ms = 10;
+  assert(!service.ConfigureAudioFormat(setup));
+  assert(service.audio_format().frames == 480);
+  setup.audio_codec = 0; setup.audio_bitrate = 0; setup.audio_frame_count = 120;
+  assert(service.ConfigureAudioFormat(setup));
+  format = service.audio_format();
+  assert(!format.opus && format.bitrate == 3072000 && format.frames == 120);
   for (auto frames : {120u, 240u, 480u}) {
     LiveAudioEncoder encoder;
     assert(encoder.Configure(256000, frames));

@@ -1,6 +1,8 @@
 #if canImport(SwiftUI) && os(iOS)
 import SwiftUI
 
+extension Color { static let hearPortGreen = Color(red: 30.0 / 255, green: 210.0 / 255, blue: 167.0 / 255) }
+
 struct ConnectionStatusSymbol: View {
     let connected: Bool
     let path: ConnectionPath
@@ -110,7 +112,7 @@ extension LinkStability {
     func color(for path: ConnectionPath) -> Color {
         switch self {
         case .unknown: return .secondary
-        case .stable: return path == .usb ? .blue : Color(red: 30.0 / 255, green: 210.0 / 255, blue: 167.0 / 255)
+        case .stable: return path == .usb ? .blue : .hearPortGreen
         case .variable: return .orange
         case .poor: return .red
         }

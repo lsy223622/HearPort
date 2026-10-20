@@ -66,6 +66,7 @@ constexpr int kMusicFile = 114;
 constexpr int kMusicTest = 115;
 constexpr int kCalibrationResults = 116;
 constexpr int kDetailedLogging = 117;
+constexpr int kForgetPairing = 118;
 constexpr int kTrayOpen = 201;
 constexpr int kTrayExit = 202;
 
@@ -73,6 +74,17 @@ std::wstring Tr(const wchar_t* english, const wchar_t* chinese) {
   return PRIMARYLANGID(GetUserDefaultUILanguage()) == LANG_CHINESE
              ? chinese
              : english;
+}
+
+void SetTextIfChanged(HWND control, const wchar_t* text) {
+  const int length = GetWindowTextLengthW(control);
+  if (length == static_cast<int>(wcslen(text))) {
+    std::wstring current(static_cast<std::size_t>(length) + 1, L'\0');
+    GetWindowTextW(control, current.data(), length + 1);
+    current.resize(static_cast<std::size_t>(length));
+    if (current == text) return;
+  }
+  SetWindowTextW(control, text);
 }
 
 std::wstring ExecutablePath() {
@@ -248,7 +260,7 @@ class Application {
     dpi_ = initial_dpi;
     hwnd_ = CreateWindowExW(WS_EX_DLGMODALFRAME, kWindowClass, L"HearPort",
                             WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU |
-                                WS_MINIMIZEBOX,
+                                WS_MINIMIZEBOX | WS_CLIPCHILDREN,
                             CW_USEDEFAULT, CW_USEDEFAULT,
                             MulDiv(520, initial_dpi, 96),
                             MulDiv(500, initial_dpi, 96), nullptr, nullptr,
@@ -271,7 +283,7 @@ class Application {
   HWND Control(int page, const wchar_t* kind, const std::wstring& label,
                DWORD style, int id = 0) {
     HWND control = CreateWindowExW(
-        0, kind, label.c_str(), WS_CHILD | style, 0, 0, 0, 0, hwnd_,
+        0, kind, label.c_str(), WS_CHILD | WS_CLIPSIBLINGS | style, 0, 0, 0, 0, hwnd_,
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), instance_, nullptr);
     if (control) {
       pages_[page].push_back(control);
@@ -282,7 +294,7 @@ class Application {
 
   HWND Group(int page, const std::wstring& label) {
     HWND group = CreateWindowExW(0, L"BUTTON", label.c_str(),
-                                  WS_CHILD | BS_GROUPBOX, 0, 0, 0, 0, hwnd_,
+                                  WS_CHILD | WS_CLIPSIBLINGS | BS_GROUPBOX, 0, 0, 0, 0, hwnd_,
                                   nullptr, instance_, nullptr);
     if (group) {
       groups_[page].push_back(group);
@@ -326,6 +338,7 @@ class Application {
   void PaintGroup(HWND group, HDC context) {
     RECT bounds{};
     GetClientRect(group, &bounds);
+    FillRect(context, &bounds, dark_ ? page_brush_ : GetSysColorBrush(COLOR_WINDOW));
     wchar_t label[128]{};
     GetWindowTextW(group, label, ARRAYSIZE(label));
     HFONT previous_font = reinterpret_cast<HFONT>(
@@ -571,6 +584,7 @@ class Application {
     Control(0, L"BUTTON", Tr(L"Pair new iPad", L"配对新 iPad"),
             WS_TABSTOP | BS_PUSHBUTTON, kPair);
     toggle_ = Control(0, L"BUTTON", L"", WS_TABSTOP | BS_PUSHBUTTON, kToggle);
+    forget_pairing_ = Control(0, L"BUTTON", Tr(L"Unpair iPad", L"取消配对"), WS_TABSTOP | BS_PUSHBUTTON, kForgetPairing);
 
     Control(1, L"BUTTON", Tr(L"Live diagnostics…", L"实时诊断…"), WS_TABSTOP | BS_PUSHBUTTON, kDiagnostics);
     Control(1, L"BUTTON", Tr(L"Network test…", L"网络测试…"), WS_TABSTOP | BS_PUSHBUTTON, kNetworkProbe);
@@ -590,7 +604,7 @@ class Application {
     Control(2, L"STATIC", Tr(L"Listening UDP port", L"监听 UDP 端口"),
             SS_LEFT | SS_CENTERIMAGE, 0);
     port_frame_ = CreateWindowExW(WS_EX_CONTROLPARENT, L"STATIC", L"",
-                                  WS_CHILD | WS_CLIPCHILDREN | SS_NOTIFY,
+                                  WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS | SS_NOTIFY,
                                   0, 0, 0, 0,
                                   hwnd_, nullptr, instance_, nullptr);
     if (port_frame_) {
@@ -638,12 +652,16 @@ class Application {
     SendMessageW(footer_exit_, WM_SETFONT,
                  reinterpret_cast<WPARAM>(font_), TRUE);
     if (groups_[0].size() != 3 || groups_[1].size() != 2 ||
-        groups_[2].size() != 2 || pages_[0].size() != 8 ||
+        groups_[2].size() != 2 || pages_[0].size() != 9 ||
         pages_[1].size() != 11 || pages_[2].size() != 7 ||
         !port_frame_ || !port_edit_ || !footer_close_ || !footer_exit_) {
       return false;
     }
 
+    // Background painters must stay behind content; each owns its own pixels.
+    for (auto& page : groups_) for (HWND group : page)
+      SetWindowPos(group, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    SetWindowPos(tabs_, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     SelectPage(0);
     Layout();
     UpdateStatus();
@@ -677,6 +695,7 @@ class Application {
     Place(overview[5], 44, 312, group_width - 24, 45);
     Place(overview[6], width - 162, 359, 118, 29);
     Place(overview[7], width - 162, 108, 118, 29);
+    Place(overview[8], 44, 359, 118, 29);
 
     auto& diagnostics = pages_[1];
     const int column = (group_width - 40) / 3;
@@ -705,6 +724,8 @@ class Application {
   }
 
   void SelectPage(int page) {
+    if (page == current_page_) return;
+    current_page_ = page;
     for (int index = 0; index < 3; ++index) {
       for (HWND group : groups_[index]) {
         ShowWindow(group, index == page ? SW_SHOW : SW_HIDE);
@@ -957,8 +978,13 @@ class Application {
                        L"仅传输测试数据，不发送音频。");
     } else if (running_ && connected_) {
       heading = usb_connected_ ? Tr(L"iPad connected via USB", L"iPad 已通过 USB 连接") : Tr(L"iPad connected via network", L"iPad 已通过网络连接");
-      detail = reliable_ ? Tr(L"Audio: reliable stream", L"音频：稳定性模式")
-                         : Tr(L"Audio: low latency", L"音频：低延迟模式");
+      if (service_) {
+        const auto format = service_->audio_format();
+        std::wostringstream description;
+        description << Tr(L"Audio: ", L"音频：") << (format.opus ? L"Opus" : L"PCM")
+                    << L" · " << format.bitrate / 1000 << L" kb/s · " << format.frames / 48.0 << L" ms";
+        detail = description.str();
+      }
     } else if (running_ && completed_test_) {
       heading = completed_test_ == kMusicTest
           ? Tr(L"Music compression test complete · 32/32", L"音乐压缩对比已完成 · 32/32")
@@ -980,14 +1006,14 @@ class Application {
                         L"启动后，这台电脑即可供 iPad 连接。")
                    : error_;
     }
-    SetWindowTextW(status_, heading.c_str());
-    SetWindowTextW(status_detail_, detail.c_str());
-    SetWindowTextW(audio_, audio_label.c_str());
+    SetTextIfChanged(status_, heading.c_str());
+    SetTextIfChanged(status_detail_, detail.c_str());
+    SetTextIfChanged(audio_, audio_label.c_str());
     std::wstring toggle = running_ ? Tr(L"Stop sender", L"停止发送服务")
                                    : Tr(L"Start sender", L"启动发送服务");
-    SetWindowTextW(toggle_, toggle.c_str());
+    SetTextIfChanged(toggle_, toggle.c_str());
     if (pages_[0].size() > 6) EnableWindow(pages_[0][6], running_ && !connected_);
-    SetWindowTextW(certificate_,
+    SetTextIfChanged(certificate_,
                    certificate_ready_
                        ? Tr(L"Secure connection: certificate ready",
                             L"安全连接：证书已自动配置").c_str()
@@ -995,7 +1021,7 @@ class Application {
                             L"安全连接：正在准备证书").c_str());
     const std::wstring port_text = Tr(L"Listening port: UDP ", L"监听端口：UDP ") +
                                    std::to_wstring(port_);
-    SetWindowTextW(listen_port_, port_text.c_str());
+    SetTextIfChanged(listen_port_, port_text.c_str());
     if (pin_expires_ && Clock::now() >= *pin_expires_) pin_expires_.reset();
     if (pin_expires_) {
       const auto seconds = std::chrono::ceil<std::chrono::seconds>(
@@ -1008,7 +1034,7 @@ class Application {
       const std::wstring label = Tr(L"Pairing PIN: ", L"配对码：") +
                                  digits.substr(0, 3) + L" " + digits.substr(3) +
                                  Tr(L"  ·  Time left ", L"  ·  剩余 ") + countdown;
-      SetWindowTextW(pin_, label.c_str());
+      SetTextIfChanged(pin_, label.c_str());
     }
     if (!pin_expires_) {
       const std::wstring pairing_hint =
@@ -1018,9 +1044,24 @@ class Application {
                                       L"当前有 iPad 已连接。")
                                  : Tr(L"Choose Pair new iPad to show a code.",
                                       L"点击“配对新 iPad”显示配对码。");
-      SetWindowTextW(pin_, pairing_hint.c_str());
+      SetTextIfChanged(pin_, pairing_hint.c_str());
     }
-    InvalidateRect(status_, nullptr, TRUE);
+    EnableWindow(forget_pairing_, paired_);
+  }
+
+  void ForgetPairing() {
+    if (MessageBoxW(hwnd_, Tr(L"Unpair this iPad and end the current connection?", L"取消与 iPad 的配对并结束当前连接？").c_str(),
+                    L"HearPort", MB_YESNO | MB_ICONQUESTION) != IDYES) return;
+    const bool restart = running_;
+    StopService();
+    if (!hearport::windows::ProtectedCredentialStore{}.Remove()) {
+      if (restart) StartService();
+      MessageBoxW(hwnd_, Tr(L"Could not remove the saved pairing.", L"无法删除保存的配对。").c_str(), L"HearPort", MB_OK | MB_ICONERROR);
+      return;
+    }
+    paired_ = false;
+    if (restart) { StartService(); OpenPairing(); }
+    UpdateStatus();
   }
 
   void StartService(std::optional<std::chrono::seconds> diagnostics = std::nullopt,
@@ -1029,6 +1070,7 @@ class Application {
                     bool calibration = false) {
     if (running_) return;
     error_.clear();
+    paired_ = hearport::windows::ProtectedCredentialStore{}.Load().has_value();
     if (data_dir_.empty()) {
       error_ = Tr(L"Cannot find the local data folder.",
                   L"无法找到本地数据文件夹。");
@@ -1092,7 +1134,6 @@ class Application {
     running_ = true;
     completed_test_ = 0;
     connected_ = false;
-    reliable_ = false;
     diagnostic_duration_ = service_->debug_duration();
     network_probe_active_ = network_probe;
     music_test_active_ = music.has_value();
@@ -1128,7 +1169,6 @@ class Application {
     }
     running_ = false;
     connected_ = false;
-    reliable_ = false;
     diagnostic_duration_.reset();
     network_probe_active_ = false;
     music_test_active_ = false;
@@ -1525,8 +1565,6 @@ class Application {
                      (local_calibration ? Tr(L"Automatic test completed; results are available on iPad.",L"自动测试已完成；结果在 iPad 上查看和应用。") : Tr(L"Diagnostic report saved in the report folder.",
                         L"诊断报告已保存到报告文件夹。"))
                          .c_str());
-      RedrawWindow(hwnd_, nullptr, nullptr,
-                   RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
       StopService();
       StartService();
       completed_test_ = running_ && succeeded && !local_calibration ? completed_test : 0;
@@ -1586,10 +1624,10 @@ class Application {
         return 0;
       case kConnectionMessage:
         connected_ = wparam != 0;
-        reliable_ = (lparam & 1) != 0;
         usb_connected_ = (lparam & 2) != 0;
         if (host_) service_ = &host_->service();
         if (connected_) {
+          paired_ = hearport::windows::ProtectedCredentialStore{}.Load().has_value();
           pin_expires_.reset();
         }
         UpdateStatus();
@@ -1624,20 +1662,6 @@ class Application {
         GetClientRect(hwnd_, &client);
         FillRect(reinterpret_cast<HDC>(wparam), &client,
                  dark_ ? dark_brush_ : GetSysColorBrush(COLOR_BTNFACE));
-        if (tabs_) {
-          RECT tab_bounds{};
-          RECT first_tab{};
-          GetWindowRect(tabs_, &tab_bounds);
-          MapWindowPoints(nullptr, hwnd_,
-                          reinterpret_cast<POINT*>(&tab_bounds), 2);
-          if (TabCtrl_GetItemRect(tabs_, 0, &first_tab)) {
-            RECT page{tab_bounds.left,
-                      tab_bounds.top + first_tab.bottom - 1,
-                      tab_bounds.right, tab_bounds.bottom};
-            FillRect(reinterpret_cast<HDC>(wparam), &page,
-                     dark_ ? page_brush_ : GetSysColorBrush(COLOR_WINDOW));
-          }
-        }
         return 1;
       }
       case WM_NOTIFY:
@@ -1675,6 +1699,7 @@ class Application {
           case kLog: OpenPath(data_dir_ / L"HearPort-sender.log"); break;
           case kReports: OpenPath(data_dir_ / L"diagnostics"); break;
           case kCalibrationResults: ShowCalibrationResults(); break;
+          case kForgetPairing: ForgetPairing(); break;
           case kDetailedLogging:
             logger_.SetDetailedLogging(SendMessageW(detailed_logging_, BM_GETCHECK, 0, 0) == BST_CHECKED);
             break;
@@ -1778,6 +1803,9 @@ class Application {
   HWND listen_port_ = nullptr;
   HWND pin_ = nullptr;
   HWND toggle_ = nullptr;
+  int current_page_ = -1;
+  bool paired_ = false;
+  HWND forget_pairing_ = nullptr;
   HWND diagnostic_status_ = nullptr;
   HWND detailed_logging_ = nullptr;
   HWND certificate_ = nullptr;
@@ -1803,7 +1831,6 @@ class Application {
   bool start_hidden_ = false;
   bool running_ = false;
   bool connected_ = false;
-  bool reliable_ = false;
   bool usb_connected_ = false;
   bool certificate_ready_ = false;
   bool tray_ready_ = false;

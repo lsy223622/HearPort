@@ -396,3 +396,11 @@
 "Test segment duration" = "每段测试时长";
 
 "Encoding" = "编码";
+
+"Keep screen awake" = "保持亮屏";
+
+"Unpair" = "取消配对";
+
+"Unpair this PC?" = "取消与这台电脑的配对？";
+
+"Could not remove the saved pairing." = "无法删除保存的配对。";

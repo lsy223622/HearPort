@@ -1051,6 +1051,11 @@ void SenderService::ConfigureReliableAudio(bool enabled) {
   reliable_generation_ = 0;
 }
 
+SenderService::AudioFormat SenderService::audio_format() const {
+  std::lock_guard lock(audio_send_mutex_);
+  return negotiated_format_;
+}
+
 bool SenderService::ConfigureAudioFormat(wire::ControlEnvelope& setup) {
   std::lock_guard lock(audio_send_mutex_);
   if (!live_encoder_.Configure(setup.audio_codec ? setup.audio_bitrate : 0,
@@ -1059,6 +1064,8 @@ bool SenderService::ConfigureAudioFormat(wire::ControlEnvelope& setup) {
       2 + setup.output_reserve_ms >= setup.maximum_ms) return false;
   live_opus_.store(setup.audio_codec != 0);
   setup.codec_lookahead_frames = live_encoder_.lookahead();
+  negotiated_format_ = {setup.audio_codec != 0, setup.audio_codec ? setup.audio_bitrate : 3072000,
+                        setup.audio_frame_count ? setup.audio_frame_count : 120};
   LogDiagnostic("audio_format codec=" + std::string(setup.audio_codec ? "opus" : "pcm") +
       " bitrate=" + std::to_string(setup.audio_bitrate) +
       " frame_count=" + std::to_string(setup.audio_frame_count ? setup.audio_frame_count : 120) +
