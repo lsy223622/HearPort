@@ -185,6 +185,12 @@ bool ValidateEnvelope(const ControlEnvelope& envelope) noexcept {
              envelope.stream_id != 0 && !envelope.bytes1.empty() && envelope.bytes1.size() <= 2048;
     case ControlMessageType::audio_setup:
       return NoControlHeaderFields(envelope) && NoDiagnosticFields(envelope) &&
+             ((envelope.audio_codec == 0 && envelope.audio_bitrate == 0 &&
+               envelope.audio_frame_count == 0 && envelope.codec_lookahead_frames == 0) ||
+              (envelope.audio_codec == 1 &&
+               (envelope.audio_bitrate == 192000 || envelope.audio_bitrate == 256000) &&
+               (envelope.audio_frame_count == 120 || envelope.audio_frame_count == 240 ||
+                envelope.audio_frame_count == 480) && envelope.codec_lookahead_frames <= 960)) &&
              envelope.stream_id != 0 && envelope.maximum_ms <= 2000 &&
              envelope.target_ms > envelope.output_reserve_ms &&
              envelope.maximum_ms >= envelope.target_ms;
@@ -588,7 +594,13 @@ bool ParseCoordinated(std::span<const std::byte> bytes,
       else if (!reader.Skip(wire)) return false;
       continue;
     }
-    if (wire != 0 || field > 4) {
+    if (envelope.type == ControlMessageType::audio_setup && field >= 5 && field <= 8 && wire == 0) {
+      auto* value = field == 5 ? &envelope.audio_codec : field == 6 ? &envelope.audio_bitrate :
+                    field == 7 ? &envelope.audio_frame_count : &envelope.codec_lookahead_frames;
+      if (!reader.ReadVarint(*value)) return false;
+      continue;
+    }
+    if (wire != 0 || field == 0 || field > 4) {
       if (!reader.Skip(wire)) return false;
       continue;
     }
@@ -640,6 +652,12 @@ std::vector<std::byte> EncodeControlEnvelope(const ControlEnvelope& envelope) {
       scalar(2, envelope.target_ms);
       scalar(3, envelope.maximum_ms);
       scalar(4, envelope.output_reserve_ms);
+      if (envelope.audio_codec != 0) {
+        scalar(5, envelope.audio_codec);
+        scalar(6, envelope.audio_bitrate);
+        scalar(7, envelope.audio_frame_count);
+        if (envelope.codec_lookahead_frames) scalar(8, envelope.codec_lookahead_frames);
+      }
       break;
     case ControlMessageType::clock_request:
     case ControlMessageType::clock_response:

@@ -24,6 +24,8 @@ public final class HearPortReceiver {
     private var playoutController: PlayoutController?
     private var reliableSourceFloor: UInt64 = 0
     private var compressionMusicDecoder: CompressionMusicDecoder?
+    private var liveAudioDecoder: LiveAudioDecoder?
+    private var liveAudioEpoch: UInt64 = 0
     private var compressionMusicRound: MusicTestRound?
     private var compressionSourceCoverage: CompressionSourceCoverage?
     private var compressionExpiredFramesAtStart: UInt64 = 0
@@ -162,6 +164,7 @@ public final class HearPortReceiver {
     }
 
     public func resetForConnection() {
+        stopLiveAudio()
         endMusicRound(reason: "connection_reset")
         lock.lock()
         session.resetForConnection()
@@ -197,6 +200,7 @@ public final class HearPortReceiver {
 
     @discardableResult
     public func beginStream(_ streamID: UInt32) -> Bool {
+        stopLiveAudio()
         endMusicRound(reason: "stream_replaced")
         lock.lock()
         let accepted = session.beginStream(streamID)
@@ -279,6 +283,43 @@ public final class HearPortReceiver {
         lock.lock()
         defer { lock.unlock() }
         return lastReceivedSequence
+    }
+
+    private func stopLiveAudio() {
+        compressionAdmissionLock.lock()
+        lock.lock()
+        let previous = liveAudioDecoder
+        liveAudioDecoder = nil; liveAudioEpoch &+= 1
+        lock.unlock(); compressionAdmissionLock.unlock()
+        previous?.stop()
+    }
+
+    func configureLiveAudio(streamID: UInt32, format: AudioStreamFormat, budget: PlayoutBudget) throws {
+        stopLiveAudio()
+        guard format.opus else { return }
+        lock.lock(); let epoch = liveAudioEpoch; lock.unlock()
+        let decoder = try LiveAudioDecoder(format: format, streamID: streamID, budget: budget) { [weak self] record in
+            guard let self else { return }
+            self.compressionAdmissionLock.lock()
+            defer { self.compressionAdmissionLock.unlock() }
+            self.lock.lock()
+            let current = self.liveAudioEpoch == epoch && self.session.activeStreamID == streamID
+            self.lock.unlock()
+            if current { _ = self.receiveTimedRecord(record) }
+        }
+        lock.lock(); liveAudioDecoder = decoder; lock.unlock()
+    }
+
+    func receiveLiveRecord(_ record: TimedAudioRecord) {
+        let at = DispatchTime.now().uptimeNanoseconds
+        lock.lock(); let decoder = liveAudioDecoder; lock.unlock()
+        guard let decoder, decoder.valid(record), let mapped = mappedCapture(record, at: at) else { return }
+        lock.lock()
+        if liveAudioDecoder === decoder, session.activeStreamID == record.streamID {
+            playoutController?.observeArrival(sourceFrame: record.sourceFrame, capturedAt: mapped.0, receivedAt: at)
+        }
+        lock.unlock()
+        decoder.receive(record, captured: mapped.0, uncertainty: mapped.1)
     }
 
     public func configurePlayout(_ budget: PlayoutBudget) {
@@ -584,7 +625,7 @@ public final class HearPortReceiver {
                         clockMapping.uncertainty(at: receivedAt, remoteNanoseconds: timedRecord.capturedAt))
                     if sourceAnchor == nil { sourceAnchor = (packet.sequence, timedRecord.sourceFrame) }
                 }
-                if compressionMusicRound == nil,
+                if compressionMusicRound == nil && liveAudioDecoder == nil,
                    insertResult == .inserted || insertResult == .late, let timedRecord, let captured {
                     playoutController?.observeArrival(sourceFrame: timedRecord.sourceFrame,
                         capturedAt: captured, receivedAt: receivedAt, original: timedRecord.kind == .audio)
@@ -799,7 +840,8 @@ public final class HearPortReceiver {
             uncertaintyNanoseconds: clockMapping.uncertainty(at: now),
             hasFuturePacket: jitter?.hasFuturePacket == true,
             minimumBufferMilliseconds: Double(request) / 48 + 6) else { return }
-        let target = max(1, Int(ceil(decision.bufferTargetMilliseconds / 2.5)))
+        let target = jitter?.mode == .running ? max(1, Int(ceil(decision.bufferTargetMilliseconds / 2.5))) :
+            decision.startupTargetPackets(now: now)
         let recovery = max(target, Int(((playoutBudget?.maximumMilliseconds ?? 100) -
                                         (playoutBudget?.outputReserveMilliseconds ?? 10)) / 2.5))
         jitter?.setTargetPackets(target, recoveryPackets: recovery)
@@ -1080,6 +1122,7 @@ public final class HearPortQuicTransport {
     private var musicTest = false
     private var musicReliable = false
     private var musicFramed = false
+    private var liveFramed = false
     private var musicGeneration: UInt32 = 0
     private var probeTimer: DispatchSourceTimer?
     private var probeHeartbeatScheduledAt: UInt64 = 0
@@ -1261,7 +1304,7 @@ public final class HearPortQuicTransport {
                 connection.cancel()
                 return
             }
-            if self.networkProbe || (self.musicTest && self.musicFramed) {
+            if self.networkProbe || self.liveFramed || (self.musicTest && self.musicFramed) {
                 self.receiveProbe(on: connection,
                                   records: ReliableProbeRecords(expectedStreamID: streamID),
                                   connectionGroup: connectionGroup)
@@ -1348,6 +1391,7 @@ public final class HearPortQuicTransport {
         coordinatedAudio = false
         networkProbe = false
         musicTest = false; musicReliable = false; musicFramed = false; musicGeneration = 0
+        liveFramed = false
         controlStream?.cancel()
         group?.cancel()
         controlStream = nil
@@ -1369,6 +1413,7 @@ public final class HearPortQuicTransport {
     }
 
     public func enableMusicTest() { musicTest = true; reliableAccepted = true }
+    func configureLiveAudio(_ format: AudioStreamFormat) { liveFramed = format.opus }
 
     func prepareMusicRound(_ round: MusicTestRound) {
         audioStream?.cancel(); audioStream = nil
@@ -1448,16 +1493,19 @@ public final class HearPortQuicTransport {
                 if let generation = records.generation, (self.audioGeneration == 0 || SequenceNumber.isBefore(self.audioGeneration, generation) ||
                     (self.audioGeneration == generation && self.audioStream == nil)) {
                     self.audioStream?.cancel()
+                    if self.liveFramed && self.onReliableAudioGeneration?(records.expectedStreamID, generation) != true {
+                        throw ReliableAudioRecordsError.invalidPreface
+                    }
                     self.audioStream = stream
                     self.audioGeneration = generation
-                    if self.musicTest && self.musicFramed { self.startProgressTimer() }
+                    if self.liveFramed || (self.musicTest && self.musicFramed) { self.startProgressTimer() }
                 }
                 guard self.audioStream === stream || records.generation == nil else {
                     stream.cancel()
                     return
                 }
                 for packet in packets {
-                    if self.musicTest && self.musicFramed {
+                    if self.liveFramed || (self.musicTest && self.musicFramed) {
                         self.onAudioDatagram?(packet)
                     } else {
                         self.onProbePacket?(packet, receivedAt, data?.count ?? 0, packets.count)

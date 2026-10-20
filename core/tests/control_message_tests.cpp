@@ -231,6 +231,16 @@ int main() {
   Require(decoded_setup.has_value(), "coordinated audio setup decodes");
   Require(hearport::wire::EncodeControlEnvelope(*decoded_setup) == setup,
           "audio setup keeps its budget on the wire");
+  const auto opus_setup = Envelope(40, Join({VarintField(1, 7), VarintField(2, 50),
+      VarintField(3, 100), VarintField(4, 10), VarintField(5, 1),
+      VarintField(6, 256000), VarintField(7, 240), VarintField(8, 120)}));
+  const auto opus_decoded = hearport::wire::DecodeControlEnvelope(opus_setup);
+  Require(opus_decoded && hearport::wire::EncodeControlEnvelope(*opus_decoded) == opus_setup,
+          "audio setup preserves negotiated Opus format and lookahead");
+  Require(!hearport::wire::DecodeControlEnvelope(Envelope(40, Join({
+      VarintField(1, 7), VarintField(2, 50), VarintField(3, 100),
+      VarintField(4, 10), VarintField(5, 1), VarintField(6, 256000),
+      VarintField(7, 121)}))), "unsupported Opus frame duration is rejected");
   const std::vector<std::byte> clock_body{
       std::byte{8}, std::byte{1}, std::byte{16}, std::byte{0x80},
       std::byte{0x80}, std::byte{0x80}, std::byte{0x80}, std::byte{0x80},

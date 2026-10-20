@@ -299,3 +299,17 @@
 "Recent link timing" = "近期链路延迟";
 
 "Stability uses the absolute RTT variation of recent independent probes, including during silence. Variation is the P90–P10 difference over 12 seconds. Missing probe responses also lower stability. A steady high RTT can be stable; RTT is not end-to-end playback latency." = "稳定性依据近期独立往返探测的绝对波动，静音时也会评估。波动为近 12 秒内 P90 与 P10 的毫秒差；持续无探测响应也会降低稳定性。延迟平稳不等于低延迟，往返时间不等于端到端播放延迟。";
+
+"Network audio" = "网络音频";
+
+"USB audio" = "USB 音频";
+
+"Audio format" = "音频格式";
+
+"Audio encoding" = "音频编码";
+
+"Opus bitrate" = "Opus 码率";
+
+"Audio per packet" = "每包音频时长";
+
+"Longer packets reduce packet frequency and need more collection time. All processing uses the selected total delay budget. Changes take effect on the next connection." = "较长的包可减少发包次数，也需要更多收集时间。所有处理均计入所选总延迟预算。更改在下次连接时生效。";

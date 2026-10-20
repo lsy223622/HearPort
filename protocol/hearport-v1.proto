@@ -132,6 +132,10 @@ message AudioSetup {
   uint32 target_ms = 2;
   uint32 maximum_ms = 3;
   uint32 output_reserve_ms = 4;
+  uint32 audio_codec = 5; // 0: Float32 PCM; 1: Opus (feature 512).
+  uint32 audio_bitrate = 6;
+  uint32 audio_frame_count = 7;
+  uint32 codec_lookahead_frames = 8;
 }
 message ClockRequest { uint32 request_id = 1; uint64 local_sent_ns = 2; }
 message ClockResponse {

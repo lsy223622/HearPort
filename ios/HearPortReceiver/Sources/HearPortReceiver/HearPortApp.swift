@@ -34,6 +34,13 @@ import SwiftUI
     @AppStorage("hearport.jitterStartupPackets") private var jitterBufferTargetPackets = 8
     @AppStorage("hearport.targetLatencyMs") private var targetLatencyMs = 50
     @AppStorage("hearport.maximumLatencyMs") private var maximumLatencyMs = 100
+    @AppStorage("hearport.networkAudio.codec") private var networkCodec = "opus"
+    @AppStorage("hearport.networkAudio.bitrate") private var networkBitrate = 256_000
+    @AppStorage("hearport.networkAudio.frames") private var networkFrames = 240
+    @AppStorage("hearport.usbAudio.codec") private var usbCodec = "pcm"
+    @AppStorage("hearport.usbAudio.bitrate") private var usbBitrate = 256_000
+    @AppStorage("hearport.usbAudio.frames") private var usbFrames = 240
+    @State private var activeAudioFormat: AudioStreamFormat = .pcm
     @State private var activeTargetLatencyMs = 50
     @State private var activeMaximumLatencyMs = 100
     @State private var diagnosticsSnapshot = HearPortDiagnostics.shared.snapshot()
@@ -496,6 +503,7 @@ import SwiftUI
                 LabeledContent("Windows PC", value: currentComputerName)
                 LabeledContent("Path", value: Self.localize(activePath == .usb ? "USB" : "Local network"))
                 LabeledContent("Transport", value: (musicRound?.reliable ?? (activeAudioMode == .reliable)) ? "Reliable stream" : "Datagram")
+                if musicRound == nil { LabeledContent("Audio format", value: activeAudioFormat.label) }
                 if connectionEstablished && !isConnecting { Label("Identity verified", systemImage: "checkmark.shield") }
             }
             Section {
@@ -557,6 +565,8 @@ import SwiftUI
 
     private var playbackSettingsSection: some View {
             Section {
+                audioFormatLink("Network audio", codec: $networkCodec, bitrate: $networkBitrate, frames: $networkFrames)
+                audioFormatLink("USB audio", codec: $usbCodec, bitrate: $usbBitrate, frames: $usbFrames)
                 NavigationLink {
                     Form {
                         Picker("Audio transport mode", selection: $audioTransportModeRaw) {
@@ -576,6 +586,36 @@ import SwiftUI
             } footer: {
                 Text("The target and maximum include transport, processing and output. Changes take effect on the next connection. A higher maximum can tolerate longer interruptions.")
             }
+    }
+
+    private func audioFormatLink(_ title: LocalizedStringKey, codec: Binding<String>,
+                                 bitrate: Binding<Int>, frames: Binding<Int>) -> some View {
+        NavigationLink {
+            Form {
+                Section {
+                    Picker("Audio encoding", selection: codec) {
+                        Text("PCM").tag("pcm")
+                        Text("Opus").tag("opus")
+                    }
+                    if codec.wrappedValue == "opus" {
+                        Picker("Opus bitrate", selection: bitrate) {
+                            Text("192 kb/s").tag(192_000)
+                            Text("256 kb/s").tag(256_000)
+                        }
+                        Picker("Audio per packet", selection: frames) {
+                            Text("2.5 ms").tag(120)
+                            Text("5 ms").tag(240)
+                            Text("10 ms").tag(480)
+                        }
+                    }
+                } footer: {
+                    Text("Longer packets reduce packet frequency and need more collection time. All processing uses the selected total delay budget. Changes take effect on the next connection.")
+                }
+            }.navigationTitle(title).navigationBarTitleDisplayMode(.inline)
+        } label: {
+            LabeledContent(title, value: codec.wrappedValue == "opus" ?
+                "Opus · \(bitrate.wrappedValue / 1000) kb/s · \(Double(frames.wrappedValue) / 48) ms" : "PCM")
+        }
     }
 
     private var calibrationLink: some View {
@@ -808,6 +848,7 @@ import SwiftUI
             provider: PairingSecurity.defaultSpake2Provider()
         )
         let target = targetLatencyMs, maximum = maximumLatencyMs
+        session.requestedFormat = AudioStreamFormat.load(usb: route.path == .usb)
         session.requestedBudget = try! PlayoutBudget(targetMilliseconds: Double(target),
             maximumMilliseconds: Double(maximum), outputReserveMilliseconds: 1)
         let prepareOutputReserve: () throws -> Double = {
@@ -962,6 +1003,7 @@ import SwiftUI
                 sendingReport = false
                 isConnecting = false
                 connectionEstablished = true
+                activeAudioFormat = session?.activeFormat ?? .pcm
                 retainingConnection = true
                 connectionError = nil
                 if requestedAuthMode == .pair {

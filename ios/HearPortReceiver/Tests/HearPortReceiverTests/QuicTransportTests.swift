@@ -5,6 +5,37 @@ import XCTest
 @testable import HearPortReceiver
 
 final class QuicTransportTests: XCTestCase {
+    func testLiveOpusReliableUsesVariableFramingWithoutMusicMode() throws {
+        guard ProcessInfo.processInfo.environment["HEARPORT_QUIC_INTEGRATION"] == "1" else {
+            throw XCTSkip("Requires the loopback QUIC echo server")
+        }
+        let transport = HearPortQuicTransport(audioMode: .reliable)
+        let audio = expectation(description: "Two live Opus records")
+        audio.expectedFulfillmentCount = 2
+        transport.onStateChange = { state in
+            if state == .ready {
+                transport.acceptCoordinatedAudio()
+                transport.acceptReliableAudio()
+                transport.configureLiveAudio(try! AudioStreamFormat(opus: true, frameCount: 480))
+                transport.expectReliableAudio(streamID: 1, latestReceivedSequence: { nil })
+                try? transport.sendControl(Data("LIVE_OPUS".utf8))
+            }
+        }
+        transport.onReliableAudioGeneration = { stream, generation in
+            XCTAssertEqual(stream, 1); XCTAssertEqual(generation, 1); return true
+        }
+        transport.onProbePacket = { _, _, _, _ in XCTFail("Live audio reached the probe handler") }
+        transport.onAudioDatagram = { data in
+            guard let record = try? TimedAudioRecord(encoded: data) else { XCTFail(); return }
+            XCTAssertEqual(record.kind, .opus)
+            XCTAssertEqual(record.frameCount, 480)
+            XCTAssertTrue([0, 4].contains(record.sequence))
+            audio.fulfill()
+        }
+        defer { transport.cancel() }
+        transport.connect(host: "127.0.0.1", port: 44330, tlsPolicy: .pairing(onPeerSPKIHash: { _ in }))
+        wait(for: [audio], timeout: 15)
+    }
     func testInitialConnectDoesNotPublishAClosedSession() {
         let transport = HearPortQuicTransport()
         let closed = expectation(description: "No close event for initial state reset")
