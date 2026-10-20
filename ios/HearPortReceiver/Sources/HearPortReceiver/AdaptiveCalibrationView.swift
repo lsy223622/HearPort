@@ -17,37 +17,26 @@ struct AdaptiveCalibrationView: View {
         List {
             if let result { recommendation(result) }
             Section {
-                Picker("Profile", selection: $goal) {
-                    Text("Low latency").tag(1)
-                    Text("Balanced").tag(2)
-                    Text("Stability first").tag(4)
-                }.pickerStyle(.segmented)
-                MillisecondsControl("Maximum total delay", value: $maximum, range: 40...2000)
+                CalibrationGoalPicker(selection: $goal).frame(height: 44)
+                MillisecondsControl("Maximum acceptable delay", value: $maximum, range: 40...2000)
+                Picker("Test segment duration", selection: $seconds) {
+                    Text("15 seconds").tag(15)
+                    Text("30 seconds").tag(30)
+                    Text("60 seconds").tag(60)
+                }
                 Button {
                     applied = false; start(goal, seconds, maximum)
                 } label: {
                     HStack {
-                        if starting { ProgressView().tint(.white) }
                         Text(starting ? LocalizedStringKey("Starting calibration…") : LocalizedStringKey("Start automatic test"))
-                    }.frame(maxWidth: .infinity, minHeight: 36)
+                        if starting { ProgressView().tint(.blue) }
+                    }.frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .buttonStyle(.borderedProminent).tint(.teal)
+                .buttonStyle(.borderless).tint(.blue)
                 .disabled(!canStart || starting)
                 if let status { Text(status).font(.footnote).foregroundStyle(.secondary) }
-                DisclosureGroup("Test details") {
-                    Picker("Observation window", selection: $seconds) {
-                        Text("15 seconds").tag(15)
-                        Text("30 seconds").tag(30)
-                        Text("60 seconds").tag(60)
-                    }
-                    Text("Each setting compares both transports twice. Final verification repeats the selected settings with longer windows.")
-                    Text("Search adjusts transport, encoding, bitrate, packet duration and delay budget for the selected goal.")
-                    Text("Detailed logging records each measurement and selection for manual export.")
-                }.font(.footnote).foregroundStyle(.secondary)
             } header: {
                 Text("Test goal")
-            } footer: {
-                Text("Playback pauses while random traffic tests the network route. Results stay on this iPad. USB audio settings are independent.")
             }
         }
         .navigationTitle("Automatic test and recommendations")
@@ -56,37 +45,35 @@ struct AdaptiveCalibrationView: View {
 
     private func recommendation(_ result: AdaptiveCalibrationResult) -> some View {
         Section {
-            Text(CalibrationResultsView.profileName(result.goal)).font(.headline)
+            LabeledContent("Test goal") { Text(CalibrationResultsView.profileName(result.goal)) }
             if let p = result.selected {
-                Text(p.format.label)
+                LabeledContent("Encoding", value: p.format.label)
                 LabeledContent("Audio transport mode", value: p.reliable ? "Reliable stream" : "Datagram")
                 LabeledContent("Normal target", value: "\(p.budget.target) ms")
                 LabeledContent("Maximum total delay", value: "\(p.budget.maximum) ms")
+                Button {
+                    applied = apply()
+                } label: {
+                    Text(applied ? LocalizedStringKey("Applied for the next connection") : LocalizedStringKey("Apply parameters"))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.borderless).tint(.blue)
+                .disabled(applied || !result.canApply)
+            } else {
+                Text("Insufficient valid observations. Check the connection and test again.")
+            }
+            DisclosureGroup("Test details") {
                 if result.transportComparison == "similar" {
                     Text("Both transports performed similarly within repeat variation; the existing preference was retained.")
                         .font(.footnote).foregroundStyle(.secondary)
                 } else if result.transportComparison == "insufficient" {
                     Text("Insufficient valid observations to compare both transports.")
                         .font(.footnote).foregroundStyle(.orange)
-                } else if result.transportComparison == nil {
-                    Text("Run a new test to compare both transports at every setting.")
-                        .font(.footnote).foregroundStyle(.secondary)
                 }
-                Text(result.canApply ? LocalizedStringKey("Validated in both live repeats") : LocalizedStringKey("Validation did not confirm the goal; test again when conditions settle."))
-                    .font(.footnote).foregroundStyle(result.canApply ? Color.secondary : Color.orange)
-                Button {
-                    applied = apply()
-                } label: {
-                    Text(applied ? LocalizedStringKey("Applied for the next connection") : LocalizedStringKey("Apply parameters"))
-                        .frame(maxWidth: .infinity, minHeight: 36)
+                if !result.canApply {
+                    Text("Validation did not confirm the goal; test again when conditions settle.")
+                        .font(.footnote).foregroundStyle(.orange)
                 }
-                .buttonStyle(.borderedProminent).tint(.teal)
-                .disabled(applied || !result.canApply)
-            } else {
-                Text("Insufficient valid observations. Check the connection and test again.")
-            }
-            DisclosureGroup("Test observations") {
-                Text(result.testedAt, style: .date) + Text(" ") + Text(result.testedAt, style: .time)
                 ForEach(Array(result.observations.enumerated()), id: \.offset) { row in
                     VStack(alignment: .leading, spacing: 4) {
                         Text("\(row.offset + 1) · \(row.element.parameters.format.label)")
@@ -96,9 +83,43 @@ struct AdaptiveCalibrationView: View {
                 }
             }
         } header: {
-            Text("Latest recommendation")
-        } footer: {
-            Text("This is an observation of current network conditions, not a stability guarantee. Random payloads reserve codec preparation time but do not measure audio quality or decoder speed.")
+            HStack {
+                Text("Latest recommendation")
+                Spacer()
+                Text(result.testedAt, format: .dateTime.year().month(.twoDigits).day(.twoDigits).hour().minute())
+                    .accessibilityLabel(Text("Tested"))
+                    .accessibilityValue(Text(result.testedAt, style: .date) + Text(" ") + Text(result.testedAt, style: .time))
+            }.textCase(nil)
+        }
+    }
+}
+
+private struct CalibrationGoalPicker: UIViewRepresentable {
+    @Binding var selection: Int
+    private let goals = [1, 2, 4]
+
+    func makeUIView(context: Context) -> UISegmentedControl {
+        let control = UISegmentedControl(items: ["Low latency", "Balanced", "Stability first"].map {
+            NSLocalizedString($0, comment: "")
+        })
+        control.addTarget(context.coordinator, action: #selector(Coordinator.changed(_:)), for: .valueChanged)
+        control.accessibilityLabel = NSLocalizedString("Test goal", comment: "")
+        return control
+    }
+    func updateUIView(_ control: UISegmentedControl, context: Context) {
+        context.coordinator.selection = $selection
+        control.selectedSegmentIndex = goals.firstIndex(of: selection) ?? 1
+        let font = UIFont.preferredFont(forTextStyle: .body, compatibleWith: control.traitCollection)
+        control.setTitleTextAttributes([.font: font], for: .normal)
+        control.setTitleTextAttributes([.font: font], for: .selected)
+    }
+    func makeCoordinator() -> Coordinator { Coordinator(selection: $selection) }
+    final class Coordinator: NSObject {
+        var selection: Binding<Int>
+        init(selection: Binding<Int>) { self.selection = selection }
+        @objc func changed(_ control: UISegmentedControl) {
+            guard (0..<3).contains(control.selectedSegmentIndex) else { return }
+            selection.wrappedValue = [1, 2, 4][control.selectedSegmentIndex]
         }
     }
 }

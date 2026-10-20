@@ -318,15 +318,11 @@
 
 "Profile" = "场景";
 
-"Search adjusts transport, encoding, bitrate, packet duration and delay budget for the selected goal." = "根据所选目标，逐步调整传输模式、编码、码率、每包时长和延迟预算。";
 
-"Observation window" = "每次观测时长";
 
 "15 seconds" = "15 秒";
 
-"Settings are repeated before selection. Final verification uses two windows of twice the selected duration. Remaining steps depend on observations." = "每套候选参数会重复观测；最终参数会再复核两次，每次时长加倍。后续步骤根据实测结果调整。";
 
-"Playback pauses while random traffic tests the network route. Results stay on this iPad. USB audio settings are independent." = "测试期间暂停播放，通过网络线路传输随机数据。结果保存在本机；USB 音频参数单独设置。";
 
 "Latest recommendation" = "最近的推荐";
 
@@ -336,11 +332,9 @@
 
 "Insufficient valid observations. Check the connection and test again." = "有效观测不足，请检查连接后重试。";
 
-"Test observations" = "测试观测记录";
 
 "Gaps %.3f%% · longest %.1f ms" = "缺口 %.3f%% · 最长 %.1f 毫秒";
 
-"This is an observation of current network conditions, not a stability guarantee. Random payloads reserve codec preparation time but do not measure audio quality or decoder speed." = "结果仅代表本次网络状况，不保证未来稳定性。随机负载测试预留编码处理时间，不测量音质或解码性能。";
 
 "Verifying selected settings" = "正在复核选出的参数";
 
@@ -382,20 +376,23 @@
 
 "Exporting diagnostics…" = "正在导出诊断日志…";
 
-"Test details" = "测试选项与说明";
+"Test details" = "测试详情";
 
-"Each setting compares both transports twice. Final verification repeats the selected settings with longer windows." = "每套参数交错比较两种传输模式，各观测两次；最终使用较长观测复核选中的参数。";
 
-"Detailed logging records each measurement and selection for manual export." = "开启详细日志后，会记录逐轮测量数据和选择依据，可从诊断页手动导出。";
 
 "Both transports performed similarly within repeat variation; the existing preference was retained." = "两种传输的差异未超过重复测试的波动范围，保留原有传输偏好。";
 
 "Insufficient valid observations to compare both transports." = "有效观测不足，尚不能充分比较两种传输。";
 
-"Run a new test to compare both transports at every setting." = "建议重新测试，使每套参数都完成两种传输的对照。";
 
 "Comparing transport modes at the same settings." = "使用相同参数对照另一种传输模式。";
 
 "Increase delay" = "增加延迟";
 
 "Decrease delay" = "减少延迟";
+
+"Maximum acceptable delay" = "可接受的最大延迟";
+
+"Test segment duration" = "每段测试时长";
+
+"Encoding" = "编码";

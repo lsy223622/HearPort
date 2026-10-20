@@ -318,15 +318,11 @@
 
 "Profile" = "Profile";
 
-"Search adjusts transport, encoding, bitrate, packet duration and delay budget for the selected goal." = "Search adjusts transport, encoding, bitrate, packet duration and delay budget for the selected goal.";
 
-"Observation window" = "Observation window";
 
 "15 seconds" = "15 seconds";
 
-"Settings are repeated before selection. Final verification uses two windows of twice the selected duration. Remaining steps depend on observations." = "Settings are repeated before selection. Final verification uses two windows of twice the selected duration. Remaining steps depend on observations.";
 
-"Playback pauses while random traffic tests the network route. Results stay on this iPad. USB audio settings are independent." = "Playback pauses while random traffic tests the network route. Results stay on this iPad. USB audio settings are independent.";
 
 "Latest recommendation" = "Latest recommendation";
 
@@ -336,11 +332,9 @@
 
 "Insufficient valid observations. Check the connection and test again." = "Insufficient valid observations. Check the connection and test again.";
 
-"Test observations" = "Test observations";
 
 "Gaps %.3f%% · longest %.1f ms" = "Gaps %.3f%% · longest %.1f ms";
 
-"This is an observation of current network conditions, not a stability guarantee. Random payloads reserve codec preparation time but do not measure audio quality or decoder speed." = "This is an observation of current network conditions, not a stability guarantee. Random payloads reserve codec preparation time but do not measure audio quality or decoder speed.";
 
 "Verifying selected settings" = "Verifying selected settings";
 
@@ -384,18 +378,21 @@
 
 "Test details" = "Test details";
 
-"Each setting compares both transports twice. Final verification repeats the selected settings with longer windows." = "Each setting compares both transports twice. Final verification repeats the selected settings with longer windows.";
 
-"Detailed logging records each measurement and selection for manual export." = "Detailed logging records each measurement and selection for manual export.";
 
 "Both transports performed similarly within repeat variation; the existing preference was retained." = "Both transports performed similarly within repeat variation; the existing preference was retained.";
 
 "Insufficient valid observations to compare both transports." = "Insufficient valid observations to compare both transports.";
 
-"Run a new test to compare both transports at every setting." = "Run a new test to compare both transports at every setting.";
 
 "Comparing transport modes at the same settings." = "Comparing transport modes at the same settings.";
 
 "Increase delay" = "Increase delay";
 
 "Decrease delay" = "Decrease delay";
+
+"Maximum acceptable delay" = "Maximum acceptable delay";
+
+"Test segment duration" = "Test segment duration";
+
+"Encoding" = "Encoding";
