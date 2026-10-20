@@ -18,14 +18,16 @@ class SenderDiagnosticLogger {
  public:
   explicit SenderDiagnosticLogger(
       std::size_t capacity = 1024,
-      std::size_t max_file_bytes = 16 * 1024 * 1024,
-      std::size_t max_rotated_files = 7);
+      std::size_t max_file_bytes = 1024 * 1024,
+      std::size_t max_rotated_files = 3);
   ~SenderDiagnosticLogger();
   SenderDiagnosticLogger(const SenderDiagnosticLogger&) = delete;
   SenderDiagnosticLogger& operator=(const SenderDiagnosticLogger&) = delete;
 
   bool Start(const std::filesystem::path& path);
   bool TryLog(std::string_view line) noexcept;
+  void SetDetailedLogging(bool enabled);
+  static bool IsDetailedEvent(std::string_view line) noexcept;
   void Stop();
   std::uint64_t dropped_count() const noexcept;
 
@@ -38,11 +40,16 @@ class SenderDiagnosticLogger {
   void Writer() noexcept;
   bool WriteFileLine(std::string_view line) noexcept;
   bool RotateFile() noexcept;
+  void ApplyRetention() noexcept;
   void DisableFileLogging() noexcept;
 
   std::size_t capacity_;
   std::size_t max_file_bytes_;
   std::size_t max_rotated_files_;
+  const std::size_t ordinary_file_bytes_;
+  const std::size_t ordinary_rotated_files_;
+  std::atomic<bool> detailed_{false};
+  bool retention_changed_ = false;
   std::size_t file_bytes_ = 0;
   std::atomic<std::uint64_t> dropped_{0};
   std::vector<QueueSlot> queue_;

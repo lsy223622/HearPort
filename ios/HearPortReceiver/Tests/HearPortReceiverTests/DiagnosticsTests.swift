@@ -3,10 +3,11 @@ import XCTest
 @testable import HearPortReceiver
 
 final class DiagnosticsTests: XCTestCase {
-    func testDefaultRetentionKeepsStartupBeyondThePreviousLimitAndExportsUnicode() throws {
+    func testDetailedRetentionKeepsStartupBeyondThePreviousLimitAndExportsUnicode() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
         let diagnostics = HearPortDiagnostics(directory: directory)
+        diagnostics.level = .debug
         diagnostics.log(.info, category: .transport, message: "usb_startup_retention_marker")
         let message = String(repeating: "音频", count: 180)
         for index in 0..<6000 {
@@ -20,6 +21,27 @@ final class DiagnosticsTests: XCTestCase {
         XCTAssertTrue(text.contains(message))
         XCTAssertGreaterThan(text.utf8.count, 4 * 1_048_576)
         XCTAssertEqual(diagnostics.recentLines(limit: 3000).count, 2000)
+    }
+
+    func testOrdinaryRetentionIsSmallAndDowngradePrunesDetailedFiles() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let diagnostics = HearPortDiagnostics(directory: directory)
+        let message = String(repeating: "音频", count: 180)
+        diagnostics.level = .debug
+        diagnostics.log(.info, category: .app, message: "startup_marker")
+        for _ in 0..<6000 { diagnostics.log(.info, category: .app, message: message) }
+        diagnostics.level = .info
+        diagnostics.log(.debug, category: .app, message: "filtered_detail_marker")
+        let url = try diagnostics.export()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let exported = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertLessThanOrEqual(exported.utf8.count, 4 * 1_048_576 + 4096)
+        XCTAssertFalse(exported.contains("startup_marker"))
+        XCTAssertFalse(exported.contains("filtered_detail_marker"))
+        XCTAssertTrue(exported.contains(message))
+        XCTAssertLessThanOrEqual(diagnostics.snapshot().activeBytes, 1_048_576)
+        XCTAssertLessThanOrEqual(diagnostics.snapshot().rotatedFileCount, 3)
     }
 
     func testLogRedactsSensitiveFieldsAndKeepsSafeMetadata() throws {

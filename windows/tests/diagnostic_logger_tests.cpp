@@ -110,6 +110,7 @@ int main() {
   assert(rotating.dropped_count() == 0);
   const auto long_path = directory / "long-session.log";
   hearport::windows::SenderDiagnosticLogger long_session;
+  long_session.SetDetailedLogging(true);
   assert(long_session.Start(long_path));
   const auto write_long = [&](const std::string& line) {
     for (int attempt = 0; attempt < 1000; ++attempt) {
@@ -131,6 +132,31 @@ int main() {
     if (std::getline(file, first_line) && first_line == "usb_startup_retention_marker") kept_startup = true;
   }
   assert(kept_startup);
+  assert(hearport::windows::SenderDiagnosticLogger::IsDetailedEvent("path=usb quic_control_receive bytes=2"));
+  assert(!hearport::windows::SenderDiagnosticLogger::IsDetailedEvent("path=usb quic_control_send_failed status=3"));
+  const auto ordinary_path = directory / "ordinary.log";
+  hearport::windows::SenderDiagnosticLogger ordinary(1024, 128, 2);
+  ordinary.SetDetailedLogging(true);
+  assert(ordinary.Start(ordinary_path));
+  assert(ordinary.TryLog(std::string(1024, 'x')));
+  ordinary.SetDetailedLogging(false);
+  assert(ordinary.TryLog("quic_control_receive hidden_marker=1"));
+  assert(ordinary.TryLog("quic_control_send_failed preserved_marker=1"));
+  ordinary.Stop();
+  std::size_t ordinary_bytes = 0;
+  std::string ordinary_contents;
+  for (int index = 0; index < 8; ++index) {
+    auto candidate = ordinary_path;
+    if (index) candidate += "." + std::to_string(index);
+    if (!std::filesystem::exists(candidate)) continue;
+    assert(index <= 2);
+    ordinary_bytes += static_cast<std::size_t>(std::filesystem::file_size(candidate));
+    std::ifstream file(candidate, std::ios::binary);
+    ordinary_contents.append(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+  }
+  assert(ordinary_bytes <= 384);
+  assert(ordinary_contents.find("hidden_marker") == std::string::npos);
+  assert(ordinary_contents.find("preserved_marker") != std::string::npos);
   std::filesystem::remove_all(directory);
   return 0;
 }

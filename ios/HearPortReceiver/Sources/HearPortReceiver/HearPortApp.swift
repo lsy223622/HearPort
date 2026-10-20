@@ -30,6 +30,7 @@ import SwiftUI
     @State private var audioOutput: PlatformAudioOutputController?
     @AppStorage("hearport.detailedLogging") private var detailedLogging = false
     @AppStorage("hearport.autoConnect") private var autoConnect = false
+    @AppStorage("hearport.usbAudio.transport") private var usbTransportModeRaw = AudioTransportMode.reliable.rawValue
     @AppStorage("hearport.audioTransportMode") private var audioTransportModeRaw = AudioTransportMode.datagram.rawValue
     @AppStorage("hearport.jitterStartupPackets") private var jitterBufferTargetPackets = 8
     @AppStorage("hearport.targetLatencyMs") private var targetLatencyMs = 50
@@ -570,22 +571,10 @@ import SwiftUI
 
     private var playbackSettingsSection: some View {
             Section {
-                audioFormatLink("Network audio", codec: $networkCodec, bitrate: $networkBitrate, frames: $networkFrames)
-                audioFormatLink("USB audio", codec: $usbCodec, bitrate: $usbBitrate, frames: $usbFrames)
-                NavigationLink {
-                    Form {
-                        Picker("Audio transport mode", selection: $audioTransportModeRaw) {
-                            Text("Datagram").tag(AudioTransportMode.datagram.rawValue)
-                            Text("Reliable stream").tag(AudioTransportMode.reliable.rawValue)
-                        }.pickerStyle(.inline)
-                    }.navigationTitle("Audio transport mode").navigationBarTitleDisplayMode(.inline)
-                } label: {
-                    LabeledContent("Audio transport mode", value: audioTransportModeRaw == AudioTransportMode.reliable.rawValue ? "Reliable stream" : "Datagram")
-                }
-                Stepper("Normal target: \(targetLatencyMs) ms", value: $targetLatencyMs,
-                        in: 10...max(10, maximumLatencyMs), step: 5)
-                Stepper("Maximum total delay: \(maximumLatencyMs) ms", value: $maximumLatencyMs,
-                        in: max(20, targetLatencyMs)...2_000, step: 5)
+                audioFormatLink("Network audio", codec: $networkCodec, bitrate: $networkBitrate, frames: $networkFrames, transport: $audioTransportModeRaw)
+                audioFormatLink("USB audio", codec: $usbCodec, bitrate: $usbBitrate, frames: $usbFrames, transport: $usbTransportModeRaw)
+                MillisecondsControl("Normal target", value: $targetLatencyMs, range: 10...max(10, maximumLatencyMs))
+                MillisecondsControl("Maximum total delay", value: $maximumLatencyMs, range: max(20, targetLatencyMs)...2_000)
             } header: {
                 Text("Playback")
             } footer: {
@@ -594,10 +583,14 @@ import SwiftUI
     }
 
     private func audioFormatLink(_ title: LocalizedStringKey, codec: Binding<String>,
-                                 bitrate: Binding<Int>, frames: Binding<Int>) -> some View {
+                                 bitrate: Binding<Int>, frames: Binding<Int>, transport: Binding<String>) -> some View {
         NavigationLink {
             Form {
                 Section {
+                    Picker("Audio transport mode", selection: transport) {
+                        Text("Datagram").tag(AudioTransportMode.datagram.rawValue)
+                        Text("Reliable stream").tag(AudioTransportMode.reliable.rawValue)
+                    }
                     Picker("Audio encoding", selection: codec) {
                         Text("PCM").tag("pcm")
                         Text("Opus").tag("opus")
@@ -663,23 +656,21 @@ import SwiftUI
             if progress.roundStartedAt == 0 { Text("Waiting for test traffic…") }
             else if remaining > 0 { Text("This round: \(remaining) seconds remaining").monospacedDigit() }
             else { Text("Evaluating this observation and choosing the next step…") }
-            Text("Received \(progress.receivedPackets) packets").font(.caption).monospacedDigit()
             if let ratio = progress.liveGapRatio {
                 Text("Current window: gaps \(ratio * 100, specifier: "%.3f")% · longest \(progress.liveLongestGap, specifier: "%.1f") ms")
-                    .font(.footnote).foregroundStyle(.secondary)
-            }
-            if let ratio = progress.lastGapRatio, let longest = progress.lastLongestGap {
-                Text("Previous window: gaps \(ratio * 100, specifier: "%.3f")% · longest \(longest, specifier: "%.1f") ms")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             Text(LocalizedStringKey(progress.action)).font(.footnote).foregroundStyle(.secondary)
             let estimate = progress.adaptiveRemainingSeconds(at: calibrationNow)
             Text("Estimated remaining: \(estimate.lowerBound)–\(estimate.upperBound) seconds; updated after each observation.")
                 .font(.footnote).foregroundStyle(.secondary).monospacedDigit()
-            Text("Estimated remaining: \(progress.minimumWindows)–\(progress.maximumWindows) observation windows, including this one. Final verification uses longer windows.")
-                .font(.footnote).foregroundStyle(.secondary)
-            Text("Parameters change in larger steps far from the goal and smaller steps near it. You can stop at any time.")
-                .font(.caption).foregroundStyle(.secondary)
+            DisclosureGroup("Test details") {
+                Text("Received \(progress.receivedPackets) packets").monospacedDigit()
+                if let ratio = progress.lastGapRatio, let longest = progress.lastLongestGap {
+                    Text("Previous window: gaps \(ratio * 100, specifier: "%.3f")% · longest \(longest, specifier: "%.1f") ms")
+                }
+                Text("Estimated remaining: \(progress.minimumWindows)–\(progress.maximumWindows) observation windows, including this one. Final verification uses longer windows.")
+            }.font(.caption).foregroundStyle(.secondary)
         } else if progress.stage == "analyzing" {
             Text("Analyzing recommendations").font(.headline)
             if progress.total > 0 {
@@ -761,7 +752,7 @@ import SwiftUI
                 NavigationLink {
                     diagnosticsView
                 } label: {
-                    Label("Diagnostics", systemImage: "waveform.path.ecg")
+                    Text("Diagnostics")
                 }
             }
             Section {
@@ -771,7 +762,9 @@ import SwiftUI
                             LabeledContent("Version", value: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—")
                             LabeledContent("Build", value: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—")
                             LabeledContent("Author", value: "lsy223622")
-                            Link("GitHub repository", destination: URL(string: "https://github.com/lsy223622/HearPort")!)
+                            Link(destination: URL(string: "https://github.com/lsy223622/HearPort")!) {
+                                LabeledContent("GitHub repository", value: "lsy223622/HearPort")
+                            }
                         }
                     }.navigationTitle("About HearPort").navigationBarTitleDisplayMode(.inline)
                 }
@@ -867,7 +860,7 @@ import SwiftUI
             isConnecting = true; connectionError = nil
             status = Self.localize(route.path == .usb ? "Connecting via USB…" : "Connecting via network…")
         }
-        let audioMode = AudioTransportMode(rawValue: audioTransportModeRaw) ?? .datagram
+        let audioMode = AudioTransportMode.load(usb: route.path == .usb)
         let normalizedJitter = JitterBufferConfiguration(
             targetPackets: audioMode.bufferTargetPackets(selected: jitterBufferTargetPackets)
         )

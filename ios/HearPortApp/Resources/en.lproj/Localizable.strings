@@ -381,3 +381,21 @@
 "Estimated remaining: %lld–%lld seconds; updated after each observation." = "Estimated remaining: %lld–%lld seconds; updated after each observation.";
 
 "Exporting diagnostics…" = "Exporting diagnostics…";
+
+"Test details" = "Test details";
+
+"Each setting compares both transports twice. Final verification repeats the selected settings with longer windows." = "Each setting compares both transports twice. Final verification repeats the selected settings with longer windows.";
+
+"Detailed logging records each measurement and selection for manual export." = "Detailed logging records each measurement and selection for manual export.";
+
+"Both transports performed similarly within repeat variation; the existing preference was retained." = "Both transports performed similarly within repeat variation; the existing preference was retained.";
+
+"Insufficient valid observations to compare both transports." = "Insufficient valid observations to compare both transports.";
+
+"Run a new test to compare both transports at every setting." = "Run a new test to compare both transports at every setting.";
+
+"Comparing transport modes at the same settings." = "Comparing transport modes at the same settings.";
+
+"Increase delay" = "Increase delay";
+
+"Decrease delay" = "Decrease delay";

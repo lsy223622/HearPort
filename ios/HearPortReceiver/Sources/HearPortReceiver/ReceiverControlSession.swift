@@ -819,7 +819,7 @@ public final class ReceiverControlSession {
                         guard adaptiveCalibration == nil, calibration == nil, activeDebugSessionID == nil else { throw ControlMessageError.invalidMessage }
                         let reserve = Int(ceil(try prepareCalibrationOutputReserve?() ?? requestedBudget.outputReserveMilliseconds))
                         guard message.budget.maximum >= reserve + 20 else { throw ControlMessageError.invalidMessage }
-                        adaptiveCalibration = AdaptiveCalibrationSession(setup: message, reserve: reserve)
+                        adaptiveCalibration = AdaptiveCalibrationSession(setup: message, reserve: reserve, diagnostics: diagnostics)
                     case .round:
                         guard activeDebugStreamID == streamID, let adaptiveCalibration else { throw ControlMessageError.invalidMessage }
                         let ack = try adaptiveCalibration.begin(message, at: DispatchTime.now().uptimeNanoseconds)
@@ -942,6 +942,9 @@ public final class ReceiverControlSession {
                 if reason != 1 { adaptiveCalibration.cancel() }
                 let result = adaptiveCalibration.result(complete: reason == 1)
                 result.save()
+                diagnostics.log(.info, category: .transport, message: "adaptive_completed", fields: [
+                    "plan_id": "\(streamID)", "complete": "\(result.complete)", "applicable": "\(result.canApply)",
+                    "observations": "\(result.observations.count)", "comparison": result.transportComparison ?? "insufficient"])
                 onAdaptiveCalibrationResult?(result)
                 var ack = CalibrationMessage(kind: .complete, planID: streamID)
                 ack.goal = adaptiveCalibration.setup.goal

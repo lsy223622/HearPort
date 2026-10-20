@@ -41,7 +41,9 @@ on the next connection.
 **Automatic test and recommendations** first selects one goal: Low latency,
 Balanced, or Stability first. It pauses playback and tests random traffic over
 LAN, adapting transport, PCM/Opus encoding, bitrate, packet duration and playback
-budget. Candidates are repeated and the final settings receive two longer
+budget. Each load/budget compares both transports twice in ABBA order; differences
+within a conservative repeat-variation band retain the existing transport preference.
+The final settings receive two longer
 verification windows before one-click application. Progress includes current
 parameters, live gaps, countdown and a changing estimate of remaining steps.
 Results remain on iPad; full diagnostic tests and report collection are available
@@ -55,8 +57,11 @@ output timing to keep playback responsive through ordinary network variation.
 
 ## Diagnostics and evidence
 
-Both endpoints retain up to approximately 128 MiB of rotating runtime logs
-(16 MiB per file, seven backups). iPad export streams a fixed-length file snapshot
+Both endpoints retain approximately 4 MiB of ordinary runtime logs (1 MiB per
+file, three backups). Detailed logging increases this to approximately 128 MiB
+(16 MiB per file, seven backups); switching it off prunes older and oversized files.
+Detailed iPad logs include each recommendation observation, parameters and selection
+outcome for manual export. iPad export streams a fixed-length file snapshot
 in the background and includes current USB listener/forwarder status.
 
 Diagnostics are stored locally. A log or exported report can contain network

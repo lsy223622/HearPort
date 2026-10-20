@@ -14,7 +14,16 @@ traffic matches existing live packet load; Opus collection and 120-frame lookahe
 are reflected in capture timestamps, with a 2 ms conversion/decode allowance.
 This tests transport suitability, not codec throughput or acoustic latency.
 
-The search starts with ABBA transport baselines, then repeats each changed setting.
+Every load/budget receives four ABBA observations, two per transport. When neither
+transport meets the goal, the better measured candidate from the latest block guides
+the next adjustment. Valid candidates are compared using worst repeated measurements;
+indifference bands use the larger of a fixed tolerance (5 ms age/longest gap,
+0.0001 gap ratio) and the sum of observed repeat ranges. Within the band, retain the
+configured network transport preference and disclose that the modes performed similarly.
+These bands are conservative selection rules, not statistical confidence intervals.
+Exploration remains bounded to twelve windows, followed by two longer verification
+windows. Detailed local logs retain measurement JSON, parameter JSON, decision
+outcome and tolerance policy; normal logs keep completion status.
 Large target misses reduce load and increase budget in coarse steps; near the goal,
 budget steps shrink toward 5 ms. Successful candidates can challenge with shorter
 packets and PCM. No fixed Cartesian matrix is run. Revisited settings or the bounded
@@ -26,12 +35,14 @@ sequential network observations do not prove causation or future rare-loss rates
 Show current settings, live gap measurements, previous observation, packet count,
 per-window countdown, verification stage and a revised remaining-window range.
 Application writes network format, bitrate, packet duration, transport and budget;
-USB format preferences remain independent. Incomplete or failing verification cannot
+USB encoding and transport preferences remain independent. The existing
+`hearport.audioTransportMode` preference belongs to the network route; USB uses
+`hearport.usbAudio.transport`, defaulting to reliable stream. Incomplete or failing verification cannot
 replace the last applicable saved recommendation.
 
 The negotiated audio format has its own UI callback, because ReceiverReady precedes
-AudioSetup negotiation. Latency controls step by 5 ms to remain reachable from
-recommendations that end in 5.
+AudioSetup negotiation. Latency controls combine 5 ms decrement/increment buttons with direct numeric input;
+committed values are clamped to the supported range.
 
 ## Implementation and validation
 
