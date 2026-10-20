@@ -56,7 +56,7 @@ public final class ReceiverControlSession {
     private var ready = false
     private var activeAudioStreamID: UInt32?
     private var calibrationRequestPending = false
-    private var receiverReadyNotified = false
+    private var readyGate = ReceiverReadyGate()
     private var peerFeatures: UInt32 = 0
     public var preparePlayoutBudget: (() throws -> PlayoutBudget)?
     public var requestedBudget = try! PlayoutBudget(targetMilliseconds: 50,
@@ -199,6 +199,7 @@ public final class ReceiverControlSession {
                     }
                 }
                 self.ready = false
+                self.readyGate = ReceiverReadyGate()
                 self.activeAudioStreamID = nil
                 self.calibrationRequestPending = false
                 self.connectSent = false
@@ -236,7 +237,7 @@ public final class ReceiverControlSession {
         self.ready = false
         self.activeAudioStreamID = nil
         self.calibrationRequestPending = false
-        self.receiverReadyNotified = false
+        self.readyGate = ReceiverReadyGate()
         self.peerFeatures = 0
         self.activeFormat = .pcm
         self.musicTestRound = nil
@@ -339,6 +340,9 @@ public final class ReceiverControlSession {
                   !self.isMusicTest, !self.isNetworkProbe, self.activeDebugSessionID == nil,
                   (self.peerFeatures & ControlFeature.timedDiagnostics) == 0,
                   let streamID = self.activeAudioStreamID else {
+                self?.diagnostics.log(.warning, category: .control, message: "calibration_request_rejected",
+                    fields: ["ready": "\(self?.ready ?? false)", "stream_ready": "\(self?.activeAudioStreamID != nil)",
+                             "already_pending": "\(self?.calibrationRequestPending ?? false)"])
                 completion(false)
                 return
             }
@@ -352,6 +356,9 @@ public final class ReceiverControlSession {
                 self.calibrationRequestPending = true
                 try self.transport.sendControl(payload) { [weak self] error in
                     if error != nil { self?.calibrationRequestPending = false }
+                    self?.diagnostics.log(error == nil ? .info : .warning, category: .control,
+                        message: error == nil ? "calibration_request_sent" : "calibration_request_write_failed",
+                        fields: ["stream_id": "\(streamID)", "goal": "\(goal)", "seconds": "\(seconds)", "maximum_ms": "\(maximum)"])
                     completion(error == nil)
                 }
             } catch {
@@ -381,8 +388,8 @@ public final class ReceiverControlSession {
                     }
                 }
             } else {
-                receiverReadyNotified = true
-                onReady?()
+                readyGate.receiverReadyWritten = true
+                notifyReady()
             }
     }
 
@@ -411,6 +418,7 @@ public final class ReceiverControlSession {
         )
         transport.cancel()
         ready = false
+        readyGate = ReceiverReadyGate()
         activeAudioStreamID = nil
         calibrationRequestPending = false
         setNetworkProbe(false)
@@ -1030,6 +1038,8 @@ public final class ReceiverControlSession {
                 fields: ["event": "start_stream_ack_written", "stream_id": "\(streamID)"])
             if !self.isNetworkProbe, self.receiver.acknowledgeStartStream(streamID) {
                 self.activeAudioStreamID = streamID
+                self.readyGate.audioStreamAcknowledged = true
+                self.notifyReady()
             }
         })
     }
@@ -1148,10 +1158,14 @@ public final class ReceiverControlSession {
                 self.onError?("Unable to resume the audio session")
                 return
             }
-            guard !self.receiverReadyNotified else { return }
-            self.receiverReadyNotified = true
-            self.onReady?()
+            self.readyGate.receiverReadyWritten = true
+            self.notifyReady()
         })
+    }
+
+    private func notifyReady() {
+        guard readyGate.takeNotification(networkProbe: isNetworkProbe) else { return }
+        onReady?()
     }
 
     private func logDebugReportFailure(_ error: Error, event: String) {

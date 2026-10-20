@@ -63,8 +63,8 @@
 "Diagnostics" = "Diagnostics";
 "Current log" = "Current log";
 "Logging level" = "Logging level";
-"Retained entries" = "Retained entries";
-"Active log size" = "Active log size";
+"Recent entries (memory)" = "Recent entries (memory)";
+"Saved log size" = "Saved log size";
 "Detailed logging" = "Detailed logging";
 "Secrets, authentication material, and raw audio are excluded from logs." = "Secrets, authentication material, and raw audio are excluded from logs.";
 "Actions" = "Actions";

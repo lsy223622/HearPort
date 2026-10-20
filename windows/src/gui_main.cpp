@@ -66,7 +66,6 @@ constexpr int kMusicFile = 114;
 constexpr int kMusicTest = 115;
 constexpr int kCalibrationResults = 116;
 constexpr int kDetailedLogging = 117;
-constexpr int kForgetPairing = 118;
 constexpr int kTrayOpen = 201;
 constexpr int kTrayExit = 202;
 
@@ -581,10 +580,9 @@ class Application {
                      SS_LEFT, 0);
     listen_port_ = Control(0, L"STATIC", L"", SS_LEFT, 0);
     pin_ = Control(0, L"STATIC", L"", SS_LEFT, 0);
-    Control(0, L"BUTTON", Tr(L"Pair new iPad", L"配对新 iPad"),
+    pairing_action_ = Control(0, L"BUTTON", Tr(L"Pair new iPad", L"配对新 iPad"),
             WS_TABSTOP | BS_PUSHBUTTON, kPair);
     toggle_ = Control(0, L"BUTTON", L"", WS_TABSTOP | BS_PUSHBUTTON, kToggle);
-    forget_pairing_ = Control(0, L"BUTTON", Tr(L"Unpair iPad", L"取消配对"), WS_TABSTOP | BS_PUSHBUTTON, kForgetPairing);
 
     Control(1, L"BUTTON", Tr(L"Live diagnostics…", L"实时诊断…"), WS_TABSTOP | BS_PUSHBUTTON, kDiagnostics);
     Control(1, L"BUTTON", Tr(L"Network test…", L"网络测试…"), WS_TABSTOP | BS_PUSHBUTTON, kNetworkProbe);
@@ -652,7 +650,7 @@ class Application {
     SendMessageW(footer_exit_, WM_SETFONT,
                  reinterpret_cast<WPARAM>(font_), TRUE);
     if (groups_[0].size() != 3 || groups_[1].size() != 2 ||
-        groups_[2].size() != 2 || pages_[0].size() != 9 ||
+        groups_[2].size() != 2 || pages_[0].size() != 8 ||
         pages_[1].size() != 11 || pages_[2].size() != 7 ||
         !port_frame_ || !port_edit_ || !footer_close_ || !footer_exit_) {
       return false;
@@ -695,7 +693,6 @@ class Application {
     Place(overview[5], 44, 312, group_width - 24, 45);
     Place(overview[6], width - 162, 359, 118, 29);
     Place(overview[7], width - 162, 108, 118, 29);
-    Place(overview[8], 44, 359, 118, 29);
 
     auto& diagnostics = pages_[1];
     const int column = (group_width - 40) / 3;
@@ -1012,7 +1009,9 @@ class Application {
     std::wstring toggle = running_ ? Tr(L"Stop sender", L"停止发送服务")
                                    : Tr(L"Start sender", L"启动发送服务");
     SetTextIfChanged(toggle_, toggle.c_str());
-    if (pages_[0].size() > 6) EnableWindow(pages_[0][6], running_ && !connected_);
+    SetTextIfChanged(pairing_action_, paired_ ? Tr(L"Unpair iPad", L"取消配对").c_str()
+                                           : Tr(L"Pair new iPad", L"配对新 iPad").c_str());
+    EnableWindow(pairing_action_, paired_ || (running_ && !connected_));
     SetTextIfChanged(certificate_,
                    certificate_ready_
                        ? Tr(L"Secure connection: certificate ready",
@@ -1042,11 +1041,11 @@ class Application {
                          L"启动发送服务后可以开始配对。")
                     : connected_ ? Tr(L"An iPad is connected.",
                                       L"当前有 iPad 已连接。")
+                    : paired_ ? Tr(L"The paired iPad can reconnect.", L"已配对的 iPad 可以重新连接。")
                                  : Tr(L"Choose Pair new iPad to show a code.",
                                       L"点击“配对新 iPad”显示配对码。");
       SetTextIfChanged(pin_, pairing_hint.c_str());
     }
-    EnableWindow(forget_pairing_, paired_);
   }
 
   void ForgetPairing() {
@@ -1672,7 +1671,7 @@ class Application {
         return 0;
       case WM_COMMAND:
         switch (LOWORD(wparam)) {
-          case kPair: OpenPairing(); break;
+          case kPair: if (paired_) ForgetPairing(); else OpenPairing(); break;
           case kToggle:
             if (running_) {
               if (MessageBoxW(hwnd_,
@@ -1699,7 +1698,6 @@ class Application {
           case kLog: OpenPath(data_dir_ / L"HearPort-sender.log"); break;
           case kReports: OpenPath(data_dir_ / L"diagnostics"); break;
           case kCalibrationResults: ShowCalibrationResults(); break;
-          case kForgetPairing: ForgetPairing(); break;
           case kDetailedLogging:
             logger_.SetDetailedLogging(SendMessageW(detailed_logging_, BM_GETCHECK, 0, 0) == BST_CHECKED);
             break;
@@ -1805,7 +1803,7 @@ class Application {
   HWND toggle_ = nullptr;
   int current_page_ = -1;
   bool paired_ = false;
-  HWND forget_pairing_ = nullptr;
+  HWND pairing_action_ = nullptr;
   HWND diagnostic_status_ = nullptr;
   HWND detailed_logging_ = nullptr;
   HWND certificate_ = nullptr;

@@ -34,6 +34,7 @@ public enum DiagnosticsCategory: String, CaseIterable, Sendable {
 public struct DiagnosticsSnapshot: Equatable, Sendable {
     public let entryCount: Int
     public let activeBytes: Int
+    public let totalBytes: Int
     public let rotatedFileCount: Int
     public let level: DiagnosticsLevel
     public let asyncQueueDepth: Int
@@ -41,12 +42,14 @@ public struct DiagnosticsSnapshot: Equatable, Sendable {
 
     public init(entryCount: Int,
                 activeBytes: Int,
+                totalBytes: Int,
                 rotatedFileCount: Int,
                 level: DiagnosticsLevel,
                 asyncQueueDepth: Int = 0,
                 asyncDroppedCount: UInt64 = 0) {
         self.entryCount = entryCount
         self.activeBytes = activeBytes
+        self.totalBytes = totalBytes
         self.rotatedFileCount = rotatedFileCount
         self.level = level
         self.asyncQueueDepth = asyncQueueDepth
@@ -283,12 +286,13 @@ public final class HearPortDiagnostics: @unchecked Sendable {
     public func snapshot() -> DiagnosticsSnapshot {
         lock.lock()
         defer { lock.unlock() }
+        let activeBytes = fileSizeLocked(activeURL)
+        let rotated = rotatedURLsLocked().filter { fileManager.fileExists(atPath: $0.path) }
         return DiagnosticsSnapshot(
             entryCount: tail.count,
-            activeBytes: fileSizeLocked(activeURL),
-            rotatedFileCount: rotatedURLsLocked()
-                .filter { fileManager.fileExists(atPath: $0.path) }
-                .count,
+            activeBytes: activeBytes,
+            totalBytes: activeBytes + rotated.reduce(0) { $0 + fileSizeLocked($1) },
+            rotatedFileCount: rotated.count,
             level: configuredLevel,
             asyncQueueDepth: asyncQueue.count,
             asyncDroppedCount: asyncQueue.droppedCount
@@ -317,7 +321,7 @@ public final class HearPortDiagnostics: @unchecked Sendable {
             "HearPort diagnostics",
             "Generated: \(formatter.string(from: clock()))",
             "Log level: \(configuredLevel.label.lowercased())",
-            "Retained entries: \(tail.count)",
+            "Recent in-memory entries: \(tail.count)",
             "Async queue depth: \(asyncQueue.count)",
             "Async entries dropped: \(asyncQueue.droppedCount)",
             "",
