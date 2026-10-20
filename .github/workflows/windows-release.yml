@@ -87,6 +87,14 @@ jobs:
             --msquic-copyright "$vcpkg/installed/x64-windows/share/msquic/copyright"
           python scripts/package_release.py --build-dir out/build/windows-release --output-dir out/release `
             --notices-dir out/release-notices --runtime-dir "$env:VCToolsRedistDir/x64/Microsoft.VC143.CRT"
+      - name: Verify packaged GUI startup
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $archive = Get-Item out/release/HearPort-*-windows-x64.zip
+          Expand-Archive -LiteralPath $archive.FullName -DestinationPath out/release-smoke
+          $program = Get-ChildItem out/release-smoke -Filter HearPort.exe -Recurse | Select-Object -First 1
+          if (!$program) { throw 'Packaged HearPort.exe was not found' }
+          ./scripts/smoke_windows_release.ps1 -Executable $program.FullName
       - name: Upload Windows release files
         uses: actions/upload-artifact@v6
         with:

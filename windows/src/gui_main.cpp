@@ -639,7 +639,7 @@ class Application {
                  reinterpret_cast<WPARAM>(font_), TRUE);
     if (groups_[0].size() != 3 || groups_[1].size() != 2 ||
         groups_[2].size() != 2 || pages_[0].size() != 8 ||
-        pages_[1].size() != 10 || pages_[2].size() != 7 ||
+        pages_[1].size() != 11 || pages_[2].size() != 7 ||
         !port_frame_ || !port_edit_ || !footer_close_ || !footer_exit_) {
       return false;
     }
