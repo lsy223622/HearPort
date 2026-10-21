@@ -3,6 +3,9 @@ name: Offline production playback
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   playback:
     runs-on: macos-14

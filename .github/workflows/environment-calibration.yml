@@ -1,6 +1,9 @@
 name: Environment calibration checks
 on:
   workflow_dispatch:
+permissions:
+  contents: read
+
 jobs:
   calibration:
     runs-on: macos-14
