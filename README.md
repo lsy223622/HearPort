@@ -59,7 +59,11 @@ describe the observed network, not future guarantees.
 
 The same long-press menu can remove the iPad's saved pairing. Windows provides
 **Unpair iPad** in its pairing panel; this removes its saved credential and ends
-the connection. Each action clears the pairing stored on that device. The iPad's
+the connection. When connected, either action also sends an authenticated,
+best-effort unpair notice to the other endpoint. An offline peer cannot receive
+that notice. Explicit remembered-authentication rejection stops automatic retries
+without deleting saved credentials; timeouts and ordinary connection failures
+also preserve them. The iPad's
 **Keep screen awake** setting applies while HearPort is in the foreground;
 automatic tests also keep the screen awake while running.
 

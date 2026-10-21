@@ -407,3 +407,14 @@
 "Unpair this PC?" = "Unpair this PC?";
 
 "Could not remove the saved pairing." = "Could not remove the saved pairing.";
+
+"PC" = "PC";
+"Choose a PC" = "Choose a PC";
+"No PCs found. Open HearPort on your PC." = "No PCs found. Open HearPort on your PC.";
+"Pair again" = "Pair again";
+"The PC cancelled this pairing. Pair again to connect." = "The PC cancelled this pairing. Pair again to connect.";
+"The PC rejected the saved pairing. Retry or pair again." = "The PC rejected the saved pairing. Retry or pair again.";
+"Playback interrupted" = "Playback interrupted";
+"Restoring audio…" = "Restoring audio…";
+"The connection is active. Retry audio playback." = "The connection is active. Retry audio playback.";
+"Retry playback" = "Retry playback";

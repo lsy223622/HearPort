@@ -8,6 +8,10 @@ int main() {
   SenderService network(QuicServerOptions{}), usb(QuicServerOptions{});
   SenderAuthentication a(network,{}, {},"HearPort-diagnostics",shared);
   SenderAuthentication b(usb,{}, {},"HearPort-diagnostics",shared);
+  wire::ControlEnvelope unpaired;
+  unpaired.type=wire::ControlMessageType::session_end; unpaired.reason=3;
+  if(a.HandleControlPayload(wire::EncodeControlEnvelope(unpaired))) return 6;
+  if(b.HandleControlPayload(wire::EncodeControlEnvelope(unpaired))) return 7;
   if(!a.OpenPairingWindow() || a.pairing_pin().size()!=6 || b.pairing_pin()!=a.pairing_pin()) return 1;
 
   // Each endpoint has its own SPAKE exchange, while rejected points consume the

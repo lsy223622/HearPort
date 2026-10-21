@@ -5,6 +5,9 @@ struct AdaptiveCalibrationView: View {
     let result: AdaptiveCalibrationResult?
     let canStart: Bool
     let hasSelectedConnection: Bool
+    let canChooseComputer: Bool
+    let computers: [ComputerConnectionTarget]
+    @Binding var selectedComputer: ComputerConnectionTarget?
     let starting: Bool
     let status: String?
     let start: (Int, Int, Int) -> Void
@@ -18,6 +21,13 @@ struct AdaptiveCalibrationView: View {
         List {
             if let result { recommendation(result) }
             Section {
+                if canChooseComputer {
+                    NavigationLink {
+                        CalibrationComputerPicker(computers: computers, selection: $selectedComputer)
+                    } label: {
+                        LabeledContent("PC", value: selectedComputer?.title ?? NSLocalizedString("Choose a PC", comment: ""))
+                    }
+                }
                 CalibrationGoalPicker(selection: $goal).frame(height: 44)
                 MillisecondsControl("Maximum acceptable delay", value: $maximum, range: 40...2000)
                 Picker("Test segment duration", selection: $seconds) {
@@ -94,6 +104,33 @@ struct AdaptiveCalibrationView: View {
                     .accessibilityValue(Text(result.testedAt, style: .date) + Text(" ") + Text(result.testedAt, style: .time))
             }.textCase(nil)
         }
+    }
+}
+
+private struct CalibrationComputerPicker: View {
+    let computers: [ComputerConnectionTarget]
+    @Binding var selection: ComputerConnectionTarget?
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        List {
+            if !computers.contains(where: { $0.hasNetwork }) {
+                Text("No PCs found. Open HearPort on your PC.").foregroundStyle(.secondary)
+            }
+            ForEach(computers.filter { $0.hasNetwork }) { computer in
+                Button {
+                    selection = computer
+                    dismiss()
+                } label: {
+                    HStack {
+                        Text(computer.title)
+                        Spacer()
+                        if selection?.id == computer.id { Image(systemName: "checkmark") }
+                    }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+                }.buttonStyle(.automatic).tint(.blue)
+            }
+        }
+        .navigationTitle("Choose a PC").navigationBarTitleDisplayMode(.inline)
     }
 }
 

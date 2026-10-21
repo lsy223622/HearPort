@@ -174,7 +174,7 @@ bool ValidateEnvelope(const ControlEnvelope& envelope) noexcept {
   switch (envelope.type) {
     case ControlMessageType::session_end: {
       auto empty=envelope; empty.type=ControlMessageType::receiver_ready; empty.reason=0;
-      return (envelope.reason==1 || envelope.reason==2) && ValidateEnvelope(empty);
+      return (envelope.reason==1 || envelope.reason==2 || envelope.reason==3) && ValidateEnvelope(empty);
     }
     case ControlMessageType::session_end_ack: {
       auto empty=envelope; empty.type=ControlMessageType::receiver_ready;

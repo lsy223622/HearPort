@@ -30,6 +30,8 @@ import SwiftUI
     @State private var canvasHasAppeared = false
     @State private var control: ReceiverControlSession?
     @State private var audioOutput: PlatformAudioOutputController?
+    @State private var audioOutputState: AudioOutputState?
+    @State private var pairingNeedsAttention = false
     @AppStorage("hearport.detailedLogging") private var detailedLogging = false
     @AppStorage("hearport.autoConnect") private var autoConnect = false
     @AppStorage("hearport.usbAudio.transport") private var usbTransportModeRaw = AudioTransportMode.reliable.rawValue
@@ -239,7 +241,7 @@ import SwiftUI
     private var presentationStage: ConnectionPresentationStage {
         .resolve(completed: completedTestStatus != nil, reporting: sendingReport,
             recovering: retainingConnection && isConnecting, connecting: isConnecting,
-            playing: audioOutput != nil,
+            playing: audioOutput != nil || (connectionEstablished && audioOutputState == .failed),
             testing: testRunning)
     }
 
@@ -254,7 +256,13 @@ import SwiftUI
             return status == Self.localize("Disconnected") ? Self.localize("Connect to a PC") : status
         case .connecting: return Self.localize("Connecting")
         case .recovering: return Self.localize(calibrationRequestID == nil ? "Restoring connection" : "Starting calibration…")
-        case .playing: return Self.localize("Playing")
+        case .playing:
+            switch audioOutputState {
+            case .failed: return Self.localize("Audio output unavailable")
+            case .interrupted: return Self.localize("Playback interrupted")
+            case .recovering: return Self.localize("Restoring audio…")
+            default: return Self.localize("Playing")
+            }
         case .testing:
             if calibrationRequestID != nil { return Self.localize("Starting calibration…") }
             if let round = musicRound {
@@ -280,6 +288,8 @@ import SwiftUI
         case .connecting: return Self.localize("Searching network and USB…")
         case .reporting: return Self.localize("Waiting for the PC to confirm receipt.")
         case .completed: return completedTestStatus ?? ""
+        case .playing where audioOutputState == .failed:
+            return Self.localize("The connection is active. Retry audio playback.")
         default: return calibrationStartStatus ?? currentComputerName
         }
     }
@@ -305,6 +315,14 @@ import SwiftUI
                             .multilineTextAlignment(.center)
                             .textSelection(.enabled)
                         canvasLinkStatus
+                        if pairingNeedsAttention {
+                            Button("Pair again") { authMode = .pair; pin = ""; canvasSheet = .pairing }
+                                .tint(.blue).buttonStyle(.borderless)
+                        }
+                        if audioOutputState == .failed && connectionEstablished && !testRunning {
+                            Button("Retry playback", action: retryAudioOutput)
+                                .tint(.blue).buttonStyle(.borderless)
+                        }
                         if presentationStage == .connecting || presentationStage == .recovering || presentationStage == .reporting {
                             ProgressView().padding(.top, 4)
                         }
@@ -572,7 +590,11 @@ import SwiftUI
     private var connectionSetupView: some View {
         Form {
             Section("Windows PC") {
-                TextField("Hostname or IP address", text: $host)
+                TextField("Hostname or IP address", text: Binding(get: { host }, set: {
+                    host = $0
+                    selectedEndpoint = nil
+                    calibrationTarget = nil
+                }))
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
             }
@@ -688,6 +710,8 @@ import SwiftUI
             AdaptiveCalibrationView(result: adaptiveRunResult ?? adaptiveResult,
                 canStart: canStartCalibration,
                 hasSelectedConnection: calibrationTarget != nil || connectionEstablished || isConnecting,
+                canChooseComputer: !connectionEstablished && !isConnecting,
+                computers: connectionManager.computers, selectedComputer: $calibrationTarget,
                 starting: calibrationRequestID != nil,
                 status: calibrationStartStatus, start: startCalibration, apply: {
                     guard (adaptiveRunResult ?? adaptiveResult)?.apply() == true else { return false }
@@ -916,6 +940,7 @@ import SwiftUI
         }
         if !forCalibration { pendingCalibration = nil; calibrationTarget = nil }
         completedTestStatus = nil; connectionError = nil
+        pairingNeedsAttention = false; audioOutputState = nil
         completedAdaptiveConnection = nil
         adaptiveRunResult = nil; calibrationRunResult = nil; calibrationProgress = nil
         sendingReport = false; retainingConnection = false
@@ -1039,8 +1064,45 @@ import SwiftUI
                 session.activate()
             }
         }
-        session.onSessionEnded = { reason in
+        session.onAuthenticationRejected = { [weak session] message in
             DispatchQueue.main.async {
+                guard let session, pendingControls[id] === session else { return }
+                disconnect()
+                selectedEndpoint = route
+                if route.path == .network { host = route.host }
+                pairingNeedsAttention = true
+                connectionError = Self.localize(message)
+                status = connectionError ?? Self.localize("Connection failed")
+                diagnostics.log(.warning, category: .pairing, message: "remembered_auth_rejected_credentials_retained")
+            }
+        }
+        session.onSessionEnded = { [weak session] reason in
+            DispatchQueue.main.async {
+                if reason == 3 {
+                    guard connectionID == id, let session else { return }
+                    do {
+                        let store = KeychainRememberedCredentialStore()
+                        if let saved = try store.load() {
+                            guard PairingRecovery.removesCredential(reason: reason,
+                                authenticated: authenticatedIdentity != nil,
+                                session: session.pairedCredential, stored: saved) else { return }
+                            try store.remove()
+                        }
+                        hasRememberedCredential = false; authMode = .pair; pin = ""
+                        rememberedHost = ""; connectionManager.setRememberedIdentity(nil)
+                        disconnect()
+                        selectedEndpoint = route
+                        if route.path == .network { host = route.host }
+                        pairingNeedsAttention = true
+                        connectionError = Self.localize("The PC cancelled this pairing. Pair again to connect.")
+                        status = connectionError ?? Self.localize("Disconnected")
+                        diagnostics.log(.info, category: .pairing, message: "authenticated_peer_removed_pairing")
+                    } catch {
+                        disconnect()
+                        connectionError = Self.localize("Could not remove the saved pairing.")
+                    }
+                    return
+                }
                 if completedAdaptiveConnection == id {
                     if connectionID == id {
                         control?.cancel(); control = nil
@@ -1199,9 +1261,7 @@ import SwiftUI
                     return
                 }
                 do {
-                    let output = PlatformAudioOutputController(receiver: activeReceiver)
-                    try output.start()
-                    audioOutput = output
+                    try startAudioOutput(receiver: activeReceiver, id: id)
                     testRunning = session?.isMusicTest == true
                     musicRound = session?.musicTestRound
                     roundStartedAt = ProcessInfo.processInfo.systemUptime; roundElapsed = 0
@@ -1214,6 +1274,7 @@ import SwiftUI
                         fields: ["event": "ui_playback_started"]
                     )
                 } catch {
+                    audioOutputState = .failed
                     status = Self.localize("Audio output unavailable")
                     diagnostics.log(
                         .error,
@@ -1284,7 +1345,7 @@ import SwiftUI
         unpairTarget = nil
         do {
             try KeychainRememberedCredentialStore().remove()
-            disconnect()
+            disconnect(reason: 3)
             hasRememberedCredential = false; authMode = .pair; pin = ""
             rememberedHost = ""
             connectionManager.setRememberedIdentity(nil)
@@ -1295,13 +1356,23 @@ import SwiftUI
         }
     }
 
-    private func disconnect() {
+    private func disconnect(reason: UInt32 = 1) {
         pendingCalibration = nil; calibrationTarget = nil
         completedAdaptiveConnection = nil
-        control?.end(reason: 1)
-        connectionManager.stop()
         let hadActiveSession = control != nil || audioOutput != nil
+        let closing = control
+        control = nil
+        connectionManager.completed()
         connectionID = UUID()
+        let closedID = connectionID
+        if let closing {
+            closing.end(reason: reason) {
+                DispatchQueue.main.async {
+                    guard connectionID == closedID, !isConnecting, control == nil else { return }
+                    connectionManager.stop()
+                }
+            }
+        } else { connectionManager.stop() }
         isConnecting = false
         connectionError = nil
         connectionEstablished = false
@@ -1312,10 +1383,9 @@ import SwiftUI
         currentComputerName = ""
         activeNetworkEndpoint = ""
         currentComputerIdentity = ""; calibrationRequestID = nil; calibrationStartStatus = nil
-        control?.cancel()
-        control = nil
         try? audioOutput?.stop()
         audioOutput = nil
+        audioOutputState = nil; pairingNeedsAttention = false
         status = Self.localize("Disconnected")
         if hadActiveSession {
             diagnostics.log(
@@ -1326,6 +1396,33 @@ import SwiftUI
             )
         }
         refreshDiagnostics()
+    }
+
+    private func startAudioOutput(receiver: HearPortReceiver, id: UUID) throws {
+        let output = PlatformAudioOutputController(receiver: receiver)
+        output.onStateChanged = { [weak output] state in
+            DispatchQueue.main.async {
+                guard connectionID == id, let output, audioOutput === output else { return }
+                audioOutputState = state
+            }
+        }
+        do { try output.start() }
+        catch { try? output.stop(); throw error }
+        audioOutput = output; audioOutputState = .playing
+    }
+
+    private func retryAudioOutput() {
+        guard connectionEstablished, control != nil, !testRunning else { return }
+        try? audioOutput?.stop(); audioOutput = nil
+        do {
+            try startAudioOutput(receiver: receiver, id: connectionID)
+            status = Self.localize("Playing")
+        } catch {
+            audioOutputState = .failed
+            status = Self.localize("Audio output unavailable")
+            diagnostics.log(.error, category: .audio, message: "ui_audio_retry_failed",
+                fields: ["error_type": "\(type(of: error))"])
+        }
     }
 
     private func refreshDiagnostics() {

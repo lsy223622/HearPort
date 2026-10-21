@@ -8,5 +8,8 @@ int main() {
   assert(EncodeControlEnvelope(*decoded)==stop);
   const std::vector<std::byte> ack{std::byte{0xf2},std::byte{2},std::byte{0}};
   assert(DecodeControlEnvelope(ack)->type==ControlMessageType::session_end_ack);
-  auto bad=stop; bad.back()=std::byte{3}; assert(!DecodeControlEnvelope(bad));
+  auto unpaired=stop; unpaired.back()=std::byte{3};
+  const auto revoked=DecodeControlEnvelope(unpaired);
+  assert(revoked && revoked->reason==3 && EncodeControlEnvelope(*revoked)==unpaired);
+  auto bad=stop; bad.back()=std::byte{4}; assert(!DecodeControlEnvelope(bad));
 }

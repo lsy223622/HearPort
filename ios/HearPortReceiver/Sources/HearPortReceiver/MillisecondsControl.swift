@@ -18,7 +18,12 @@ struct MillisecondsControl: View {
             Spacer(minLength: 12)
             HStack(spacing: 0) {
                 adjustment("minus", delta: -5)
-                TextField("ms", text: $text)
+                TextField("ms", text: Binding(get: { text }, set: { input in
+                    text = input
+                    if let number = Int(input) {
+                        value = min(range.upperBound, max(range.lowerBound, number))
+                    }
+                }))
                     .keyboardType(.numberPad).focused($editing)
                     .multilineTextAlignment(.center).monospacedDigit()
                     .frame(width: 66, height: 36)
@@ -30,7 +35,7 @@ struct MillisecondsControl: View {
             Text("ms").foregroundStyle(.secondary).font(.caption)
         }
         .onAppear { text = String(value) }
-        .onChange(of: value) { text = String($0) }
+        .onChange(of: value) { if !editing { text = String($0) } }
         .onChange(of: editing) { if !$0 { commit() } }
         .onDisappear { commit() }
     }

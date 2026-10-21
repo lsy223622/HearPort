@@ -25,6 +25,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -48,6 +49,7 @@ constexpr UINT kTrayMessage = WM_APP + 1;
 constexpr UINT kStartMessage = WM_APP + 2;
 constexpr UINT kConnectionMessage = WM_APP + 3;
 constexpr UINT kCalibrationRequestMessage = WM_APP + 4;
+constexpr UINT kUnpairCompletedMessage = WM_APP + 5;
 constexpr UINT kTimer = 1;
 constexpr UINT kTrayIcon = 1;
 constexpr int kTab = 100;
@@ -1009,9 +1011,10 @@ class Application {
     std::wstring toggle = running_ ? Tr(L"Stop sender", L"停止发送服务")
                                    : Tr(L"Start sender", L"启动发送服务");
     SetTextIfChanged(toggle_, toggle.c_str());
+    EnableWindow(toggle_, !unpair_pending_);
     SetTextIfChanged(pairing_action_, paired_ ? Tr(L"Unpair iPad", L"取消配对").c_str()
                                            : Tr(L"Pair new iPad", L"配对新 iPad").c_str());
-    EnableWindow(pairing_action_, paired_ || (running_ && !connected_));
+    EnableWindow(pairing_action_, !unpair_pending_ && (paired_ || (running_ && !connected_)));
     SetTextIfChanged(certificate_,
                    certificate_ready_
                        ? Tr(L"Secure connection: certificate ready",
@@ -1049,17 +1052,25 @@ class Application {
   }
 
   void ForgetPairing() {
+    if (unpair_pending_) return;
     if (MessageBoxW(hwnd_, Tr(L"Unpair this iPad and end the current connection?", L"取消与 iPad 的配对并结束当前连接？").c_str(),
                     L"HearPort", MB_YESNO | MB_ICONQUESTION) != IDYES) return;
     const bool restart = running_;
-    StopService();
-    if (!hearport::windows::ProtectedCredentialStore{}.Remove()) {
-      if (restart) StartService();
+    if (!(host_ ? host_->RemovePairing() : hearport::windows::ProtectedCredentialStore{}.Remove())) {
       MessageBoxW(hwnd_, Tr(L"Could not remove the saved pairing.", L"无法删除保存的配对。").c_str(), L"HearPort", MB_OK | MB_ICONERROR);
       return;
     }
     paired_ = false;
-    if (restart) { StartService(); OpenPairing(); }
+    if (restart) {
+      unpair_pending_ = true;
+      unpair_session_directory_ = service_ ? service_->debug_session_directory() : std::filesystem::path{};
+      service_ = nullptr; running_ = false; connected_ = false; pin_expires_.reset();
+      unpair_worker_ = std::thread([this, closing = std::move(host_)]() mutable {
+        closing->Stop(3);
+        closing.reset();
+        PostMessageW(hwnd_, kUnpairCompletedMessage, 0, 0);
+      });
+    }
     UpdateStatus();
   }
 
@@ -1067,7 +1078,7 @@ class Application {
                     bool network_probe = false,
                     std::optional<hearport::windows::MusicExcerpt> music = std::nullopt,
                     bool calibration = false) {
-    if (running_) return;
+    if (running_ || unpair_pending_) return;
     error_.clear();
     paired_ = hearport::windows::ProtectedCredentialStore{}.Load().has_value();
     if (data_dir_.empty()) {
@@ -1149,11 +1160,17 @@ class Application {
   }
 
   void StopService() {
-    const auto session_directory = service_ ? service_->debug_session_directory()
-                                             : std::filesystem::path{};
+    const auto session_directory = unpair_pending_ ? unpair_session_directory_ :
+        (service_ ? service_->debug_session_directory() : std::filesystem::path{});
+    if (unpair_worker_.joinable()) unpair_worker_.join();
+    unpair_pending_ = false; unpair_session_directory_.clear();
     if (host_) host_->Stop();
     host_.reset();
     service_ = nullptr;
+    FinishServiceStop(session_directory);
+  }
+
+  void FinishServiceStop(const std::filesystem::path& session_directory) {
     logger_.Stop();
     if (!session_directory.empty()) {
       std::error_code archive_error;
@@ -1609,6 +1626,12 @@ class Application {
       case kStartMessage:
         StartService();
         return 0;
+      case kUnpairCompletedMessage:
+        if (unpair_pending_) {
+          StopService();
+          StartService(); OpenPairing();
+        }
+        return 0;
       case kCalibrationRequestMessage:
         if (running_ && service_ && !service_->debug_duration() &&
             !service_->network_probe() && !service_->music_test() && !service_->environment_calibration() &&
@@ -1622,11 +1645,12 @@ class Application {
         }
         return 0;
       case kConnectionMessage:
+        if (unpair_pending_) return 0;
         connected_ = wparam != 0;
         usb_connected_ = (lparam & 2) != 0;
         if (host_) service_ = &host_->service();
+        paired_ = hearport::windows::ProtectedCredentialStore{}.Load().has_value();
         if (connected_) {
-          paired_ = hearport::windows::ProtectedCredentialStore{}.Load().has_value();
           pin_expires_.reset();
         }
         UpdateStatus();
@@ -1846,6 +1870,9 @@ class Application {
   HBRUSH page_brush_ = CreateSolidBrush(RGB(42, 42, 42));
   HBRUSH edit_brush_ = CreateSolidBrush(RGB(45, 45, 45));
   std::unique_ptr<hearport::windows::SenderHost> host_;
+  std::thread unpair_worker_;
+  bool unpair_pending_ = false;
+  std::filesystem::path unpair_session_directory_;
   SenderService* service_ = nullptr;
 };
 

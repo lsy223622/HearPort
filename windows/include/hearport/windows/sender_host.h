@@ -11,8 +11,9 @@ class SenderHost {
   ~SenderHost();
   void Configure(const std::function<void(SenderService&)>& configure);
   bool Start();
-  void Stop();
+  void Stop(std::uint32_t reason = 1);
   bool OpenPairingWindow();
+  bool RemovePairing();
   std::string pairing_pin() const;
   SenderService& service();
   bool WaitForDebugCompletion(std::chrono::milliseconds timeout);

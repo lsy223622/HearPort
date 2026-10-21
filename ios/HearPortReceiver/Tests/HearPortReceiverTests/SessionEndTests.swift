@@ -7,6 +7,9 @@ final class SessionEndTests: XCTestCase {
         XCTAssertEqual(try ControlEnvelope.decode(stop).message, .sessionEnd(reason: 1))
         XCTAssertEqual(try ControlEnvelope(.sessionEnd(reason: 1)).encoded(), stop)
         XCTAssertEqual(try ControlEnvelope.decode(ack).message, .sessionEndAck)
-        XCTAssertThrowsError(try ControlEnvelope.decode(Data([0xea,2,2,8,3])))
+        let unpaired = Data([0xea,2,2,8,3])
+        XCTAssertEqual(try ControlEnvelope.decode(unpaired).message, .sessionEnd(reason: 3))
+        XCTAssertEqual(try ControlEnvelope(.sessionEnd(reason: 3)).encoded(), unpaired)
+        XCTAssertThrowsError(try ControlEnvelope.decode(Data([0xea,2,2,8,4])))
     }
 }

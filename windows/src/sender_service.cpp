@@ -226,9 +226,15 @@ void SenderService::StopCapture() {
   capture_started_ = false;
 }
 
-void SenderService::NotifyUserStop() {
+void SenderService::NotifyUserStop(std::uint32_t reason) {
+  {
+    std::lock_guard lock(session_mutex_);
+    if (session_.phase() != SessionPhase::ready &&
+        session_.phase() != SessionPhase::pending_stream &&
+        session_.phase() != SessionPhase::active) return;
+  }
   wire::ControlEnvelope end;
-  end.type=wire::ControlMessageType::session_end; end.reason=1;
+  end.type=wire::ControlMessageType::session_end; end.reason=reason;
   std::unique_lock lock(end_mutex_);
   end_acknowledged_=false;
   if(SendControlPayload(wire::EncodeControlEnvelope(end)))
