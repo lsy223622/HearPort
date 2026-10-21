@@ -1,5 +1,11 @@
 # HearPort 0.1.0 release checklist
 
+## Pairing safety and interaction recovery candidate (2026-10-21)
+
+- [x] Matching source `e59628ab0f34fd6a8f9a8293d5c5d20e4ed03078`: Windows Actions [39593250742](https://github.com/lsy223622/HearPort/actions/runs/39593250742) passed 24 CTest, 28 Python checks and packaged startup/paint checks; iPad Actions [39593250802](https://github.com/lsy223622/HearPort/actions/runs/39593250802) passed 216 Swift tests and archived unsigned build 184; CodeQL [39593251795](https://github.com/lsy223622/HearPort/actions/runs/39593251795) passed. Downloaded hashes, all 100 Windows files, matching embedded build identities and unsigned IPA packaging verified. The Actions Windows executable was launched locally, responded and listened on UDP 52137.
+- [ ] Install iPad build 184 with the new Windows package. Check connected unpair in each direction, offline unpair followed by a stopped authentication attempt, retained credentials after ordinary transport interruption, and re-pairing.
+- [ ] Check edited manual address, immediate Start after numeric editing, in-page PC selection with settings retained, and audio-output retry feedback.
+
 ## Independent route latency candidate (2026-10-21)
 
 - [x] Menu summary follow-up: Actions [39586833423](https://github.com/lsy223622/HearPort/actions/runs/39586833423), 214 Swift tests, unsigned build 183 and CodeQL passed. IPA hash, source/build identity and unsigned packaging verified.
