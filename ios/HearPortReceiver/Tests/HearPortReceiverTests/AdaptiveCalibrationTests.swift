@@ -150,13 +150,18 @@ final class AdaptiveCalibrationTests: XCTestCase {
         let p = AdaptiveParameters(reliable: true, format: try AudioStreamFormat(opus: true, bitrate: 192_000, frameCount: 480),
             budget: CalibrationBudget(target: 95, maximum: 150), reserve: 11)
         defaults.set("pcm", forKey: "hearport.usbAudio.codec")
+        defaults.set(25, forKey: PlaybackLatencyPreferences.usbTargetKey)
+        defaults.set(75, forKey: PlaybackLatencyPreferences.usbMaximumKey)
         let observed = AdaptiveObservation(parameters: p, measurement: measurement(p), validation: true)
         let result = AdaptiveCalibrationResult(testedAt: Date(), goal: 2, maximum: 300,
             observations: [observed,observed], selected: p, complete: true)
         XCTAssertTrue(result.apply(to: defaults))
         XCTAssertEqual(AudioStreamFormat.load(usb: false, defaults: defaults), p.format)
         XCTAssertEqual(AudioStreamFormat.load(usb: true, defaults: defaults), .pcm)
-        XCTAssertEqual(defaults.integer(forKey: "hearport.targetLatencyMs"), 95)
+        XCTAssertEqual(PlaybackLatencyPreferences.load(usb: false, defaults: defaults),
+                       PlaybackLatencyPreferences(target: 95, maximum: 150))
+        XCTAssertEqual(PlaybackLatencyPreferences.load(usb: true, defaults: defaults),
+                       PlaybackLatencyPreferences(target: 25, maximum: 75))
         result.save(to: defaults)
         XCTAssertTrue(try XCTUnwrap(AdaptiveCalibrationResult.load(from: defaults)).canApply)
         let partial = AdaptiveCalibrationResult(testedAt: Date(), goal: 2, maximum: 300,

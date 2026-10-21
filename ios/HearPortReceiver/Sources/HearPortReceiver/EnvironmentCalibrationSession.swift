@@ -62,8 +62,8 @@ struct CalibrationResult: Codable, Sendable {
         guard canApply(profile: profile), let choice = analysis?.recommendations.first(where: { $0.profile == profile })?.choice else { return false }
         defaults.set(choice.reliable ? AudioTransportMode.reliable.rawValue : AudioTransportMode.datagram.rawValue,
                      forKey: "hearport.audioTransportMode")
-        defaults.set(choice.budget.target, forKey: "hearport.targetLatencyMs")
-        defaults.set(choice.budget.maximum, forKey: "hearport.maximumLatencyMs")
+        defaults.set(choice.budget.target, forKey: PlaybackLatencyPreferences.networkTargetKey)
+        defaults.set(choice.budget.maximum, forKey: PlaybackLatencyPreferences.networkMaximumKey)
         return true
     }
     var reportSections: String {

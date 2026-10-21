@@ -49,7 +49,7 @@ final class EnvironmentCalibrationSessionTests: XCTestCase {
         XCTAssertEqual(defaults.data(forKey: CalibrationResult.storageKey), Data([1,2,3]))
         XCTAssertNil(CalibrationResult.load(from: defaults))
         XCTAssertFalse(incomplete.apply(profile: 1, to: defaults))
-        XCTAssertNil(defaults.object(forKey: "hearport.targetLatencyMs"))
+        XCTAssertNil(defaults.object(forKey: PlaybackLatencyPreferences.networkTargetKey))
         XCTAssertFalse(incomplete.reportSections.contains("nan"))
         XCTAssertTrue(incomplete.reportSections.contains("calibration_summary_v1"))
     }
@@ -58,6 +58,8 @@ final class EnvironmentCalibrationSessionTests: XCTestCase {
         let name = "CalibrationTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: name)!
         defer { defaults.removePersistentDomain(forName: name) }
+        defaults.set(25, forKey: PlaybackLatencyPreferences.usbTargetKey)
+        defaults.set(75, forKey: PlaybackLatencyPreferences.usbMaximumKey)
         let budget = CalibrationBudget(target: 50, maximum: 100)
         let choice = CalibrationChoice(profileMask: 7, reliable: true, budget: budget, outputReserve: 11)
         var baseline = CalibrationMeasurement(round: 0, reliable: true, budget: budget, outputReserve: 11, inputFingerprint: "fixture")
@@ -84,8 +86,10 @@ final class EnvironmentCalibrationSessionTests: XCTestCase {
         XCTAssertTrue(CalibrationResult.load(from: defaults)?.usable == true)
         XCTAssertTrue(confirmed.apply(profile: 2, to: defaults))
         XCTAssertEqual(defaults.string(forKey: "hearport.audioTransportMode"), AudioTransportMode.reliable.rawValue)
-        XCTAssertEqual(defaults.integer(forKey: "hearport.targetLatencyMs"), 50)
-        XCTAssertEqual(defaults.integer(forKey: "hearport.maximumLatencyMs"), 100)
+        XCTAssertEqual(PlaybackLatencyPreferences.load(usb: false, defaults: defaults),
+                       PlaybackLatencyPreferences(target: 50, maximum: 100))
+        XCTAssertEqual(PlaybackLatencyPreferences.load(usb: true, defaults: defaults),
+                       PlaybackLatencyPreferences(target: 25, maximum: 75))
         XCTAssertEqual(confirmed.validationStatus(profile: 2), "observed")
         second.missingOutputSeconds = 0.002; second.longestOutputGapMilliseconds = 25
         var worse = CalibrationResult(version: 1, planID: 7, testedAt: Date(), seconds: 30, maximum: 100,

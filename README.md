@@ -32,8 +32,11 @@ firewall details.
 
 ## Playback settings and tests
 
-The iPad's **Playback** settings select Datagram or Reliable stream audio and
-set a normal target and maximum total delay. These are playback budget values,
+The iPad's **Playback** settings contain separate **Network audio** and **USB audio**
+pages for transport, encoding, normal target and maximum total delay. Each route
+keeps its own settings and uses them when connecting or switching routes.
+Both routes initially use a 50 ms target and 100 ms maximum; upgrading preserves
+the previous shared budget for the network route. These are playback budget values,
 not measured speaker latency. They include transport, processing, and output;
 the maximum controls how long an interruption can be tolerated. Changes apply
 on the next connection.
@@ -51,7 +54,8 @@ Normal playback reconnects automatically when testing finishes. Results remain o
 full diagnostic tests and report collection are available
 from Windows. Random traffic matches the current constant-bitrate packet load,
 reserving codec preparation time; it does not benchmark decoder speed or audio
-quality. Recommendations describe the observed network, not future guarantees.
+quality. Applying a recommendation updates network settings only. Recommendations
+describe the observed network, not future guarantees.
 
 The same long-press menu can remove the iPad's saved pairing. Windows provides
 **Unpair iPad** in its pairing panel; this removes its saved credential and ends
