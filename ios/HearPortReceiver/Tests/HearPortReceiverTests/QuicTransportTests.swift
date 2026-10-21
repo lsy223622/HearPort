@@ -5,6 +5,21 @@ import XCTest
 @testable import HearPortReceiver
 
 final class QuicTransportTests: XCTestCase {
+    func testReportsTheActualConnectedRemoteAddress() throws {
+        guard ProcessInfo.processInfo.environment["HEARPORT_QUIC_INTEGRATION"] == "1" else {
+            throw XCTSkip("Requires the loopback QUIC echo server")
+        }
+        let transport = HearPortQuicTransport()
+        let resolved = expectation(description: "Actual remote endpoint")
+        resolved.assertForOverFulfill = false
+        transport.onRemoteAddress = { address in
+            XCTAssertEqual(address, "127.0.0.1:44330")
+            resolved.fulfill()
+        }
+        defer { transport.cancel() }
+        transport.connect(host: "127.0.0.1", port: 44330, tlsPolicy: .pairing(onPeerSPKIHash: { _ in }))
+        wait(for: [resolved], timeout: 15)
+    }
     func testLiveOpusReliableUsesVariableFramingWithoutMusicMode() throws {
         guard ProcessInfo.processInfo.environment["HEARPORT_QUIC_INTEGRATION"] == "1" else {
             throw XCTSkip("Requires the loopback QUIC echo server")

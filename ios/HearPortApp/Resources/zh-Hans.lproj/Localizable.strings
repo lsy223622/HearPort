@@ -152,6 +152,8 @@
 "Maximum delay: %lld ms" = "最大延迟：%lld 毫秒";
 "Estimated test time: %lld–%lld seconds, plus analysis and report." = "预计测试用时：%lld–%lld 秒，另需分析和回传报告。";
 "Start automatic test" = "开始自动测试";
+"No connection selected" = "未选择连接";
+"Resolving address…" = "正在解析地址…";
 "Test settings" = "测试设置";
 "The test pauses playback and sends test traffic over the PC's local network (LAN), not USB. Connect a remembered PC with a network route before starting." = "测试期间会暂停播放，并通过电脑的局域网连接发送测试流量。请先连接已保存配对且有局域网路线的电脑。";
 "Automatic test and recommendations" = "自动测试并推荐参数";

@@ -26,6 +26,8 @@ import SwiftUI
     @StateObject private var connectionManager = ReceiverConnectionCoordinator()
     @State private var pendingControls: [UUID: ReceiverControlSession] = [:]
     @State private var activePath: ConnectionPath = .network
+    @State private var activeNetworkEndpoint = ""
+    @State private var canvasHasAppeared = false
     @State private var control: ReceiverControlSession?
     @State private var audioOutput: PlatformAudioOutputController?
     @AppStorage("hearport.detailedLogging") private var detailedLogging = false
@@ -342,9 +344,13 @@ import SwiftUI
                 .padding(.vertical, 24)
                 .frame(maxWidth: .infinity)
                 .frame(minHeight: geometry.size.height, alignment: .top)
-                .animation(reduceMotion ? nil : .easeInOut(duration: 0.45), value: presentationStage)
+                .animation(reduceMotion || !canvasHasAppeared ? nil : .easeInOut(duration: 0.45), value: presentationStage)
             }
             .background(Color(uiColor: .systemGroupedBackground))
+        }
+        .background(CanvasAppearanceObserver { canvasHasAppeared = true })
+        .transaction { transaction in
+            if !canvasHasAppeared { transaction.disablesAnimations = true; transaction.animation = nil }
         }
     }
 
@@ -539,7 +545,8 @@ import SwiftUI
         Form {
             Section("Current connection") {
                 LabeledContent("Windows PC", value: currentComputerName)
-                LabeledContent("Path", value: Self.localize(activePath == .usb ? "USB" : "Local network"))
+                LabeledContent("Path", value: activePath == .usb ? "USB" :
+                    activeNetworkEndpoint.isEmpty ? Self.localize("Resolving address…") : activeNetworkEndpoint)
                 LabeledContent("Transport", value: (musicRound?.reliable ?? (activeAudioMode == .reliable)) ? "Reliable stream" : "Datagram")
                 if musicRound == nil { LabeledContent("Audio format", value: activeAudioFormat.label) }
                 if connectionEstablished && !isConnecting { Label("Identity verified", systemImage: "checkmark.shield") }
@@ -584,11 +591,13 @@ import SwiftUI
                 }
             }
             Section {
-                Button("Connect") {
+                Button {
                     connect(selected: selectedEndpoint, forCalibration: pendingCalibration != nil)
                     if canvasSheet == .pairing { canvasSheet = nil }
+                } label: {
+                    Text("Connect").frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
                 }
-                .foregroundStyle(.blue).buttonStyle(.borderless)
+                .buttonStyle(.automatic).tint(.blue)
                 .disabled((host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && connectionManager.endpoints.isEmpty) ||
                           (authMode != .remembered && !PairingSecurity.validatePIN(pin)))
             }
@@ -660,7 +669,9 @@ import SwiftUI
             })
         } else {
             AdaptiveCalibrationView(result: adaptiveRunResult ?? adaptiveResult,
-                canStart: canStartCalibration, starting: calibrationRequestID != nil,
+                canStart: canStartCalibration,
+                hasSelectedConnection: calibrationTarget != nil || connectionEstablished || isConnecting,
+                starting: calibrationRequestID != nil,
                 status: calibrationStartStatus, start: startCalibration, apply: {
                     guard (adaptiveRunResult ?? adaptiveResult)?.apply() == true else { return false }
                     audioTransportModeRaw = UserDefaults.standard.string(forKey: "hearport.audioTransportMode") ?? AudioTransportMode.datagram.rawValue
@@ -944,6 +955,15 @@ import SwiftUI
             audioMode: audioMode,
             provider: PairingSecurity.defaultSpake2Provider()
         )
+        var resolvedNetworkEndpoint = ""
+        if route.path == .network {
+            session.transport.onRemoteAddress = { address in
+                DispatchQueue.main.async {
+                    resolvedNetworkEndpoint = address
+                    if connectionID == id { activeNetworkEndpoint = address }
+                }
+            }
+        }
         let target = targetLatencyMs, maximum = maximumLatencyMs
         session.requestedFormat = AudioStreamFormat.load(usb: route.path == .usb)
         session.requestedBudget = try! PlayoutBudget(targetMilliseconds: Double(target),
@@ -980,6 +1000,7 @@ import SwiftUI
                 connectionID = id; control = session; receiver = activeReceiver
                 pendingControls.removeValue(forKey: id)
                 activePath = route.path
+                activeNetworkEndpoint = resolvedNetworkEndpoint
                 currentComputerName = "HearPort-" + identity.prefix(6).map { String(format: "%02x", $0) }.joined()
                 currentComputerIdentity = identity.map { String(format: "%02x", $0) }.joined()
                 if features & ControlFeature.environmentCalibration != 0 {
@@ -1269,6 +1290,7 @@ import SwiftUI
         sendingReport = false; retainingConnection = false; musicRound = nil; testRunning = false
         qualityTracker = LinkStabilityTracker(); linkSample = nil
         currentComputerName = ""
+        activeNetworkEndpoint = ""
         currentComputerIdentity = ""; calibrationRequestID = nil; calibrationStartStatus = nil
         control?.cancel()
         control = nil
@@ -1400,6 +1422,33 @@ import SwiftUI
 
     private static func localize(_ key: String) -> String {
         NSLocalizedString(key, bundle: .main, comment: "")
+    }
+}
+
+private struct CanvasAppearanceObserver: UIViewControllerRepresentable {
+    let onFirstAppearance: () -> Void
+
+    func makeUIViewController(context: Context) -> Controller {
+        let controller = Controller()
+        controller.view.backgroundColor = .clear
+        controller.view.isUserInteractionEnabled = false
+        controller.onFirstAppearance = onFirstAppearance
+        return controller
+    }
+
+    func updateUIViewController(_ controller: Controller, context: Context) {
+        controller.onFirstAppearance = onFirstAppearance
+    }
+
+    final class Controller: UIViewController {
+        var onFirstAppearance: (() -> Void)?
+        private var appeared = false
+        override func viewDidAppear(_ animated: Bool) {
+            super.viewDidAppear(animated)
+            guard !appeared else { return }
+            appeared = true
+            onFirstAppearance?()
+        }
     }
 }
 

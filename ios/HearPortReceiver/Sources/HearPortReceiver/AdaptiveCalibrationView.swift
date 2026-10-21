@@ -4,6 +4,7 @@ import SwiftUI
 struct AdaptiveCalibrationView: View {
     let result: AdaptiveCalibrationResult?
     let canStart: Bool
+    let hasSelectedConnection: Bool
     let starting: Bool
     let status: String?
     let start: (Int, Int, Int) -> Void
@@ -28,11 +29,12 @@ struct AdaptiveCalibrationView: View {
                     applied = false; start(goal, seconds, maximum)
                 } label: {
                     HStack {
-                        Text(starting ? LocalizedStringKey("Starting calibration…") : LocalizedStringKey("Start automatic test"))
+                        Text(starting ? LocalizedStringKey("Starting calibration…") :
+                            hasSelectedConnection ? LocalizedStringKey("Start automatic test") : LocalizedStringKey("No connection selected"))
                         if starting { ProgressView().tint(.blue) }
-                    }.frame(maxWidth: .infinity, alignment: .leading)
+                    }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
                 }
-                .buttonStyle(.borderless).tint(.blue)
+                .buttonStyle(.automatic).tint(.blue)
                 .disabled(!canStart || starting)
                 if let status { Text(status).font(.footnote).foregroundStyle(.secondary) }
             } header: {
@@ -56,8 +58,9 @@ struct AdaptiveCalibrationView: View {
                 } label: {
                     Text(applied ? LocalizedStringKey("Applied for the next connection") : LocalizedStringKey("Apply parameters"))
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
                 }
-                .buttonStyle(.borderless).tint(.blue)
+                .buttonStyle(.automatic).tint(.blue)
                 .disabled(applied || !result.canApply)
             } else {
                 Text("Insufficient valid observations. Check the connection and test again.")
