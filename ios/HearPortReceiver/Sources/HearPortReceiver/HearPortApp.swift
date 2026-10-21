@@ -35,8 +35,10 @@ import SwiftUI
     @AppStorage("hearport.usbAudio.transport") private var usbTransportModeRaw = AudioTransportMode.reliable.rawValue
     @AppStorage("hearport.audioTransportMode") private var audioTransportModeRaw = AudioTransportMode.datagram.rawValue
     @AppStorage("hearport.jitterStartupPackets") private var jitterBufferTargetPackets = 8
-    @AppStorage("hearport.targetLatencyMs") private var targetLatencyMs = 50
-    @AppStorage("hearport.maximumLatencyMs") private var maximumLatencyMs = 100
+    @AppStorage(PlaybackLatencyPreferences.networkTargetKey) private var networkTargetLatencyMs = 50
+    @AppStorage(PlaybackLatencyPreferences.networkMaximumKey) private var networkMaximumLatencyMs = 100
+    @AppStorage(PlaybackLatencyPreferences.usbTargetKey) private var usbTargetLatencyMs = 50
+    @AppStorage(PlaybackLatencyPreferences.usbMaximumKey) private var usbMaximumLatencyMs = 100
     @AppStorage("hearport.networkAudio.codec") private var networkCodec = "opus"
     @AppStorage("hearport.networkAudio.bitrate") private var networkBitrate = 256_000
     @AppStorage("hearport.networkAudio.frames") private var networkFrames = 240
@@ -83,7 +85,7 @@ import SwiftUI
         var id: String { rawValue }
     }
 
-    public init() {}
+    public init() { PlaybackLatencyPreferences.migrate() }
 
     public var body: some View {
         NavigationStack {
@@ -613,19 +615,18 @@ import SwiftUI
 
     private var playbackSettingsSection: some View {
             Section {
-                audioFormatLink("Network audio", codec: $networkCodec, bitrate: $networkBitrate, frames: $networkFrames, transport: $audioTransportModeRaw)
-                audioFormatLink("USB audio", codec: $usbCodec, bitrate: $usbBitrate, frames: $usbFrames, transport: $usbTransportModeRaw)
-                MillisecondsControl("Normal target", value: $targetLatencyMs, range: 10...max(10, maximumLatencyMs))
-                MillisecondsControl("Maximum total delay", value: $maximumLatencyMs, range: max(20, targetLatencyMs)...2_000)
+                audioFormatLink("Network audio", codec: $networkCodec, bitrate: $networkBitrate, frames: $networkFrames,
+                                transport: $audioTransportModeRaw, target: $networkTargetLatencyMs, maximum: $networkMaximumLatencyMs)
+                audioFormatLink("USB audio", codec: $usbCodec, bitrate: $usbBitrate, frames: $usbFrames,
+                                transport: $usbTransportModeRaw, target: $usbTargetLatencyMs, maximum: $usbMaximumLatencyMs)
             } header: {
                 Text("Playback")
-            } footer: {
-                Text("The target and maximum include transport, processing and output. Changes take effect on the next connection. A higher maximum can tolerate longer interruptions.")
             }
     }
 
     private func audioFormatLink(_ title: LocalizedStringKey, codec: Binding<String>,
-                                 bitrate: Binding<Int>, frames: Binding<Int>, transport: Binding<String>) -> some View {
+                                 bitrate: Binding<Int>, frames: Binding<Int>, transport: Binding<String>,
+                                 target: Binding<Int>, maximum: Binding<Int>) -> some View {
         NavigationLink {
             Form {
                 Section {
@@ -651,6 +652,12 @@ import SwiftUI
                 } footer: {
                     Text("Longer packets reduce packet frequency and need more collection time. All processing uses the selected total delay budget. Changes take effect on the next connection.")
                 }
+                Section {
+                    MillisecondsControl("Normal target", value: target, range: 10...max(10, maximum.wrappedValue))
+                    MillisecondsControl("Maximum total delay", value: maximum, range: max(20, target.wrappedValue)...2_000)
+                } footer: {
+                    Text("The target and maximum include transport, processing and output. Changes take effect on the next connection. A higher maximum can tolerate longer interruptions.")
+                }
             }.navigationTitle(title).navigationBarTitleDisplayMode(.inline)
         } label: {
             LabeledContent(title, value: codec.wrappedValue == "opus" ?
@@ -675,8 +682,9 @@ import SwiftUI
                 status: calibrationStartStatus, start: startCalibration, apply: {
                     guard (adaptiveRunResult ?? adaptiveResult)?.apply() == true else { return false }
                     audioTransportModeRaw = UserDefaults.standard.string(forKey: "hearport.audioTransportMode") ?? AudioTransportMode.datagram.rawValue
-                    targetLatencyMs = UserDefaults.standard.integer(forKey: "hearport.targetLatencyMs")
-                    maximumLatencyMs = UserDefaults.standard.integer(forKey: "hearport.maximumLatencyMs")
+                    let budget = PlaybackLatencyPreferences.load(usb: false)
+                    networkTargetLatencyMs = budget.target
+                    networkMaximumLatencyMs = budget.maximum
                     networkCodec = UserDefaults.standard.string(forKey: "hearport.networkAudio.codec") ?? "opus"
                     networkBitrate = UserDefaults.standard.object(forKey: "hearport.networkAudio.bitrate") as? Int ?? 256_000
                     networkFrames = UserDefaults.standard.object(forKey: "hearport.networkAudio.frames") as? Int ?? 240
@@ -905,7 +913,7 @@ import SwiftUI
         musicRound = nil; testRunning = false; currentComputerName = ""
         qualityTracker = LinkStabilityTracker(); linkSample = nil
         isConnecting = true; status = Self.localize("Searching network and USB…")
-        connectionManager.setMaximumLatency(maximumLatencyMs)
+        connectionManager.setMaximumLatency(usbMaximumLatencyMs)
         connectionManager.connect(manualHost: host.trimmingCharacters(in: .whitespacesAndNewlines),
             selected: selected, useRememberedIdentity: authMode == .remembered)
     }
@@ -964,7 +972,9 @@ import SwiftUI
                 }
             }
         }
-        let target = targetLatencyMs, maximum = maximumLatencyMs
+        let budget = PlaybackLatencyPreferences.load(usb: route.path == .usb)
+        let target = budget.target, maximum = budget.maximum
+        if route.path == .usb { connectionManager.setMaximumLatency(maximum) }
         session.requestedFormat = AudioStreamFormat.load(usb: route.path == .usb)
         session.requestedBudget = try! PlayoutBudget(targetMilliseconds: Double(target),
             maximumMilliseconds: Double(maximum), outputReserveMilliseconds: 1)

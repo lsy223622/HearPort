@@ -48,8 +48,8 @@ struct AdaptiveCalibrationResult: Codable, Sendable {
         guard canApply, let p = selected else { return false }
         defaults.set(p.reliable ? AudioTransportMode.reliable.rawValue : AudioTransportMode.datagram.rawValue,
                      forKey: "hearport.audioTransportMode")
-        defaults.set(p.budget.target, forKey: "hearport.targetLatencyMs")
-        defaults.set(p.budget.maximum, forKey: "hearport.maximumLatencyMs")
+        defaults.set(p.budget.target, forKey: PlaybackLatencyPreferences.networkTargetKey)
+        defaults.set(p.budget.maximum, forKey: PlaybackLatencyPreferences.networkMaximumKey)
         defaults.set(p.format.opus ? "opus" : "pcm", forKey: "hearport.networkAudio.codec")
         if p.format.opus {
             defaults.set(p.format.bitrate, forKey: "hearport.networkAudio.bitrate")
