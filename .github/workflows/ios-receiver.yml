@@ -27,6 +27,9 @@ on:
       - "LICENSE"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   swift-package:
     runs-on: macos-14

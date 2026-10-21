@@ -3,6 +3,9 @@ name: Offline clock validation
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   validate:
     runs-on: macos-14

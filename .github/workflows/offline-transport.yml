@@ -8,6 +8,9 @@ on:
         default: decomposition
         options: [decomposition, sensitivity, components, timing, capacity, replay, projection, endurance]
 
+permissions:
+  contents: read
+
 jobs:
   simulate:
     runs-on: macos-14

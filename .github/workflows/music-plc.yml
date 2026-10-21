@@ -3,6 +3,9 @@ name: Offline music concealment references
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   music-reference:
     runs-on: macos-14
