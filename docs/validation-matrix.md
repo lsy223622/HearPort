@@ -18,6 +18,7 @@ continuation/resumption; it is not a monitored continuous-music soak.
 
 ## Independent network and USB latency settings (2026-10-21)
 
+- Menu summary follow-up: source `1e15f44e2d502afb27a9374a24ba5fc29c41bbb2`, iPad Actions [39586833423](https://github.com/lsy223622/HearPort/actions/runs/39586833423), 214 Swift tests and unsigned build 183 passed; CodeQL [39586833653](https://github.com/lsy223622/HearPort/actions/runs/39586833653) passed. IPA hash, embedded identity and unsigned packaging verified. Each route menu row now shows encoding plus its own target/maximum in a second, localized line. Device appearance remains to be checked.
 - Source `3370ee2c55083328c1d0d3c66ebc111a674e7af1`: iPad Actions [39583024058](https://github.com/lsy223622/HearPort/actions/runs/39583024058) passed 214 Swift tests and archived unsigned build 182. CodeQL [39583022167](https://github.com/lsy223622/HearPort/actions/runs/39583022167) passed. Downloaded IPA SHA-256, embedded source/build identity and unsigned packaging were verified.
 - Network audio and USB audio each contain their own normal target and maximum total delay. Connections and route changes read the actual route's saved budget; USB tunnel queue expiry follows its USB maximum. Active playback continues using its negotiated snapshot until the next connection.
 - Upgrade migration preserves the previous shared delay values for network playback; USB starts at the original 50/100 ms defaults. Existing separate route values are preserved on repeated migration.

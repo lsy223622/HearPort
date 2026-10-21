@@ -2,6 +2,8 @@
 
 ## Independent route latency candidate (2026-10-21)
 
+- [x] Menu summary follow-up: Actions [39586833423](https://github.com/lsy223622/HearPort/actions/runs/39586833423), 214 Swift tests, unsigned build 183 and CodeQL passed. IPA hash, source/build identity and unsigned packaging verified.
+- [ ] Check encoding and independent target/maximum summaries on both route rows, including light and dark appearance.
 - [x] Source `3370ee2c55083328c1d0d3c66ebc111a674e7af1`: iPad Actions [39583024058](https://github.com/lsy223622/HearPort/actions/runs/39583024058) passed 214 Swift tests and archived unsigned build 182. CodeQL [39583022167](https://github.com/lsy223622/HearPort/actions/runs/39583022167) passed. Downloaded IPA SHA-256, embedded source/build identity and unsigned packaging were verified.
 - [ ] Install build 182; confirm the previous network delay values survive upgrade and USB starts at 50/100 ms. Set different budgets in each route page, insert/remove USB and check the active negotiated values. Applying a network recommendation must preserve USB settings.
 
