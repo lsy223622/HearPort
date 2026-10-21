@@ -1110,6 +1110,7 @@ public final class HearPortQuicTransport {
     public var onReliableAudioGeneration: ((UInt32, UInt32) -> Bool)?
     public var onStateChange: StateHandler?
     public var onControlStreamCreated: (() -> Void)?
+    public var onRemoteAddress: ((String) -> Void)?
 
     private let queue = DispatchQueue(label: "com.hearport.quic")
     private let diagnostics: HearPortDiagnostics
@@ -1655,6 +1656,17 @@ public final class HearPortQuicTransport {
         timer.resume()
     }
 
+    private func publishRemoteAddress(_ path: NWPath?) {
+        guard let remote = path?.remoteEndpoint, case let .hostPort(host, port) = remote else { return }
+        let address: String
+        switch host {
+        case let .ipv4(value): address = value.debugDescription
+        case let .ipv6(value): address = value.debugDescription
+        default: return
+        }
+        onRemoteAddress?(networkEndpointLabel(address: address, port: port.rawValue))
+    }
+
     private func openControlStream(
         connectionGroup: NWConnectionGroup,
         options: NWProtocolQUIC.Options
@@ -1676,6 +1688,10 @@ public final class HearPortQuicTransport {
             return
         }
         controlStream = control
+        control.pathUpdateHandler = { [weak self, weak control] path in
+            guard let self, let control, self.controlStream === control else { return }
+            self.publishRemoteAddress(path)
+        }
         control.stateUpdateHandler = { [weak self, weak control] state in
             guard let self, let control, let current = self.controlStream,
                   current === control else { return }
@@ -1692,6 +1708,7 @@ public final class HearPortQuicTransport {
                 )
             case .ready:
                 self.controlReady = true
+                self.publishRemoteAddress(control.currentPath)
                 self.diagnostics.log(
                     .info,
                     category: .transport,

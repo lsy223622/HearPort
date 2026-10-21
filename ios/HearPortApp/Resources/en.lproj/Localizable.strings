@@ -152,6 +152,8 @@
 "Maximum delay: %lld ms" = "Maximum delay: %lld ms";
 "Estimated test time: %lld–%lld seconds, plus analysis and report." = "Estimated test time: %lld–%lld seconds, plus analysis and report.";
 "Start automatic test" = "Start automatic test";
+"No connection selected" = "No connection selected";
+"Resolving address…" = "Resolving address…";
 "Test settings" = "Test settings";
 "The test pauses playback and sends test traffic over the PC's local network (LAN), not USB. Connect a remembered PC with a network route before starting." = "The test pauses playback and sends test traffic over the PC's local network (LAN), not USB. Connect a remembered PC with a network route before starting.";
 "Automatic test and recommendations" = "Automatic test and recommendations";

@@ -1,5 +1,9 @@
 import Foundation
 
+func networkEndpointLabel(address: String, port: UInt16) -> String {
+    "\(address.contains(":") ? "[\(address)]" : address):\(port)"
+}
+
 enum ConnectionPresentationStage {
     case idle, connecting, recovering, playing, testing, reporting, completed
 

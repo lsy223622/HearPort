@@ -2,6 +2,11 @@ import XCTest
 @testable import HearPortReceiver
 
 final class ConnectionPresentationTests: XCTestCase {
+    func testNetworkEndpointLabelsIncludePortAndBracketIPv6() {
+        XCTAssertEqual(networkEndpointLabel(address: "192.0.2.1", port: 52137), "192.0.2.1:52137")
+        XCTAssertEqual(networkEndpointLabel(address: "2001:db8::1", port: 60000), "[2001:db8::1]:60000")
+        XCTAssertEqual(networkEndpointLabel(address: "fe80::1%en0", port: 52137), "[fe80::1%en0]:52137")
+    }
     func testCompletionAndReportOutrankPlaybackAndTestCallbacks() {
         XCTAssertEqual(ConnectionPresentationStage.resolve(completed: true, reporting: true,
             recovering: true, connecting: true, playing: true, testing: true), .completed)
