@@ -407,3 +407,14 @@
 "Unpair this PC?" = "取消与这台电脑的配对？";
 
 "Could not remove the saved pairing." = "无法删除保存的配对。";
+
+"PC" = "电脑";
+"Choose a PC" = "选择电脑";
+"No PCs found. Open HearPort on your PC." = "未发现电脑，请先在电脑上打开 HearPort。";
+"Pair again" = "重新配对";
+"The PC cancelled this pairing. Pair again to connect." = "电脑已取消此配对，请重新配对后连接。";
+"The PC rejected the saved pairing. Retry or pair again." = "电脑拒绝了已保存的配对，可手动重试或重新配对。";
+"Playback interrupted" = "播放已中断";
+"Restoring audio…" = "正在恢复音频…";
+"The connection is active. Retry audio playback." = "连接仍然有效，请重试音频播放。";
+"Retry playback" = "重试播放";

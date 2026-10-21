@@ -151,6 +151,7 @@ bool SenderAuthentication::HandleConnect(
       return Fail(ErrorCode::auth_failed, "remembered peer is not trusted");
     }
     remembered_verifier_.emplace(*credential);
+    session_credential_ = credential;
     const auto nonce = remembered_verifier_->IssueChallenge();
     if (!nonce.has_value()) {
       return Fail(ErrorCode::internal, "unable to create auth challenge");
@@ -241,6 +242,7 @@ bool SenderAuthentication::CompleteAuthentication(bool remember) {
     if (!credential_store_.Save(credential)) {
       return Fail(ErrorCode::internal, "unable to protect remembered credential");
     }
+    session_credential_ = credential;
     wire::ControlEnvelope credential_message;
     credential_message.type = wire::ControlMessageType::pair_credential;
     credential_message.bytes1.assign(credential.peer_id.begin(),
@@ -446,6 +448,18 @@ bool SenderAuthentication::HandleControlPayload(
       return true;
     case wire::ControlMessageType::session_end: {
       if (!authenticated_) return false;
+      if (envelope->reason == 3) {
+        // A stale session must not revoke a newer pairing made on another route.
+        std::lock_guard pairing_lock(pairing_->mutex);
+        const auto credential = credential_store_.Load();
+        if (credential && session_credential_ &&
+            security::ConstantTimeEqual(Span(credential->peer_id), Span(session_credential_->peer_id)) &&
+            security::ConstantTimeEqual(Span(credential->pair_secret), Span(session_credential_->pair_secret)) &&
+            security::ConstantTimeEqual(Span(credential->windows_spki_sha256), Span(session_credential_->windows_spki_sha256)) &&
+            !credential_store_.Remove()) {
+          return Fail(ErrorCode::internal, "unable to remove revoked pairing");
+        }
+      }
       wire::ControlEnvelope ack;
       ack.type = wire::ControlMessageType::session_end_ack;
       return Send(ack);
@@ -579,6 +593,7 @@ void SenderAuthentication::Reset() noexcept {
   }
   flow_ = Flow::idle;
   authenticated_ = false;
+  session_credential_.reset();
   calibration_request_pending_ = false;
   remember_pairing_ = false;
   peer_supports_diagnostics_ = false;

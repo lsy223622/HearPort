@@ -17,6 +17,9 @@ public final class ReceiverControlSession {
     public var onReady: (() -> Void)?
     public var onAudioFormat: ((AudioStreamFormat) -> Void)?
     public var onError: ((String) -> Void)?
+    public var onAuthenticationRejected: ((String) -> Void)?
+    var pairedCredential: RememberedCredential? { credential }
+    private var endCompletion: (() -> Void)?
     public var onTransportState: ((QuicReceiverState) -> Void)?
     public var onDiagnosticReportReceived: ((UInt32) -> Void)?
     public var onDiagnosticReportSending: (() -> Void)?
@@ -393,9 +396,10 @@ public final class ReceiverControlSession {
             }
     }
 
-    public func end(reason: UInt32) {
+    public func end(reason: UInt32, completion: (() -> Void)? = nil) {
         transport.perform { [self] in
             guard !ending else { return }
+            endCompletion = completion
             guard ready else { cancel(); return }
             ending = true
             send(.sessionEnd(reason: reason))
@@ -406,6 +410,8 @@ public final class ReceiverControlSession {
     }
 
     public func cancel() {
+        let completion = endCompletion
+        endCompletion = nil
         ending = false
         receiver.endMusicRound(reason: "session_cancelled")
         calibration?.cancel()
@@ -426,6 +432,7 @@ public final class ReceiverControlSession {
         pairConfirmationVerified = false
         rememberedResponseSent = false
         receiver.resetForConnection()
+        completion?()
     }
 
     private func sendConnectIfPossible() {
@@ -806,7 +813,8 @@ public final class ReceiverControlSession {
             let displayMessage: String
             switch code {
             case .authFailed:
-                displayMessage = "Authentication failed. Check the pairing code or pair again."
+                displayMessage = mode == .remembered ? "The PC rejected the saved pairing. Retry or pair again." :
+                    "Authentication failed. Check the pairing code or pair again."
             case .pairingClosed:
                 displayMessage = "Pairing is not available on the Windows PC."
             case .audioUnavailable:
@@ -816,7 +824,14 @@ public final class ReceiverControlSession {
             case .protocolError, .streamState, .internalError:
                 displayMessage = "The Windows PC reported a connection error."
             }
-            onError?(displayMessage)
+            // Remembered sessions use a pinned TLS identity. A peer's explicit
+            // rejection stops retries, but is not proof that a pairing was deleted.
+            if PairingRecovery.stopsRetrying(mode: mode, peerError: code), !ready, credential != nil,
+               let onAuthenticationRejected {
+                onAuthenticationRejected(displayMessage)
+            } else {
+                onError?(displayMessage)
+            }
         case let .probeManifest(streamID, manifest):
             if isEnvironmentCalibration {
                 let message = try CalibrationMessage(encoded: manifest)

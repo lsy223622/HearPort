@@ -52,7 +52,7 @@ class SenderService {
   void SetActivationHandler(std::function<bool()> handler) { activation_handler_ = std::move(handler); }
   void SetBudgetHandler(std::function<void(std::uint32_t)> handler) { budget_handler_ = std::move(handler); }
   void SuspendForHandover();
-  void NotifyUserStop();
+  void NotifyUserStop(std::uint32_t reason = 1);
   void AcknowledgeEnd();
   void CloseConnection() { quic_->CloseConnection(); }
   std::uint16_t local_port() const { return quic_->LocalPort(); }

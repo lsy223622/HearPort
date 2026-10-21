@@ -192,7 +192,7 @@ public struct ControlEnvelope: Equatable, Sendable {
             body = writer.data
             field = 31
         case let .sessionEnd(reason):
-            guard reason == 1 || reason == 2 else { throw ControlMessageError.invalidMessage }
+            guard reason == 1 || reason == 2 || reason == 3 else { throw ControlMessageError.invalidMessage }
             var writer = ProtoWriter(); writer.writeVarintField(1, value: reason)
             body = writer.data; field = 45
         case .sessionEndAck:
@@ -372,7 +372,7 @@ public struct ControlEnvelope: Equatable, Sendable {
         case 31: message = try parseStream(selected.body, make: ControlMessage.startStreamAck)
         case 45:
             let fields = try parseFields(selected.body)
-            guard case let .varint(reason)? = fields[1], reason == 1 || reason == 2 else { throw ControlMessageError.invalidMessage }
+            guard case let .varint(reason)? = fields[1], reason == 1 || reason == 2 || reason == 3 else { throw ControlMessageError.invalidMessage }
             message = .sessionEnd(reason: reason)
         case 46: message = try parseEmpty(selected.body, .sessionEndAck)
         case 32: message = try parseEmpty(selected.body, .receiverReady)

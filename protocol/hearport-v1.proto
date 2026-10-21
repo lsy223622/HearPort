@@ -40,7 +40,7 @@ message SessionReady {
 }
 
 message ReceiverReady {}
-message SessionEnd { uint32 reason = 1; } // 1: user stop, 2: handover
+message SessionEnd { uint32 reason = 1; } // 1: user stop, 2: handover, 3: unpair (authenticated session only)
 message SessionEndAck {}
 
 message DiagnosticsStart {

@@ -8,6 +8,8 @@ public enum AudioLifecycleState: Equatable, Sendable {
     case stopped
 }
 
+public enum AudioOutputState: Equatable { case playing, interrupted, recovering, failed }
+
 public enum AudioLifecycleEvent: Sendable {
     case interruptionBegan
     case interruptionEnded
@@ -170,6 +172,7 @@ public final class PlatformAudioSessionController {
 }
 
 public final class PlatformAudioOutputController {
+    public var onStateChanged: ((AudioOutputState) -> Void)?
     private let receiver: HearPortReceiver
     private let lifecycle: AudioLifecycleController
     private let audioSession = AVAudioSession.sharedInstance()
@@ -349,7 +352,7 @@ public final class PlatformAudioOutputController {
         observers.append(center.addObserver(
             forName: AVAudioSession.routeChangeNotification,
             object: audioSession,
-            queue: nil
+            queue: .main
         ) { [weak self] _ in
             self?.receiver.diagnostics.log(
                 .info,
@@ -363,7 +366,7 @@ public final class PlatformAudioOutputController {
         observers.append(center.addObserver(
             forName: AVAudioSession.interruptionNotification,
             object: audioSession,
-            queue: nil
+            queue: .main
         ) { [weak self] notification in
             guard let self,
                   let rawType = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
@@ -371,6 +374,7 @@ public final class PlatformAudioOutputController {
                 return
             }
             if type == .began {
+                self.onStateChanged?(.interrupted)
                 self.receiver.diagnostics.log(
                     .info,
                     category: .audio,
@@ -403,6 +407,7 @@ public final class PlatformAudioOutputController {
     }
 
     private func rebuildEngine() {
+        onStateChanged?(.recovering)
         stopEngineForRecovery()
         resampler.reset()
         do {
@@ -412,6 +417,7 @@ public final class PlatformAudioOutputController {
             receiver.recordAudioOutput(route: route, sampleRate: outputSampleRate)
             drift = DriftController(nominalRatio: 48_000.0 / outputSampleRate)
             try configureEngine()
+            onStateChanged?(.playing)
             receiver.diagnostics.log(
                 .info,
                 category: .audio,
@@ -422,6 +428,7 @@ public final class PlatformAudioOutputController {
                 ]
             )
         } catch {
+            onStateChanged?(.failed)
             receiver.diagnostics.log(
                 .error,
                 category: .audio,

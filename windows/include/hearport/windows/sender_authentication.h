@@ -90,6 +90,7 @@ class SenderAuthentication {
   std::uint64_t pairing_epoch_ = 0;
   std::string peer_identity_;
   bool authenticated_ = false;
+  std::optional<security::RememberedCredential> session_credential_;
   std::function<void(bool, bool)> connection_handler_;
   std::function<void(CalibrationOptions)> calibration_request_handler_;
   bool calibration_request_pending_ = false;

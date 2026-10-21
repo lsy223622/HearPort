@@ -73,17 +73,24 @@ void SenderHost::Connected(unsigned index,bool connected,bool reliable) {
   }
   if(handler && !stopping_) handler(connected,reliable,index?PhysicalPath::usb:PhysicalPath::network);
 }
-void SenderHost::Stop() {
+void SenderHost::Stop(std::uint32_t reason) {
   if(!started_) return;
   stopping_=true;
   selected_condition_.notify_all();
-  for(auto& service:services_) service->NotifyUserStop();
+  for(auto& service:services_) service->NotifyUserStop(reason);
   tunnel_.Stop(); discovery_.Stop();
   { std::lock_guard transition(activation_mutex_); }
   for(auto& service:services_) service->Stop();
   started_=false;
 }
 bool SenderHost::OpenPairingWindow() { return authentications_[0]->OpenPairingWindow(); }
+bool SenderHost::RemovePairing() {
+  std::lock_guard lock(pairing_->mutex);
+  if (!ProtectedCredentialStore{}.Remove()) return false;
+  ++pairing_->epoch;
+  pairing_->window.Close(); pairing_->ready = false;
+  return true;
+}
 std::string SenderHost::pairing_pin() const { return authentications_[0]->pairing_pin(); }
 SenderService& SenderHost::service() { std::lock_guard lock(mutex_); return *services_[last_]; }
 bool SenderHost::WaitForDebugCompletion(std::chrono::milliseconds timeout) {
