@@ -1,5 +1,10 @@
 # HearPort 0.1.0 release checklist
 
+## Independent route latency candidate (2026-10-21)
+
+- [x] Source `3370ee2c55083328c1d0d3c66ebc111a674e7af1`: iPad Actions [39583024058](https://github.com/lsy223622/HearPort/actions/runs/39583024058) passed 214 Swift tests and archived unsigned build 182. CodeQL [39583022167](https://github.com/lsy223622/HearPort/actions/runs/39583022167) passed. Downloaded IPA SHA-256, embedded source/build identity and unsigned packaging were verified.
+- [ ] Install build 182; confirm the previous network delay values survive upgrade and USB starts at 50/100 ms. Set different budgets in each route page, insert/remove USB and check the active negotiated values. Applying a network recommendation must preserve USB settings.
+
 ## iPad row actions and launch layout candidate (2026-10-21)
 
 - [x] iPad source `2bebb701a278d94fbbc6876b6397777021e18c50`: Actions [39544315416](https://github.com/lsy223622/HearPort/actions/runs/39544315416), 211 Swift tests, unsigned build 181 and CodeQL passed. IPA hash, source/build identity and unsigned packaging verified.
