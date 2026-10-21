@@ -252,6 +252,7 @@
 "Active playback budget" = "当前播放预算";
 
 "Normal target" = "常态目标";
+"Target %lld / Maximum %lld ms" = "目标 %lld / 上限 %lld ms";
 
 "Maximum total delay" = "总延迟上限";
 
