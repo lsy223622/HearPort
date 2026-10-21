@@ -4,8 +4,8 @@
 
 - [x] iPad source `2bebb701a278d94fbbc6876b6397777021e18c50`: Actions [39544315416](https://github.com/lsy223622/HearPort/actions/runs/39544315416), 211 Swift tests, unsigned build 181 and CodeQL passed. IPA hash, source/build identity and unsigned packaging verified.
 - [x] Recorded the user's several-hour locked-idle continuation/resumption observation, with unknown exact build/path/duration; it does not replace the finite continuous-playback soak.
-- [ ] Install build 181; cold-launch with automatic connection and check that the first layout appears in place, followed by normal status-transition animation.
-- [ ] Tap whitespace in the blue action rows; check No connection selected without a target and numeric connected IP/port on LAN.
+- [x] User confirmed startup layout appears in place; supplied dark-mode screenshots confirm compact connection forms, settings/recommendation layout and No connection selected wording.
+- [ ] Tap whitespace in the blue action rows; check numeric connected IP/port on LAN and light-mode appearance.
 
 ## Automatic-test startup candidate (2026-10-21)
 

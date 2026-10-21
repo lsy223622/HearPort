@@ -22,7 +22,7 @@ continuation/resumption; it is not a monitored continuous-music soak.
 - Blue Connect, Start automatic test and Apply parameters actions use native Form/List row buttons with expanded hit shapes. With no active or selected connection, the disabled start action reads No connection selected.
 - Initial canvas transactions disable animations until the first UIKit appearance completes. Subsequent presentation-stage changes keep their existing animation; reduced-motion handling remains in effect.
 - Connection details read the connected QUIC control stream's numeric remote endpoint and port, including path updates. Pre-authentication address callbacks are retained until that session is promoted; stale-session callbacks cannot replace the active address. Tests cover IPv4/IPv6 formatting and an actual loopback QUIC connection's address.
-- Physical acceptance remains pending installation of build 181: cold launch with automatic connection, full-row touch targets, disabled-start wording and actual LAN endpoint display on iPad. The UIKit appearance path is archive-compiled; row taps and first-frame appearance are not established by the host tests.
+- User acceptance update (2026-10-21): the user confirmed startup layout now appears in place. Five supplied dark-mode screenshots show the compact remembered/pairing forms, recommendation label/value rows, the disabled No connection selected action, settings and network-audio controls without visible clipping. The screenshots are retained locally. Full-row tap behavior, numeric LAN endpoint display and light-mode appearance remain separate acceptance items; static screenshots do not establish touch behavior.
 
 ## Automatic-test startup and diagnostic size display (2026-10-21)
 
