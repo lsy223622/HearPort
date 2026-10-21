@@ -16,6 +16,14 @@ the iPad without lighting its screen. The exact build, physical path and elapsed
 time were not supplied for this observation. It records successful locked-idle
 continuation/resumption; it is not a monitored continuous-music soak.
 
+## Independent network and USB latency settings (2026-10-21)
+
+- Source `3370ee2c55083328c1d0d3c66ebc111a674e7af1`: iPad Actions [39583024058](https://github.com/lsy223622/HearPort/actions/runs/39583024058) passed 214 Swift tests and archived unsigned build 182. CodeQL [39583022167](https://github.com/lsy223622/HearPort/actions/runs/39583022167) passed. Downloaded IPA SHA-256, embedded source/build identity and unsigned packaging were verified.
+- Network audio and USB audio each contain their own normal target and maximum total delay. Connections and route changes read the actual route's saved budget; USB tunnel queue expiry follows its USB maximum. Active playback continues using its negotiated snapshot until the next connection.
+- Upgrade migration preserves the previous shared delay values for network playback; USB starts at the original 50/100 ms defaults. Existing separate route values are preserved on repeated migration.
+- Both adaptive quick recommendations and full diagnostic calibration application update network latency only. Regression coverage checks factory defaults, migration persistence and preservation of custom USB budgets in both application paths.
+- Physical acceptance pending: install the new IPA, confirm the existing network recommendation is retained, edit both route budgets independently, and check the active values after USB insertion/removal and after applying a network recommendation.
+
 ## iPad row actions, launch layout and connection address (2026-10-21)
 
 - iPad executable source `2bebb701a278d94fbbc6876b6397777021e18c50`: Actions [39544315416](https://github.com/lsy223622/HearPort/actions/runs/39544315416) passed 211 Swift tests and archived unsigned IPA build 181. CodeQL [39544315151](https://github.com/lsy223622/HearPort/actions/runs/39544315151) passed. Downloaded IPA SHA-256, source/build identity and unsigned packaging were verified.
