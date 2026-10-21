@@ -660,8 +660,18 @@ import SwiftUI
                 }
             }.navigationTitle(title).navigationBarTitleDisplayMode(.inline)
         } label: {
-            LabeledContent(title, value: codec.wrappedValue == "opus" ?
-                "Opus · \(bitrate.wrappedValue / 1000) kb/s · \(Double(frames.wrappedValue) / 48) ms" : "PCM")
+            LabeledContent {
+                VStack(alignment: .trailing, spacing: 3) {
+                    Text(codec.wrappedValue == "opus" ?
+                        "Opus · \(bitrate.wrappedValue / 1000) kb/s · \(Double(frames.wrappedValue) / 48) ms" : "PCM")
+                    Text("Target \(target.wrappedValue) / Maximum \(maximum.wrappedValue) ms")
+                        .font(.caption)
+                }
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.trailing)
+            } label: {
+                Text(title)
+            }
         }
     }
 

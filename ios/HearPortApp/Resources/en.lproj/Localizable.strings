@@ -252,6 +252,7 @@
 "Active playback budget" = "Active playback budget";
 
 "Normal target" = "Normal target";
+"Target %lld / Maximum %lld ms" = "Target %lld / Maximum %lld ms";
 
 "Maximum total delay" = "Maximum total delay";
 
