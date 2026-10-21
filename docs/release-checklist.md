@@ -1,5 +1,12 @@
 # HearPort 0.1.0 release checklist
 
+## iPad row actions and launch layout candidate (2026-10-21)
+
+- [x] iPad source `2bebb701a278d94fbbc6876b6397777021e18c50`: Actions [39544315416](https://github.com/lsy223622/HearPort/actions/runs/39544315416), 211 Swift tests, unsigned build 181 and CodeQL passed. IPA hash, source/build identity and unsigned packaging verified.
+- [x] Recorded the user's several-hour locked-idle continuation/resumption observation, with unknown exact build/path/duration; it does not replace the finite continuous-playback soak.
+- [ ] Install build 181; cold-launch with automatic connection and check that the first layout appears in place, followed by normal status-transition animation.
+- [ ] Tap whitespace in the blue action rows; check No connection selected without a target and numeric connected IP/port on LAN.
+
 ## Automatic-test startup candidate (2026-10-21)
 
 - [x] Matching source `ea1683110ccd80181d6205716bc35b163c8e95c4`: Windows Actions [39478078837](https://github.com/lsy223622/HearPort/actions/runs/39478078837), iPad Actions [39478078798](https://github.com/lsy223622/HearPort/actions/runs/39478078798), 24 CTest, 28 Python, 209 Swift checks, unsigned IPA build 180 and CodeQL passed.

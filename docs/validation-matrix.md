@@ -8,7 +8,21 @@ are not inferred from an unsigned archive or short playback.
 **User-observed manual runs:** playback on an iPad Pro 11-inch (2020) over USB,
 including cable disconnect and reconnect; repeated playback/tests on weak
 2.4 GHz Wi-Fi. These observations do not establish a timed soak, lock-screen
-behavior, a clean-machine install, or final Release acceptance.
+behavior across all output routes, a clean-machine install, or final Release acceptance.
+
+**Additional user observation (2026-10-21):** the installed app was left idle
+with the iPad locked for several hours. Later Windows audio still played through
+the iPad without lighting its screen. The exact build, physical path and elapsed
+time were not supplied for this observation. It records successful locked-idle
+continuation/resumption; it is not a monitored continuous-music soak.
+
+## iPad row actions, launch layout and connection address (2026-10-21)
+
+- iPad executable source `2bebb701a278d94fbbc6876b6397777021e18c50`: Actions [39544315416](https://github.com/lsy223622/HearPort/actions/runs/39544315416) passed 211 Swift tests and archived unsigned IPA build 181. CodeQL [39544315151](https://github.com/lsy223622/HearPort/actions/runs/39544315151) passed. Downloaded IPA SHA-256, source/build identity and unsigned packaging were verified.
+- Blue Connect, Start automatic test and Apply parameters actions use native Form/List row buttons with expanded hit shapes. With no active or selected connection, the disabled start action reads No connection selected.
+- Initial canvas transactions disable animations until the first UIKit appearance completes. Subsequent presentation-stage changes keep their existing animation; reduced-motion handling remains in effect.
+- Connection details read the connected QUIC control stream's numeric remote endpoint and port, including path updates. Pre-authentication address callbacks are retained until that session is promoted; stale-session callbacks cannot replace the active address. Tests cover IPv4/IPv6 formatting and an actual loopback QUIC connection's address.
+- Physical acceptance remains pending installation of build 181: cold launch with automatic connection, full-row touch targets, disabled-start wording and actual LAN endpoint display on iPad. The UIKit appearance path is archive-compiled; row taps and first-frame appearance are not established by the host tests.
 
 ## Automatic-test startup and diagnostic size display (2026-10-21)
 
