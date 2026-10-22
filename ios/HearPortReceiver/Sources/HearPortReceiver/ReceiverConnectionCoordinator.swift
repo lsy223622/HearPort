@@ -104,7 +104,7 @@ public struct ConnectionEndpoint: Identifiable {
     public func start() {
         guard browser == nil else { return }
         pathMonitor.pathUpdateHandler = { [weak self] path in
-            DispatchQueue.main.async {
+            DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 let restored = path.status == .satisfied && self.lastNetworkStatus != .satisfied
                 self.lastNetworkStatus = path.status

@@ -150,10 +150,10 @@ import AppIntents
                 NavigationStack { [self] in
                     Group { [self] in
                         switch sheet {
-                        case .settings: settingsView
-                        case .details: connectionDetailsView
-                        case .recommendations: calibrationResults
-                        case .pairing: connectionSetupView
+                        case .settings: self.settingsView
+                        case .details: self.connectionDetailsView
+                        case .recommendations: self.calibrationResults
+                        case .pairing: self.connectionSetupView
                         }
                     }
                     .toolbar { [self] in
@@ -657,10 +657,10 @@ import AppIntents
     private var connectionSetupView: some View {
         Form { [self] in
             Section("Windows PC") {
-                TextField("Hostname or IP address", text: Binding(get: { host }, set: {
-                    host = $0
-                    selectedEndpoint = nil
-                    calibrationTarget = nil
+                TextField("Hostname or IP address", text: Binding(get: { self.host }, set: {
+                    self.host = $0
+                    self.selectedEndpoint = nil
+                    self.calibrationTarget = nil
                 }))
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
@@ -770,7 +770,7 @@ import AppIntents
 
     @ViewBuilder private var calibrationResults: some View {
         if let calibrationRunResult {
-            CalibrationResultsView(result: calibrationRunResult, apply: { profile in
+            CalibrationResultsView(result: calibrationRunResult, apply: { [self] profile in
                 if calibrationRunResult.apply(profile: profile) {
                     audioTransportModeRaw = AudioTransportMode.load(usb: false).rawValue
                     let budget = PlaybackLatencyPreferences.load(usb: false)
@@ -1756,6 +1756,7 @@ extension ReceiverRuntime {
             authMode = .remembered
             connect(route: route)
         } else if connectionEstablished && audioOutputState == .failed { retryAudioOutput() }
+        connectionManager.resumeUSBDiscovery()
         automationEvent("request_accepted", request: id)
         // Keep the invocation alive briefly for authentication/audio startup; this is not a keepalive.
         for _ in 0..<32 {
