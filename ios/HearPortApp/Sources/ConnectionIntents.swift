@@ -17,7 +17,8 @@ struct PlayPCAudioIntent: AudioPlaybackIntent {
     static var openAppWhenRun = false
     static var authenticationPolicy: IntentAuthenticationPolicy = .alwaysAllowed
     @Parameter(title: "Connection route", default: .automatic) var route: HearPortRoute
-    init(route: HearPortRoute = .automatic) { self.route = route }
+    init() {}
+    init(route: HearPortRoute) { self.route = route }
     @MainActor func perform() async throws -> some IntentResult & ReturnsValue<String> {
         .result(value: await ReceiverRuntime.shared.automationConnect(route: route.route, source: "audio_playback_intent"))
     }
@@ -29,7 +30,8 @@ struct BackgroundConnectIntent: AppIntent {
     static var openAppWhenRun = false
     static var authenticationPolicy: IntentAuthenticationPolicy = .alwaysAllowed
     @Parameter(title: "Connection route", default: .automatic) var route: HearPortRoute
-    init(route: HearPortRoute = .automatic) { self.route = route }
+    init() {}
+    init(route: HearPortRoute) { self.route = route }
     @MainActor func perform() async throws -> some IntentResult & ReturnsValue<String> {
         .result(value: await ReceiverRuntime.shared.automationConnect(route: route.route, source: "background_intent"))
     }
