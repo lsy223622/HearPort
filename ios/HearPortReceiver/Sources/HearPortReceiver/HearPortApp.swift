@@ -1670,7 +1670,6 @@ extension ReceiverRuntime {
         guard connectionID == id, audioOutput === output else { return }
         if output.hasRenderedReceivedAudio {
             automationEvent("received_audio_rendered", fields: ["connection_id": id.uuidString])
-            automationRequests.removeAll()
         } else if ProcessInfo.processInfo.systemUptime < until {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self, weak output] in
                 guard let self, let output else { return }
