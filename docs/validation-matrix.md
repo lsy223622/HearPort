@@ -1,5 +1,12 @@
 # HearPort 0.1.0 validation matrix
 
+## Portable runtime loading regression (2026-10-22)
+
+- Reproduced the portable package failure in a fresh Windows Sandbox without a System32 `vcruntime140.dll`: the application-local file existed, but the old GUI exited with `0xC0000135`. A CRT-free probe failed to load MsQuic with error 126; preloading the same local runtime made the probe succeed.
+- The pinned `msquic.dll` has `DependentLoadFlags=0x0800`, restricting its imports to System32. Both sender executables now delay-load MsQuic after their own VC runtime initializes; no system runtime installation or third-party DLL modification is involved.
+- The rebuilt GUI remained responsive in the same Sandbox, loaded MsQuic and all three VC runtime DLLs from its own directory and bound UDP 52137. System32 still contained no VC runtime. This validates loading/startup, not end-to-end audio in Sandbox.
+- Packaging rejects an executable whose PE delay-import table does not contain MsQuic. CI startup verification checks the actual loaded path of every bundled DLL, preventing system-installed runtime files from silently satisfying the check. Local checks: 25 CTest and 33 combined Python tests passed.
+
 ## Connection automation verification (2026-10-22)
 
 - Source `8ba6d9ab9e7335f72a5122b166d66d320f1e0493`: Windows Actions [39748549052](https://github.com/lsy223622/HearPort/actions/runs/39748549052), iPad Actions [39748549005](https://github.com/lsy223622/HearPort/actions/runs/39748549005), CodeQL [39748548777](https://github.com/lsy223622/HearPort/actions/runs/39748548777) passed. Windows: 25 CTest, 28 package checks and GUI startup/paint verification. Swift: 221 tests including recovery intent, fixed-route exclusion and stale-session stop rejection; four Python shortcut/trace-analysis checks also passed in iPad CI.

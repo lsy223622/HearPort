@@ -88,6 +88,11 @@ if(HEARPORT_MSQUIC_INCLUDE_DIR AND HEARPORT_MSQUIC_LIBRARY)
     message(FATAL_ERROR "msquic.dll was not found beside ${HEARPORT_MSQUIC_LIBRARY}")
   endif()
   foreach(sender IN ITEMS hearport_sender hearport_sender_gui)
+    if(MSVC)
+      # MsQuic restricts its dependencies to System32. Load it after our CRT.
+      target_link_options(${sender} PRIVATE /DELAYLOAD:msquic.dll)
+      target_link_libraries(${sender} PRIVATE delayimp)
+    endif()
     add_custom_command(TARGET ${sender} POST_BUILD
       COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${HEARPORT_MSQUIC_DLL}" "$<TARGET_FILE_DIR:${sender}>"
