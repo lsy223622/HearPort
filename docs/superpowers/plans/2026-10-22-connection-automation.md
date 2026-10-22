@@ -26,11 +26,16 @@
 
 ## Tasks
 
-- [ ] 1. 添加连接意图、路线选择与 URL 解析回归测试；迁移共享运行状态；实现前台/路径恢复。
-- [ ] 2. 校验并修复已启用的 Windows 启动命令；添加命令策略测试，不修改用户关闭的设置。
-- [ ] 3. 实现兼容 iOS 16 的快捷动作、App Shortcuts、URL 入口和本地分阶段诊断；生成可重复的快捷指令测试包。
-- [ ] 4. 集中运行本地测试与独立审查；Actions 构建两端并验证元数据/产物；更新使用与实机验证方法。
+- [x] 1. 添加连接意图、路线选择与 URL 解析回归测试；迁移共享运行状态；实现前台/路径恢复。
+- [x] 2. 校验并修复已启用的 Windows 启动命令；添加命令策略测试，不修改用户关闭的设置。
+- [x] 3. 实现兼容 iOS 16 的快捷动作、App Shortcuts、URL 入口和本地分阶段诊断；生成可重复的快捷指令测试包。
+- [x] 4. 集中运行本地测试与独立审查；Actions 构建两端并验证元数据/产物；更新使用与实机验证方法。
 
 ## Execution record
 
 - 2026-10-22: 用户已授权计划后直接连续开发；实机系统触发需安装后在设备上配置，开发和可执行验证先一次完成。
+
+- 2026-10-22: Application delivery source `8ba6d9a`; matching Actions Windows/iPad artifacts verified, iPad build 191. Local 25 CTest / 32 Python passed; CI 221 Swift, 28 Windows Python and four iPad automation Python checks passed. Ten distinct native actions and archive metadata verified. One Luna review found an old-session stop race, corrected and regression-tested.
+- Ruling: Use distinct fixed-route intent types for network/USB presets so routing does not depend on parameter preset indexing. Generic connection actions retain configurable routes.
+- Ruling: CI signing requires personal iCloud login unavailable on the runner. Keep signing results and sources, use built-in App Shortcuts for installation-free native entry points; no signing bypass or personal account added.
+- Device scheduling/trigger/audible-output validation remains pending installation and on-device automation authorization, with a single-batch procedure and local log analyzer prepared.
