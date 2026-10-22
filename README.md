@@ -97,6 +97,10 @@ documented in [`docs/compression-tests.md`](docs/compression-tests.md).
 
 ## Release builds in GitHub Actions
 
+Daily reconnect behavior, iPad App Shortcuts, the foreground URL shortcut kit
+and the on-device automation verification matrix are documented in
+[`docs/connection-automation.md`](docs/connection-automation.md).
+
 The `Windows Release package` workflow builds and tests Release on Windows,
 collects dependency notices and produces `HearPort-windows-release` containing
 the portable ZIP, matching source ZIP and SHA-256 manifest. Its vcpkg revision

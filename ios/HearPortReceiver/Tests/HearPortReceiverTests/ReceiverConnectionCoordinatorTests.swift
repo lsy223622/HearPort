@@ -72,13 +72,15 @@ final class ReceiverConnectionCoordinatorTests: XCTestCase {
         history.failed("old-ip", until: Date(timeIntervalSince1970: 2))
         XCTAssertEqual(history.choose(["old-ip", "bonjour"], at: Date(timeIntervalSince1970: 3)), "bonjour")
     }
-    func testStopFromAuthenticatedPCSurvivesPathPromotion() {
+    func testStopRequiresCurrentSessionAfterPathPromotion() {
         var policy = ConnectionSelectionPolicy(); policy.wantsConnection = true
-        XCTAssertTrue(policy.promote(UUID(), path: .network, identity: Data([1])))
-        XCTAssertTrue(policy.promote(UUID(), path: .usb, identity: Data([1])))
-        XCTAssertTrue(policy.acceptsStop(from: Data([1])))
-        XCTAssertFalse(policy.acceptsStop(from: Data([2])))
-        XCTAssertFalse(policy.acceptsStop(from: Data()))
+        let network = UUID(), usb = UUID()
+        XCTAssertTrue(policy.promote(network, path: .network, identity: Data([1])))
+        XCTAssertTrue(policy.promote(usb, path: .usb, identity: Data([1])))
+        XCTAssertTrue(policy.acceptsStop(from: Data([1]), session: usb))
+        XCTAssertFalse(policy.acceptsStop(from: Data([1]), session: network))
+        XCTAssertFalse(policy.acceptsStop(from: Data([2]), session: usb))
+        XCTAssertFalse(policy.acceptsStop(from: Data(), session: usb))
     }
     func testAuthenticatedUSBOnlyPreemptsSamePCAndIgnoresOldClose() {
         var policy = ConnectionSelectionPolicy(); policy.wantsConnection = true
@@ -103,6 +105,43 @@ final class ReceiverConnectionCoordinatorTests: XCTestCase {
 #if canImport(Network) && canImport(Combine)
 import Network
 extension ReceiverConnectionCoordinatorTests {
+    @MainActor func testNetworkOnlyExcludesAnAvailableMatchingUSB() {
+        let tunnel = USBPacketTunnel(diagnostics: .shared, makeTCPListener: { _ in
+            let parameters = NWParameters.tcp
+            parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
+            return try NWListener(using: parameters)
+        })
+        let coordinator = ReceiverConnectionCoordinator(tunnel: tunnel)
+        let identity = Data(repeating: 0xab, count: 32)
+        coordinator.setRememberedIdentity(identity)
+        let requested = expectation(description: "Only network is requested")
+        coordinator.onRequest = { [weak coordinator] id, endpoint in
+            XCTAssertEqual(endpoint.path, .network)
+            XCTAssertEqual(coordinator?.authenticated(id, identity: identity, features: 0), true)
+            requested.fulfill()
+        }
+        coordinator.start()
+        tunnel.onAvailable?(61001)
+        tunnel.onPeerIdentity?(61001, String(repeating: "ab", count: 32))
+        DispatchQueue.main.async { coordinator.connect(manualHost: "127.0.0.1", route: .network) }
+        wait(for: [requested], timeout: 3)
+        coordinator.stop()
+        let stopped = expectation(description: "Listener stopped")
+        tunnel.stop { stopped.fulfill() }; wait(for: [stopped], timeout: 3)
+    }
+
+    @MainActor func testUSBOnlyWaitsInsteadOfUsingManualNetworkFallback() {
+        let coordinator = ReceiverConnectionCoordinator()
+        let requested = expectation(description: "No network fallback")
+        requested.isInverted = true
+        coordinator.onRequest = { _, _ in requested.fulfill() }
+        coordinator.connect(manualHost: "127.0.0.1", route: .usb)
+        wait(for: [requested], timeout: 0.25)
+        XCTAssertTrue(coordinator.isWaiting)
+        coordinator.stop()
+        XCTAssertFalse(coordinator.isWaiting)
+    }
+
     @MainActor func testUSBIsRetriedAfterCooldownWhileNetworkKeepsPlaying() {
         let tunnel = USBPacketTunnel(diagnostics: .shared, makeTCPListener: { _ in
             let parameters = NWParameters.tcp

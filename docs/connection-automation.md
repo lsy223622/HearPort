@@ -14,30 +14,34 @@ iPad 设置中“自动恢复连接”使用已配对电脑。网络或 USB 恢�
 
 | 动作 | 执行方式 | 用途 |
 | --- | --- | --- |
-| 播放电脑音频 | `AudioPlaybackIntent`，iPadOS 17 起 | 优先验证的无界面播放入口 |
+| 播放电脑音频 | `AudioPlaybackIntent`，本 SDK 元数据标为 iPadOS 17.2 起 | 优先验证的无界面播放入口 |
 | 后台连接 | 普通 `AppIntent`，iPadOS 16 起 | 与音频专用动作比较系统执行行为 |
 | 打开并连接 | 前台 AppIntent | 解锁/打开 App 可接受时的明确入口 |
-| 断开电脑音频 | 音频动作，iPadOS 17 起 | 停止播放并暂停本进程自动恢复 |
+| 断开电脑音频 | 音频动作，iPadOS 17.2 起 | 停止播放并暂停本进程自动恢复 |
 | 读取连接状态 | 后台动作 | 返回 JSON 状态，并记录诊断 |
 | 记录自动化触发 | 后台动作 | 在链式快捷指令起点插入诊断标记 |
 
 三种连接动作均可选择“自动（USB 优先）”“仅网络”“仅 USB”。仅 USB 不回退 Wi-Fi；仅网络不升级 USB。重复执行同一路线动作复用正在建立/已建立的连接。其他路线已工作、诊断测试进行中时返回原因，不抢占。
 
+本版本内置十个 App Shortcuts：音频连接和普通后台连接各预置自动/网络/USB 三种，另有前台连接、断开、状态和触发标记。它们随 App 安装，不依赖 `.shortcut` 文件签名。设置 → 快捷指令与自动化中的系统按钮可打开本 App 的快捷指令页。
+
 ### 建议配置的原生快捷指令
 
 在“快捷指令”中新建下列三个快捷指令（也可直接运行 App 自动提供的动作）：
 
-1. **HearPort Wi-Fi**：记录自动化触发 → 播放电脑音频（仅网络）→ 读取连接状态。
-2. **HearPort USB**：记录自动化触发 → 播放电脑音频（仅 USB）→ 读取连接状态。
-3. **HearPort 后台对照**：记录自动化触发 → 后台连接（按场景选路线）→ 读取连接状态。
+1. **HearPort Wi-Fi**：播放电脑音频（仅网络）。
+2. **HearPort USB**：播放电脑音频（仅 USB）。
+3. **HearPort 后台对照**：后台连接（按场景选路线）。
 
-另外用“打开并连接”替换中间动作作为前台对照。验证时保持电脑播放同一段可听音频，避免把音源静音当成启动失败。正常使用无需加诊断标记或显示通知。
+另外用“打开并连接”作为前台对照。首次冷启动验证直接运行待测连接动作；不要在前面加“记录自动化触发”，因为前置动作可能先唤醒 App，改变冷启动条件。诊断标记应单独作为触发对照；运行后可另读连接状态。验证时保持电脑播放同一段可听音频，避免把音源静音当成启动失败。
 
 在“自动化”中分别设置“加入指定 Wi-Fi”和“充电器已连接”触发上述指令；选择“立即运行”（系统版本允许时）。充电触发也会响应普通充电器，而且可能早于电脑 USB 数据连接就绪，所以 USB 动作返回等待并不代表失败。触发器必须在 iPad 上由用户配置和授权，App 无法代建个人自动化。
 
 ## URL 前台对照包
 
 Actions 的 `HearPort-shortcuts` artifact 包含五个固定 URL 快捷指令、源文件和 `signing-results.json`。仅根目录签名成功的 `.shortcut` 才标为可导入；`sources/` 是未签名生成源。
+
+2026-10-22 首次 CI 实测：五个文件的签名都被系统以“必须登录 iCloud”拒绝。GitHub 运行器没有个人 iCloud 账户，因此当前包中的生成源不能直接当成可导入文件。内置 App Shortcuts 可直接使用；URL 对照也可以在 iPad 上新建“URL → 打开 URL”两步指令，不需要 Mac。
 
 | URL | 操作 |
 | --- | --- |
@@ -75,5 +79,7 @@ URL 打开 App 属于前台路径。它在解锁设备上成功不能证明后�
 日志 `automation_stage` 含请求 ID、进程 ID、系统/构建、界面是否已出现、App 状态、进程和动作耗时。阶段包括 `action_entered`、`connection_attempt`、`peer_authenticated`、`session_ready`、`audio_engine_started`、`received_audio_rendered`、`action_returned`。没有收到的音频不会凭引擎启动被标为出声；真实静音也可能已经渲染，但听感仍需实机确认。
 
 若触发后完全没有新进程/动作记录，只能确认 App 没有记录到执行，不能据此区分系统未触发、未获调度或签名/权限问题。若已有 `action_entered`，则继续按认证、会话、输出阶段定位。CI 编译和快捷指令签名分别只证明构建与分发，均不证明 iPad 锁屏执行通过。
+
+导出后可在本地执行 `python diagnostics/analyze_automation.py <导出的日志>`，按请求汇总阶段和耗时。空结果表示没有可分析记录，不会自动判定系统触发失败；`audible_sound` 始终留给实机确认。不要把原始日志提交公开仓库。
 
 Apple 参考：[App Shortcuts](https://developer.apple.com/documentation/appintents/app-shortcuts)、[AudioPlaybackIntent](https://developer.apple.com/documentation/appintents/audioplaybackintent)、[个人自动化设置触发器](https://support.apple.com/guide/shortcuts/apde31e9638b/ios)、[无需确认的自动化](https://support.apple.com/guide/shortcuts/apd602971e63/ios)、[快捷指令签名](https://support.apple.com/guide/shortcuts-mac/apd455c82f02/mac)、[USB 配件访问](https://support.apple.com/en-us/111806)。

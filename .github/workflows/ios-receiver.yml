@@ -12,7 +12,10 @@ on:
       - "scripts/collect_notices.py"
       - "scripts/fetch_opus.py"
       - "scripts/build_shortcuts.py"
+      - "scripts/verify_app_intents.py"
       - "tests/test_shortcuts.py"
+      - "tests/test_automation_analysis.py"
+      - "diagnostics/analyze_automation.py"
       - "THIRD_PARTY_NOTICES.md"
       - "LICENSE"
   pull_request:
@@ -26,7 +29,10 @@ on:
       - "scripts/collect_notices.py"
       - "scripts/fetch_opus.py"
       - "scripts/build_shortcuts.py"
+      - "scripts/verify_app_intents.py"
       - "tests/test_shortcuts.py"
+      - "tests/test_automation_analysis.py"
+      - "diagnostics/analyze_automation.py"
       - "THIRD_PARTY_NOTICES.md"
       - "LICENSE"
   workflow_dispatch:
@@ -45,7 +51,7 @@ jobs:
         run: python3 scripts/fetch_opus.py
 
       - name: Validate shortcut sources
-        run: python3 -m unittest tests.test_shortcuts -q
+        run: python3 -m unittest tests.test_shortcuts tests.test_automation_analysis -q
 
       - name: Build host Opus for Swift package tests
         shell: bash
@@ -178,6 +184,7 @@ jobs:
           set -euo pipefail
           app_path="$RUNNER_TEMP/HearPort.xcarchive/Products/Applications/HearPort.app"
           test -d "$app_path"
+          python3 scripts/verify_app_intents.py "$app_path"
           bundle_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app_path/Info.plist")
           test "$bundle_id" = "com.lsy223622.HearPort"
           executable=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app_path/Info.plist")

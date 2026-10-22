@@ -2,6 +2,7 @@
 import AVFAudio
 import Network
 import SwiftUI
+import AppIntents
 
 @MainActor public struct HearPortApp: View {
     @ObservedObject private var runtime = ReceiverRuntime.shared
@@ -214,10 +215,16 @@ import SwiftUI
     }
 
     private let processStartedAt = ProcessInfo.processInfo.systemUptime
-    private var automationRequests: [UUID: TimeInterval] = [:]
+    private struct AutomationInvocation {
+        let began: TimeInterval
+        let source: String
+        let route: AutomationRoute
+    }
+    private var automationRequests: [UUID: AutomationInvocation] = [:]
     private var started = false
     private var recoveryIntent = ConnectionRecoveryIntent()
     private var requestedRoute: AutomationRoute = .automatic
+    private var automaticResumeInProgress = false
 
     public func start() {
         guard !started else { return }
@@ -295,6 +302,7 @@ import SwiftUI
               recoveryIntent.shouldResume(automatic: autoConnect && canvasHasAppeared, remembered: hasRememberedCredential) else { return }
         authMode = .remembered
         connect(route: requestedRoute)
+        automaticResumeInProgress = true
     }
 
     private var presentationStage: ConnectionPresentationStage {
@@ -710,7 +718,7 @@ import SwiftUI
                                  target: Binding<Int>, maximum: Binding<Int>) -> some View {
         NavigationLink {
             Form { [self] in
-                Section { [self] in
+                Section { in
                     Picker("Audio transport mode", selection: transport) {
                         Text("Datagram").tag(AudioTransportMode.datagram.rawValue)
                         Text("Reliable stream").tag(AudioTransportMode.reliable.rawValue)
@@ -733,7 +741,7 @@ import SwiftUI
                 } footer: {
                     Text("Longer packets reduce packet frequency and need more collection time. All processing uses the selected total delay budget. Changes take effect on the next connection.")
                 }
-                Section { [self] in
+                Section { in
                     MillisecondsControl("Normal target", value: target, range: 10...max(10, maximum.wrappedValue))
                     MillisecondsControl("Maximum total delay", value: maximum, range: max(20, target.wrappedValue)...2_000)
                 } footer: {
@@ -762,7 +770,7 @@ import SwiftUI
 
     @ViewBuilder private var calibrationResults: some View {
         if let calibrationRunResult {
-            CalibrationResultsView(result: calibrationRunResult, apply: { [self] profile in
+            CalibrationResultsView(result: calibrationRunResult, apply: { profile in
                 _ = calibrationRunResult.apply(profile: profile)
             })
         } else {
@@ -925,7 +933,7 @@ import SwiftUI
             }
             Section { [self] in
                 NavigationLink("About HearPort") {
-                    Form { [self] in
+                    Form { in
                         Section("HearPort") {
                             LabeledContent("Version", value: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—")
                             LabeledContent("Build", value: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—")
@@ -976,7 +984,7 @@ import SwiftUI
                 }
                 .confirmationDialog("Clear retained diagnostics?", isPresented: binding(\.showingClearConfirmation), titleVisibility: .visible) {
                     Button("Clear", role: .destructive) { [self] in clearDiagnostics() }
-                    Button("Cancel", role: .cancel) { [self] in}
+                    Button("Cancel", role: .cancel) { in}
                 }
                 if let diagnosticsStatus {
                     Text(diagnosticsStatus)
@@ -995,6 +1003,7 @@ import SwiftUI
     }
 
     private func connect(selected: ConnectionEndpoint? = nil, forCalibration: Bool = false, route: AutomationRoute = .automatic) {
+        automaticResumeInProgress = false
         recoveryIntent.request(); requestedRoute = route
         guard authMode == .remembered || PairingSecurity.validatePIN(pin) else {
             status = Self.localize("Enter the 6-digit PIN shown on Windows"); return
@@ -1084,7 +1093,7 @@ import SwiftUI
             return reserve
         }
         session.prepareCalibrationOutputReserve = prepareOutputReserve
-        session.calibrationContext = { [self] in
+        session.calibrationContext = { in
             let output = AVAudioSession.sharedInstance()
             return CalibrationContext(device: UIDevice.current.model,
                 operatingSystem: UIDevice.current.systemName + " " + UIDevice.current.systemVersion,
@@ -1177,7 +1186,11 @@ import SwiftUI
                     if connectionManager.isWaiting { showConnectionSearch() }
                     return
                 }
-                guard connectionID == id || (reason == 1 && authenticatedIdentity.map { connectionManager.acceptsStop(from: $0) } == true) else { return }
+                guard connectionID == id else { return }
+                if reason == 1 {
+                    guard let authenticatedIdentity,
+                          connectionManager.acceptsStop(from: authenticatedIdentity, session: id) else { return }
+                }
                 if reason == 1 {
                     if calibrationRequestID != nil {
                         control?.cancel(); control = nil
@@ -1310,6 +1323,7 @@ import SwiftUI
                 sendingReport = false
                 isConnecting = false
                 connectionEstablished = true
+                automaticResumeInProgress = false
                 automationEvent("session_ready", fields: ["connection_id": id.uuidString])
                 activeAudioFormat = session?.activeFormat ?? .pcm
                 retainingConnection = true
@@ -1410,7 +1424,7 @@ import SwiftUI
     }
 
     private func updateIdleTimer() {
-        UIApplication.shared.isIdleTimerDisabled = scenePhase == .active &&
+        UIApplication.shared.isIdleTimerDisabled = UIApplication.shared.applicationState == .active &&
             (keepScreenAwake || testRunning || pendingCalibration != nil)
     }
 
@@ -1621,9 +1635,9 @@ import SwiftUI
 
 
 extension ReceiverRuntime {
-    private func automationEvent(_ stage: String, fields: [String: String] = [:]) {
+    private func automationEvent(_ stage: String, fields: [String: String] = [:], request: UUID? = nil) {
         let now = ProcessInfo.processInfo.systemUptime
-        automationRequests = automationRequests.filter { now - $0.value < 120 }
+        automationRequests = automationRequests.filter { now - $0.value.began < 120 }
         var common = fields
         common["stage"] = stage
         common["pid"] = "\(ProcessInfo.processInfo.processIdentifier)"
@@ -1635,10 +1649,12 @@ extension ReceiverRuntime {
         if automationRequests.isEmpty {
             diagnostics.log(.info, category: .app, message: "automation_stage", fields: common)
         } else {
-            for (id, began) in automationRequests {
+            for (id, invocation) in automationRequests where request == nil || request == id {
                 var entry = common
                 entry["request_id"] = id.uuidString
-                entry["elapsed_ms"] = "\(Int((now - began) * 1_000))"
+                entry["source"] = invocation.source
+                entry["requested_route"] = invocation.route.rawValue
+                entry["elapsed_ms"] = "\(Int((now - invocation.began) * 1_000))"
                 diagnostics.log(.info, category: .app, message: "automation_stage", fields: entry)
             }
         }
@@ -1664,6 +1680,21 @@ extension ReceiverRuntime {
             pairingNeedsAttention ? "authentication_rejected" : "disconnected")
     }
 
+    private func beginAutomation(source: String, route: AutomationRoute) -> UUID {
+        if automationRequests.count >= 8, let oldest = automationRequests.min(by: { $0.value.began < $1.value.began })?.key {
+            automationRequests.removeValue(forKey: oldest)
+        }
+        let id = UUID()
+        automationRequests[id] = AutomationInvocation(began: ProcessInfo.processInfo.systemUptime, source: source, route: route)
+        return id
+    }
+
+    private func finishAutomation(_ result: String, request: UUID) -> String {
+        automationEvent("action_returned", fields: ["result": result], request: request)
+        if result != "waiting" && result != "engine_started" { automationRequests.removeValue(forKey: request) }
+        return automationReply(result, request: request)
+    }
+
     private func automationReply(_ result: String, request: UUID? = nil) -> String {
         var value: [String: String] = ["result": result, "route": control != nil ? activePath.rawValue : requestedRoute.rawValue,
             "paired": "\(hasRememberedCredential)", "engine": audioOutputState.map { String(describing: $0) } ?? "stopped",
@@ -1675,8 +1706,9 @@ extension ReceiverRuntime {
 
     public func markAutomationTrigger() -> String {
         start()
-        let id = UUID(); automationRequests[id] = ProcessInfo.processInfo.systemUptime
-        automationEvent("trigger_marker", fields: ["marker_id": id.uuidString])
+        let id = beginAutomation(source: "marker", route: .automatic)
+        automationEvent("trigger_marker", request: id)
+        automationRequests.removeValue(forKey: id)
         return automationReply("trigger_recorded", request: id)
     }
 
@@ -1688,10 +1720,10 @@ extension ReceiverRuntime {
 
     public func automationConnect(route: AutomationRoute, source: String) async -> String {
         start()
-        let id = UUID(); automationRequests[id] = ProcessInfo.processInfo.systemUptime
-        automationEvent("action_entered", fields: ["source": source, "requested_route": route.rawValue])
-        guard !pairingNeedsAttention else { return automationReply("authentication_rejected", request: id) }
-        guard !testRunning && !sendingReport && pendingCalibration == nil else { return automationReply("test_running", request: id) }
+        let id = beginAutomation(source: source, route: route)
+        automationEvent("action_entered", request: id)
+        guard !pairingNeedsAttention else { return finishAutomation("authentication_rejected", request: id) }
+        guard !testRunning && !sendingReport && pendingCalibration == nil else { return finishAutomation("test_running", request: id) }
         // Reload after an earlier attempt while Keychain was unavailable before first unlock.
         do {
             let saved = try KeychainRememberedCredentialStore().load()
@@ -1699,14 +1731,17 @@ extension ReceiverRuntime {
             connectionManager.setRememberedIdentity(saved?.windowsSPKISHA256)
         } catch {
             automationEvent("credential_unavailable")
-            return automationReply("credential_unavailable", request: id)
+            return finishAutomation("credential_unavailable", request: id)
         }
-        guard hasRememberedCredential else { return automationReply("pair_in_app", request: id) }
+        guard hasRememberedCredential else { return finishAutomation("pair_in_app", request: id) }
         if control != nil && !route.includes(activePath) {
-            return automationReply("another_route_active", request: id)
+            return finishAutomation("another_route_active", request: id)
         }
         if isConnecting && route != requestedRoute {
-            return automationReply("another_request_active", request: id)
+            if automaticResumeInProgress && control == nil {
+                authMode = .remembered
+                connect(route: route)
+            } else { return finishAutomation("another_request_active", request: id) }
         }
         recoveryIntent.request()
         if control == nil && !isConnecting {
@@ -1714,20 +1749,19 @@ extension ReceiverRuntime {
             authMode = .remembered
             connect(route: route)
         } else if connectionEstablished && audioOutputState == .failed { retryAudioOutput() }
-        automationEvent("request_accepted")
+        automationEvent("request_accepted", request: id)
         // Keep the invocation alive briefly for authentication/audio startup; this is not a keepalive.
         for _ in 0..<32 {
-            if Task.isCancelled { return automationReply("cancelled", request: id) }
+            if Task.isCancelled { return finishAutomation("cancelled", request: id) }
             if audioOutput != nil { break }
             if pairingNeedsAttention || audioOutputState == .failed || !isConnecting { break }
             try? await Task.sleep(nanoseconds: 250_000_000)
         }
-        let result = pairingNeedsAttention ? "authentication_rejected" :
+        let result = testRunning || sendingReport ? "test_running" : pairingNeedsAttention ? "authentication_rejected" :
             audioOutput?.hasRenderedReceivedAudio == true ? "received_audio_rendered" :
             audioOutput != nil ? "engine_started" : audioOutputState == .failed ? "audio_failed" :
             isConnecting ? "waiting" : "disconnected"
-        automationEvent("action_returned", fields: ["result": result])
-        return automationReply(result, request: id)
+        return finishAutomation(result, request: id)
     }
 
     public func handleAutomationURL(_ url: URL) async {
@@ -1744,6 +1778,7 @@ extension ReceiverRuntime {
     private var automationHelp: some View {
         Form {
             Section("Shortcuts") {
+                ShortcutsLink()
                 Text("Add HearPort actions in Shortcuts. Play PC audio uses an audio playback action; Background connect and Open and connect allow comparison.")
                 Text("Choose Automatic, Network only or USB only. Only the saved paired PC is used. Pair in HearPort first.")
             }
