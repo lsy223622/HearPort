@@ -12,19 +12,20 @@ def verify(app):
     metadata = json.loads((app / "Metadata.appintents" / "extract.actionsdata").read_text(encoding="utf-8"))
     actions = metadata["actions"]
     expected = {"PlayPCAudioIntent", "BackgroundConnectIntent", "OpenAndConnectIntent",
-                "DisconnectPCAudioIntent", "ConnectionStatusIntent", "AutomationMarkerIntent"}
+                "DisconnectPCAudioIntent", "ConnectionStatusIntent", "AutomationMarkerIntent",
+                "PlayNetworkAudioIntent", "PlayUSBAudioIntent", "BackgroundNetworkIntent", "BackgroundUSBIntent"}
     assert expected <= actions.keys(), "Missing App Intent metadata"
     for name in expected:
         assert actions[name]["isDiscoverable"], name
         assert actions[name]["openAppWhenRun"] == (name == "OpenAndConnectIntent"), name
-    for name in ["PlayPCAudioIntent", "DisconnectPCAudioIntent"]:
+    for name in ["PlayPCAudioIntent", "DisconnectPCAudioIntent", "PlayNetworkAudioIntent", "PlayUSBAudioIntent"]:
         assert "com.apple.link.systemProtocol.AudioStarting" in actions[name]["systemProtocols"], name
     for name in ["PlayPCAudioIntent", "BackgroundConnectIntent", "OpenAndConnectIntent"]:
         assert any(p["name"] == "route" for p in actions[name]["parameters"]), name
-    assert len(metadata["autoShortcuts"]) == 10, "Missing shortcut variants"
+    assert {s["actionIdentifier"] for s in metadata["autoShortcuts"]} == expected, "Missing distinct shortcut entry points"
     routes = next(item for item in metadata["enums"] if item["identifier"] == "HearPortRoute")
     assert {item["identifier"] for item in routes["cases"]} == {"automatic", "network", "usb"}
-    print("Verified 6 intents, 10 App Shortcuts, 3 routes and foreground/audio execution metadata")
+    print("Verified 10 intents, 10 App Shortcuts, 3 routes and foreground/audio execution metadata")
 
 
 if __name__ == "__main__":
