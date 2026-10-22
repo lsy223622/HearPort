@@ -11,6 +11,8 @@ on:
       - ".github/workflows/ios-receiver.yml"
       - "scripts/collect_notices.py"
       - "scripts/fetch_opus.py"
+      - "scripts/build_shortcuts.py"
+      - "tests/test_shortcuts.py"
       - "THIRD_PARTY_NOTICES.md"
       - "LICENSE"
   pull_request:
@@ -23,6 +25,8 @@ on:
       - ".github/workflows/ios-receiver.yml"
       - "scripts/collect_notices.py"
       - "scripts/fetch_opus.py"
+      - "scripts/build_shortcuts.py"
+      - "tests/test_shortcuts.py"
       - "THIRD_PARTY_NOTICES.md"
       - "LICENSE"
   workflow_dispatch:
@@ -39,6 +43,9 @@ jobs:
 
       - name: Fetch pinned Opus source
         run: python3 scripts/fetch_opus.py
+
+      - name: Validate shortcut sources
+        run: python3 -m unittest tests.test_shortcuts -q
 
       - name: Build host Opus for Swift package tests
         shell: bash
@@ -207,3 +214,15 @@ jobs:
           path: |
             ${{ runner.temp }}/HearPort-unsigned.ipa
             ${{ runner.temp }}/HearPort-archive-metadata.txt
+
+      - name: Build and sign foreground shortcut variants
+        run: python3 scripts/build_shortcuts.py --output "$RUNNER_TEMP/HearPort-shortcuts" --sign
+
+      - name: Upload automation test kit
+        uses: actions/upload-artifact@v6
+        with:
+          name: HearPort-shortcuts
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/HearPort-shortcuts/
+            docs/connection-automation.md

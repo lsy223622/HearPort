@@ -173,6 +173,8 @@ public final class PlatformAudioSessionController {
 
 public final class PlatformAudioOutputController {
     public var onStateChanged: ((AudioOutputState) -> Void)?
+    private let receivedFramesRendered = AtomicUInt64()
+    public var hasRenderedReceivedAudio: Bool { receivedFramesRendered.load() > 0 }
     private let receiver: HearPortReceiver
     private let lifecycle: AudioLifecycleController
     private let audioSession = AVAudioSession.sharedInstance()
@@ -313,6 +315,7 @@ public final class PlatformAudioOutputController {
             resampler.requiredInputFrames(outputFrameCount: frameCount, ratio: ratio)
         )
         let samples = receiver.renderFrames(sourceFrames)
+        if receiver.isRenderActive && !receiver.isConcealing { receivedFramesRendered.increment(by: UInt64(sourceFrames)) }
         let output = resampler.process(
             samples,
             outputFrameCount: frameCount,

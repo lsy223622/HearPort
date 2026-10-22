@@ -24,6 +24,11 @@
 	<string>$(HEARPORT_BUILD_ID)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>CFBundleURLTypes</key>
+	<array><dict>
+		<key>CFBundleURLName</key><string>com.lsy223622.HearPort.automation</string>
+		<key>CFBundleURLSchemes</key><array><string>hearport</string></array>
+	</dict></array>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>HearPort connects to your Windows PC on the local network.</string>
 	<key>NSBonjourServices</key>

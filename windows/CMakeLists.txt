@@ -33,6 +33,7 @@ add_library(hearport_windows_platform STATIC
   src/live_audio_encoder.cpp
   src/quic_server_msquic.cpp
   src/sender_options.cpp
+  src/auto_start.cpp
   src/sender_authentication.cpp
   src/sender_service.cpp
   src/usb_tunnel.cpp
@@ -54,7 +55,7 @@ else()
   target_compile_definitions(hearport_windows_platform PRIVATE HEARPORT_HAS_MSQUIC=0)
 endif()
 
-target_link_libraries(hearport_windows_platform PRIVATE ole32 avrt advapi32 crypt32 mfplat mfreadwrite mfuuid ws2_32 xmllite shlwapi dnsapi)
+target_link_libraries(hearport_windows_platform PRIVATE ole32 avrt advapi32 crypt32 mfplat mfreadwrite mfuuid ws2_32 xmllite shlwapi dnsapi shell32)
 
 add_executable(hearport_sender src/main.cpp)
 target_link_libraries(hearport_sender PRIVATE hearport_windows_platform)
@@ -95,6 +96,9 @@ if(HEARPORT_MSQUIC_INCLUDE_DIR AND HEARPORT_MSQUIC_LIBRARY)
 endif()
 
 if(BUILD_TESTING)
+  add_executable(hearport_auto_start_tests tests/auto_start_tests.cpp)
+  target_link_libraries(hearport_auto_start_tests PRIVATE hearport_windows_platform)
+  add_test(NAME hearport_auto_start_tests COMMAND hearport_auto_start_tests)
   add_executable(hearport_opus_codec_tests tests/opus_codec_tests.cpp)
   target_link_libraries(hearport_opus_codec_tests PRIVATE hearport_opus_bridge)
   add_test(NAME hearport_opus_codec_tests COMMAND hearport_opus_codec_tests)
