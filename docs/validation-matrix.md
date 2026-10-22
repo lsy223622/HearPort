@@ -6,6 +6,7 @@
 - The pinned `msquic.dll` has `DependentLoadFlags=0x0800`, restricting its imports to System32. Both sender executables now delay-load MsQuic after their own VC runtime initializes; no system runtime installation or third-party DLL modification is involved.
 - The rebuilt GUI remained responsive in the same Sandbox, loaded MsQuic and all three VC runtime DLLs from its own directory and bound UDP 52137. System32 still contained no VC runtime. This validates loading/startup, not end-to-end audio in Sandbox.
 - Packaging rejects an executable whose PE delay-import table does not contain MsQuic. CI startup verification checks the actual loaded path of every bundled DLL, preventing system-installed runtime files from silently satisfying the check. Local checks: 25 CTest and 33 combined Python tests passed.
+- Delivery source `5a1e5a2fe763ef2a52fafc2e5413649636a1e788`: Windows Actions [39788168226](https://github.com/lsy223622/HearPort/actions/runs/39788168226) passed 25 CTest, 29 Python tests, application-local DLL path checks and GUI startup/paint checks; CodeQL [39788187759](https://github.com/lsy223622/HearPort/actions/runs/39788187759) passed. Download hashes and all 100 runtime files verified. The unmodified Actions package repeated the successful no-system-CRT Sandbox startup/module-path/UDP check. iPad application source is unchanged.
 
 ## Connection automation verification (2026-10-22)
 

@@ -1,5 +1,11 @@
 # HearPort 0.1.0 release checklist
 
+## Portable runtime loading fix (2026-10-22)
+
+- [x] Reproduced the old package's `0xC0000135` startup failure in a fresh Windows Sandbox, with local VC runtime files present and no System32 VC runtime. Confirmed MsQuic's System32-only import flags and successful local-runtime preload control.
+- [x] Source `5a1e5a2fe763ef2a52fafc2e5413649636a1e788`: Windows Actions [39788168226](https://github.com/lsy223622/HearPort/actions/runs/39788168226) and CodeQL [39788187759](https://github.com/lsy223622/HearPort/actions/runs/39788187759) passed. Verified published hashes, all 100 runtime files and actual application-local module paths. The downloaded Actions package also started and bound UDP 52137 in the same Sandbox without installing a runtime.
+- [ ] iPad build 191 installation and automation device acceptance await the user's AltStore recovery; this Windows loader fix does not require an iPad update.
+
 ## Connection automation candidate (2026-10-22)
 
 - [x] Matching application source `8ba6d9ab9e7335f72a5122b166d66d320f1e0493`: Windows Actions [39748549052](https://github.com/lsy223622/HearPort/actions/runs/39748549052) passed 25 CTest, 28 Python checks and packaged startup/paint checks; iPad Actions [39748549005](https://github.com/lsy223622/HearPort/actions/runs/39748549005) passed 221 Swift tests, four shortcut/analysis checks and archived unsigned build 191; CodeQL [39748548777](https://github.com/lsy223622/HearPort/actions/runs/39748548777) passed.
