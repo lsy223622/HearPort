@@ -27,6 +27,50 @@ def binary_imports(binary, dumpbin):
     return re.findall(r"^\s+([\w.-]+\.dll)\s*$", result.stdout.decode(errors="replace"), re.M | re.I)
 
 
+def binary_delay_imports(binary):
+    data = binary.read_bytes()
+
+    def read(fmt, offset):
+        try:
+            return struct.unpack_from(fmt, data, offset)
+        except struct.error as error:
+            raise ValueError(f"Invalid PE data: {binary.name}") from error
+
+    pe, = read("<I", 0x3c)
+    if data[:2] != b"MZ" or data[pe:pe + 4] != b"PE\0\0" or read("<H", pe + 4)[0] != 0x8664:
+        raise ValueError(f"Not an x64 PE binary: {binary.name}")
+    optional = pe + 24
+    if read("<H", optional)[0] != 0x20b:
+        raise ValueError(f"Not a PE32+ binary: {binary.name}")
+    sections = optional + read("<H", pe + 20)[0]
+
+    def file_offset(rva):
+        for index in range(read("<H", pe + 6)[0]):
+            _, address, size, start = read("<IIII", sections + index * 40 + 8)
+            if address <= rva < address + size:
+                offset = start + rva - address
+                if offset < len(data):
+                    return offset
+        raise ValueError(f"Unmapped PE RVA: {binary.name}")
+
+    rva, size = read("<II", optional + 112 + 13 * 8)
+    if not rva:
+        return set()
+    names = set()
+    for index in range(size // 32):
+        descriptor = read("<8I", file_offset(rva + index * 32))
+        if not any(descriptor):
+            return names
+        if descriptor[0] != 1:
+            raise ValueError(f"Delay imports must use RVAs: {binary.name}")
+        offset = file_offset(descriptor[1])
+        end = data.find(b"\0", offset)
+        if end < 0:
+            raise ValueError(f"Invalid delay import name: {binary.name}")
+        names.add(data[offset:end].decode("ascii").lower())
+    raise ValueError(f"Unterminated delay import table: {binary.name}")
+
+
 def collect_runtime(executable, dumpbin, search_dirs, system_dir):
     files = {executable.name: executable}
     pending = [executable]
@@ -94,6 +138,8 @@ def main():
     if not Path(cache["HEARPORT_CARGO_EXECUTABLE"]).is_file():
         raise ValueError("The build must include the SPAKE2 provider")
     executable = args.build_dir / "windows/Release/hearport_sender_gui.exe"
+    if "msquic.dll" not in binary_delay_imports(executable):
+        raise ValueError("MsQuic must be delay-loaded after the application-local VC runtime")
     files = collect_runtime(executable, args.dumpbin, [executable.parent, args.runtime_dir],
                             Path(os.environ["SystemRoot"]) / "System32")
     if "msquic.dll" not in files:
