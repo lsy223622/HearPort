@@ -10,13 +10,14 @@ enum HearPortRoute: String, AppEnum {
     var route: AutomationRoute { AutomationRoute(rawValue: rawValue)! }
 }
 
-@available(iOS 17.0, *)
+@available(iOS 17.2, *)
 struct PlayPCAudioIntent: AudioPlaybackIntent {
     static var title: LocalizedStringResource = "Play PC audio"
     static var description = IntentDescription("Connect to the saved paired PC and start audio without opening HearPort.")
     static var openAppWhenRun = false
     static var authenticationPolicy: IntentAuthenticationPolicy = .alwaysAllowed
     @Parameter(title: "Connection route", default: .automatic) var route: HearPortRoute
+    init(route: HearPortRoute = .automatic) { self.route = route }
     @MainActor func perform() async throws -> some IntentResult & ReturnsValue<String> {
         .result(value: await ReceiverRuntime.shared.automationConnect(route: route.route, source: "audio_playback_intent"))
     }
@@ -28,6 +29,7 @@ struct BackgroundConnectIntent: AppIntent {
     static var openAppWhenRun = false
     static var authenticationPolicy: IntentAuthenticationPolicy = .alwaysAllowed
     @Parameter(title: "Connection route", default: .automatic) var route: HearPortRoute
+    init(route: HearPortRoute = .automatic) { self.route = route }
     @MainActor func perform() async throws -> some IntentResult & ReturnsValue<String> {
         .result(value: await ReceiverRuntime.shared.automationConnect(route: route.route, source: "background_intent"))
     }
@@ -43,7 +45,7 @@ struct OpenAndConnectIntent: AppIntent {
     }
 }
 
-@available(iOS 17.0, *)
+@available(iOS 17.2, *)
 struct DisconnectPCAudioIntent: AudioPlaybackIntent {
     static var title: LocalizedStringResource = "Disconnect PC audio"
     static var openAppWhenRun = false
@@ -71,13 +73,21 @@ struct AutomationMarkerIntent: AppIntent {
     }
 }
 
-@available(iOS 17.0, *)
+@available(iOS 17.2, *)
 struct HearPortShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
         AppShortcut(intent: PlayPCAudioIntent(), phrases: ["Play PC audio with \(.applicationName)"],
                     shortTitle: "Play PC audio", systemImageName: "play.circle")
+        AppShortcut(intent: PlayPCAudioIntent(route: .network), phrases: ["Play over network with \(.applicationName)"],
+                    shortTitle: "Play via network", systemImageName: "wifi")
+        AppShortcut(intent: PlayPCAudioIntent(route: .usb), phrases: ["Play over USB with \(.applicationName)"],
+                    shortTitle: "Play via USB", systemImageName: "cable.connector")
         AppShortcut(intent: BackgroundConnectIntent(), phrases: ["Connect in the background with \(.applicationName)"],
                     shortTitle: "Background connect", systemImageName: "network")
+        AppShortcut(intent: BackgroundConnectIntent(route: .network), phrases: ["Connect over network in the background with \(.applicationName)"],
+                    shortTitle: "Background network", systemImageName: "wifi")
+        AppShortcut(intent: BackgroundConnectIntent(route: .usb), phrases: ["Connect over USB in the background with \(.applicationName)"],
+                    shortTitle: "Background USB", systemImageName: "cable.connector")
         AppShortcut(intent: OpenAndConnectIntent(), phrases: ["Open and connect with \(.applicationName)"],
                     shortTitle: "Open and connect", systemImageName: "desktopcomputer")
         AppShortcut(intent: DisconnectPCAudioIntent(), phrases: ["Disconnect PC audio with \(.applicationName)"],

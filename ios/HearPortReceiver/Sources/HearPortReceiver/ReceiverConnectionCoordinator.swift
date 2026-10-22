@@ -21,7 +21,7 @@ struct ConnectionSelectionPolicy {
     }
     mutating func resumeAfterTest() { pinned = false; wantsConnection = true }
     mutating func stop() { wantsConnection = false; active = nil; path = nil; identity = nil; pinned = false }
-    func acceptsStop(from peer: Data) -> Bool { wantsConnection && !peer.isEmpty && identity == peer }
+    func acceptsStop(from peer: Data, session: UUID) -> Bool { active == session && !peer.isEmpty && identity == peer }
 }
 
 struct ConnectionAttemptHistory {
@@ -92,6 +92,8 @@ public struct ConnectionEndpoint: Identifiable {
     private var networkTestOnly = false
     private var routeRestriction = AutomationRoute.automatic
     private let pathMonitor = NWPathMonitor()
+    private var pathMonitorStarted = false
+    private var discoveryNeedsRestart = false
     private var lastNetworkStatus: NWPath.Status?
     public var onNetworkAvailable: (() -> Void)?
     public var hasUSB: Bool { usbEndpoint != nil }
@@ -112,7 +114,10 @@ public struct ConnectionEndpoint: Identifiable {
                 }
             }
         }
-        pathMonitor.start(queue: DispatchQueue(label: "com.hearport.path"))
+        if !pathMonitorStarted {
+            pathMonitorStarted = true
+            pathMonitor.start(queue: DispatchQueue(label: "com.hearport.path"))
+        }
         tunnel.onAvailable = { [weak self] port in DispatchQueue.main.async {
             guard let self else { return }
             self.usbEndpoint = ConnectionEndpoint(usbPort: port); self.usbStatus = "USB available"
@@ -133,6 +138,14 @@ public struct ConnectionEndpoint: Identifiable {
         tunnel.start()
         let browser = NWBrowser(for: .bonjourWithTXTRecord(type: "_hearport._udp", domain: "local."), using: .udp)
         self.browser = browser
+        browser.stateUpdateHandler = { [weak self, weak browser] state in
+            if case .failed = state {
+                DispatchQueue.main.async { [weak self, weak browser] in
+                    guard let self, let browser, self.browser === browser else { return }
+                    self.discoveryNeedsRestart = true
+                }
+            }
+        }
         browser.browseResultsChangedHandler = { [weak self] results, _ in
             let found = results.map { result -> ConnectionEndpoint in
                 var identity: String?
@@ -151,6 +164,7 @@ public struct ConnectionEndpoint: Identifiable {
         browser.start(queue: DispatchQueue(label: "com.hearport.discovery"))
     }
     public func resumeUSBDiscovery() {
+        restartFailedDiscovery()
         guard browser != nil else { start(); return }
         tunnel.start()
         attempt()
@@ -193,7 +207,7 @@ public struct ConnectionEndpoint: Identifiable {
         return true
     }
     public func pinActive() { policy.pinned = true }
-    public func acceptsStop(from identity: Data) -> Bool { policy.acceptsStop(from: identity) }
+    public func acceptsStop(from identity: Data, session: UUID) -> Bool { policy.acceptsStop(from: identity, session: session) }
     public func resumeAfterTest() {
         policy.resumeAfterTest()
         networkTestOnly = false
@@ -281,6 +295,7 @@ public struct ConnectionEndpoint: Identifiable {
         }
     }
     private func attempt() {
+        restartFailedDiscovery()
         guard policy.wantsConnection, pending.isEmpty, !policy.pinned else { return }
         let usable: (ConnectionEndpoint) -> Bool = { self.history.usable($0.path == .usb ? "usb" : $0.id, at: Date()) }
         let selection = ComputerRouteSelection(identity: selectedIdentity,
@@ -312,6 +327,12 @@ public struct ConnectionEndpoint: Identifiable {
         let work = DispatchWorkItem { [weak self] in self?.attempt() }; retry = work
         DispatchQueue.main.asyncAfter(deadline: .now() + retrySeconds, execute: work)
         retrySeconds = min(10, retrySeconds * 2)
+    }
+    private func restartFailedDiscovery() {
+        guard discoveryNeedsRestart else { return }
+        discoveryNeedsRestart = false
+        browser?.cancel(); browser = nil
+        start()
     }
     deinit { pathMonitor.cancel(); browser?.cancel(); resolvers.values.forEach { $0.cancel() }; tunnel.stop(); retry?.cancel() }
 }

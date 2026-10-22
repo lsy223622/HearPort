@@ -2,6 +2,7 @@ import SwiftUI
 import HearPortReceiver
 
 @main
+@MainActor
 struct HearPortApp: App {
     init() {
         ReceiverRuntime.shared.start()

@@ -418,3 +418,33 @@
 "Restoring audio…" = "正在恢复音频…";
 "The connection is active. Retry audio playback." = "连接仍然有效，请重试音频播放。";
 "Retry playback" = "重试播放";
+
+"Automatically reconnect" = "自动恢复连接";
+"Shortcuts and automation" = "快捷指令与自动化";
+"Shortcuts" = "快捷指令";
+"Personal automation" = "个人自动化";
+"Verification" = "验证";
+"Connection route" = "连接线路";
+"Automatic (USB preferred)" = "自动（USB 优先）";
+"Network only" = "仅网络";
+"USB only" = "仅 USB";
+"Play PC audio" = "播放电脑音频";
+"Background connect" = "后台连接";
+"Open and connect" = "打开并连接";
+"Disconnect PC audio" = "断开电脑音频";
+"Read connection status" = "读取连接状态";
+"Record automation trigger" = "记录自动化触发";
+"Connect to the saved paired PC and start audio without opening HearPort." = "连接已配对的电脑并播放音频，无需打开 HearPort。";
+"Compare ordinary background execution with the audio playback action." = "比较普通后台动作与音频播放动作的系统执行情况。";
+"Open HearPort and connect to the saved paired PC. Unlocking may be required." = "打开 HearPort 并连接已配对的电脑，可能需要解锁。";
+"Add HearPort actions in Shortcuts. Play PC audio uses an audio playback action; Background connect and Open and connect allow comparison." = "在快捷指令中添加 HearPort 动作。“播放电脑音频”使用音频专用入口，可与“后台连接”“打开并连接”比较。";
+"Choose Automatic, Network only or USB only. Only the saved paired PC is used. Pair in HearPort first." = "可选自动、仅网络或仅 USB；只连接已配对的电脑，请先在 HearPort 完成配对。";
+"For joining your Wi-Fi, run Play PC audio with Network only. For charger connected, use USB only: a charger does not prove a PC data connection is ready." = "加入 Wi-Fi 时建议运行“播放电脑音频（仅网络）”；充电器连接时选择“仅 USB”。充电不代表电脑数据线路已就绪。";
+"Choose Run Immediately if available. System permissions, first unlock and foreground actions may still require interaction." = "系统支持时选择“立即运行”。系统权限、重启后首次解锁和前台动作仍可能需要操作。";
+"Record automation trigger can precede a connection action. Read connection status returns a request result; export Diagnostics after testing to compare trigger, authentication, audio engine and received audio stages." = "可在连接动作前插入“记录自动化触发”，用“读取连接状态”查看结果。测试后导出诊断，比较触发、认证、引擎和收到音频的阶段。";
+"An engine start does not prove audible sound. A silent PC may send no audio. Locked, background and force-quit cases need testing on this iPad." = "引擎启动不代表已经出声，电脑静音时可能不发送音频。锁屏、后台和强退后的行为需要在这台 iPad 上验证。";
+
+"Play via network" = "通过网络播放";
+"Play via USB" = "通过 USB 播放";
+"Background network" = "后台连接网络";
+"Background USB" = "后台连接 USB";
