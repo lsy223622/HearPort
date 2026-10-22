@@ -718,7 +718,7 @@ import AppIntents
                                  target: Binding<Int>, maximum: Binding<Int>) -> some View {
         NavigationLink {
             Form { [self] in
-                Section { in
+                Section {
                     Picker("Audio transport mode", selection: transport) {
                         Text("Datagram").tag(AudioTransportMode.datagram.rawValue)
                         Text("Reliable stream").tag(AudioTransportMode.reliable.rawValue)
@@ -741,7 +741,7 @@ import AppIntents
                 } footer: {
                     Text("Longer packets reduce packet frequency and need more collection time. All processing uses the selected total delay budget. Changes take effect on the next connection.")
                 }
-                Section { in
+                Section {
                     MillisecondsControl("Normal target", value: target, range: 10...max(10, maximum.wrappedValue))
                     MillisecondsControl("Maximum total delay", value: maximum, range: max(20, target.wrappedValue)...2_000)
                 } footer: {
@@ -771,7 +771,12 @@ import AppIntents
     @ViewBuilder private var calibrationResults: some View {
         if let calibrationRunResult {
             CalibrationResultsView(result: calibrationRunResult, apply: { profile in
-                _ = calibrationRunResult.apply(profile: profile)
+                if calibrationRunResult.apply(profile: profile) {
+                    audioTransportModeRaw = AudioTransportMode.load(usb: false).rawValue
+                    let budget = PlaybackLatencyPreferences.load(usb: false)
+                    networkTargetLatencyMs = budget.target
+                    networkMaximumLatencyMs = budget.maximum
+                }
             })
         } else {
             AdaptiveCalibrationView(result: adaptiveRunResult ?? adaptiveResult,
@@ -933,7 +938,7 @@ import AppIntents
             }
             Section { [self] in
                 NavigationLink("About HearPort") {
-                    Form { in
+                    Form {
                         Section("HearPort") {
                             LabeledContent("Version", value: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—")
                             LabeledContent("Build", value: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—")
@@ -984,7 +989,7 @@ import AppIntents
                 }
                 .confirmationDialog("Clear retained diagnostics?", isPresented: binding(\.showingClearConfirmation), titleVisibility: .visible) {
                     Button("Clear", role: .destructive) { [self] in clearDiagnostics() }
-                    Button("Cancel", role: .cancel) { in}
+                    Button("Cancel", role: .cancel) {}
                 }
                 if let diagnosticsStatus {
                     Text(diagnosticsStatus)
@@ -1093,7 +1098,7 @@ import AppIntents
             return reserve
         }
         session.prepareCalibrationOutputReserve = prepareOutputReserve
-        session.calibrationContext = { in
+        session.calibrationContext = {
             let output = AVAudioSession.sharedInstance()
             return CalibrationContext(device: UIDevice.current.model,
                 operatingSystem: UIDevice.current.systemName + " " + UIDevice.current.systemVersion,
@@ -1445,6 +1450,7 @@ import AppIntents
     }
 
     private func disconnect(reason: UInt32 = 1) {
+        if !automationRequests.isEmpty { automationEvent("request_stopped"); automationRequests.removeAll() }
         recoveryIntent.pause()
         pendingCalibration = nil; calibrationTarget = nil
         completedAdaptiveConnection = nil
@@ -1664,6 +1670,7 @@ extension ReceiverRuntime {
         guard connectionID == id, audioOutput === output else { return }
         if output.hasRenderedReceivedAudio {
             automationEvent("received_audio_rendered", fields: ["connection_id": id.uuidString])
+            automationRequests.removeAll()
         } else if ProcessInfo.processInfo.systemUptime < until {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self, weak output] in
                 guard let self, let output else { return }

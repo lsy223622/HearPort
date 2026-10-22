@@ -1,10 +1,14 @@
 """Check the actual archive metadata, not just source declarations."""
 import argparse
 import json
+import plistlib
 from pathlib import Path
 
 
 def verify(app):
+    info = plistlib.loads((app / "Info.plist").read_bytes())
+    assert any("hearport" in item.get("CFBundleURLSchemes", []) for item in info.get("CFBundleURLTypes", []))
+    assert "audio" in info.get("UIBackgroundModes", [])
     metadata = json.loads((app / "Metadata.appintents" / "extract.actionsdata").read_text(encoding="utf-8"))
     actions = metadata["actions"]
     expected = {"PlayPCAudioIntent", "BackgroundConnectIntent", "OpenAndConnectIntent",
