@@ -1,5 +1,14 @@
 # HearPort 0.1.0 validation matrix
 
+## Connection automation verification (2026-10-22)
+
+- Source `8ba6d9ab9e7335f72a5122b166d66d320f1e0493`: Windows Actions [39748549052](https://github.com/lsy223622/HearPort/actions/runs/39748549052), iPad Actions [39748549005](https://github.com/lsy223622/HearPort/actions/runs/39748549005), CodeQL [39748548777](https://github.com/lsy223622/HearPort/actions/runs/39748548777) passed. Windows: 25 CTest, 28 package checks and GUI startup/paint verification. Swift: 221 tests including recovery intent, fixed-route exclusion and stale-session stop rejection; four Python shortcut/trace-analysis checks also passed in iPad CI.
+- Unsigned iPad build 191 contains ten distinct intent/shortcut entry points. Archive checks validate route parameters, foreground flags, AudioStarting conformance, URL registration and the audio background mode. Audio entry points require iPadOS 17.2 in this SDK's metadata; ordinary intents retain iPadOS 16 compatibility.
+- Downloaded archive hashes, all 100 Windows runtime files, embedded source/build IDs and unsigned packaging verified; the matching Actions Windows package responded and bound UDP 52137 locally. These checks do not exercise iPad OS scheduling or physical audio output.
+- Five foreground URL shortcut sources were generated. Actual macOS signing attempts failed for missing iCloud login. Ten built-in App Shortcuts supply usable native entry points without requiring file import; on-device indexing and execution remain pending.
+- Physical matrix and local analyzer: [connection-automation.md](connection-automation.md). Background, lock-screen, force-quit, Wi-Fi/charger trigger behavior and final audible output are **pending device execution**, not inferred from compilation, metadata or desktop timing.
+
+
 Automated tests and successful builds do not establish real-device playback,
 background behavior, or long-session reliability. User-observed runs are listed
 separately from repeatable test evidence; signed installation and soak results

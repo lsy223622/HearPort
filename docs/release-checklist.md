@@ -1,5 +1,14 @@
 # HearPort 0.1.0 release checklist
 
+## Connection automation candidate (2026-10-22)
+
+- [x] Matching application source `8ba6d9ab9e7335f72a5122b166d66d320f1e0493`: Windows Actions [39748549052](https://github.com/lsy223622/HearPort/actions/runs/39748549052) passed 25 CTest, 28 Python checks and packaged startup/paint checks; iPad Actions [39748549005](https://github.com/lsy223622/HearPort/actions/runs/39748549005) passed 221 Swift tests, four shortcut/analysis checks and archived unsigned build 191; CodeQL [39748548777](https://github.com/lsy223622/HearPort/actions/runs/39748548777) passed.
+- [x] Verified archive hashes, all 100 Windows runtime files, matching embedded source/build identities and unsigned IPA packaging. Metadata contains ten distinct intent/shortcut entry points, three route choices, the audio-starting protocol and foreground flags. The Actions Windows executable was launched locally, responded and listened on UDP 52137.
+- [x] One independent review identified delayed old-session stop handling; the active session ID/identity gate and path-promotion regression now cover it. Local combined Python checks: 32 passed.
+- [x] Generated five URL shortcut sources and attempted signing on macOS CI. All five were refused because the runner was not signed into iCloud; no importable signed file is claimed. Built-in App Shortcuts do not require importing these files.
+- [ ] Install iPad build 191 and check shortcut discovery, first manual invocation, background/locked/force-quit triggers, selected Wi-Fi and charger automation, delayed USB recognition and repeated invocation. Record actual audible playback separately from engine/received-render evidence. Procedure: [connection-automation.md](connection-automation.md).
+- [ ] Check normal PC stop/restart recovery, manual-disconnect pause, credential refusal without deletion and re-pairing. Confirm route settings and existing recommendation actions still update normally after the shared-runtime migration.
+
 ## Pairing safety and interaction recovery candidate (2026-10-21)
 
 - [x] Matching source `e59628ab0f34fd6a8f9a8293d5c5d20e4ed03078`: Windows Actions [39593250742](https://github.com/lsy223622/HearPort/actions/runs/39593250742) passed 24 CTest, 28 Python checks and packaged startup/paint checks; iPad Actions [39593250802](https://github.com/lsy223622/HearPort/actions/runs/39593250802) passed 216 Swift tests and archived unsigned build 184; CodeQL [39593251795](https://github.com/lsy223622/HearPort/actions/runs/39593251795) passed. Downloaded hashes, all 100 Windows files, matching embedded build identities and unsigned IPA packaging verified. The Actions Windows executable was launched locally, responded and listened on UDP 52137.
