@@ -36,6 +36,7 @@
 #include "hearport/windows/sender_service.h"
 #include "hearport/windows/sender_host.h"
 #include "hearport/windows/network_probe.h"
+#include "hearport/windows/auto_start.h"
 
 namespace {
 
@@ -200,14 +201,17 @@ bool SavePort(std::uint16_t port) {
   return saved;
 }
 
-bool AutoStartEnabled() {
+std::wstring AutoStartValue() {
   wchar_t value[32768]{};
   DWORD size = sizeof(value);
-  return RegGetValueW(HKEY_CURRENT_USER,
+  if (RegGetValueW(HKEY_CURRENT_USER,
                       L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",
                       L"HearPort", RRF_RT_REG_SZ, nullptr, value,
-                      &size) == ERROR_SUCCESS;
+                      &size) != ERROR_SUCCESS) return {};
+  return value;
 }
+
+bool AutoStartEnabled() { return !AutoStartValue().empty(); }
 
 bool SetAutoStart(bool enabled) {
   HKEY key = nullptr;
@@ -224,7 +228,8 @@ bool SetAutoStart(bool enabled) {
       RegCloseKey(key);
       return false;
     }
-    const std::wstring command = L"\"" + path + L"\" --background";
+    const std::wstring command = hearport::windows::AutoStartCommand(path);
+    if (command.empty()) { RegCloseKey(key); return false; }
     result = RegSetValueExW(
         key, L"HearPort", 0, REG_SZ,
         reinterpret_cast<const BYTE*>(command.c_str()),
@@ -244,6 +249,9 @@ class Application {
 
   int Run(HINSTANCE instance, int show_command) {
     instance_ = instance;
+    if (hearport::windows::ShouldRepairAutoStart(AutoStartValue(), ExecutablePath())) {
+      SetAutoStart(true);
+    }
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     INITCOMMONCONTROLSEX common_controls{sizeof(common_controls), ICC_TAB_CLASSES};
     InitCommonControlsEx(&common_controls);

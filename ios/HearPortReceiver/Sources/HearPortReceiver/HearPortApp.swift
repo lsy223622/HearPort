@@ -4,103 +4,138 @@ import Network
 import SwiftUI
 
 @MainActor public struct HearPortApp: View {
-    private let diagnostics = HearPortDiagnostics.shared
-    @AppStorage(ConnectionPreferences.lastHostKey) private var lastHost = ""
-    @AppStorage("hearport.rememberedHost") private var rememberedHost = ""
-    @State private var selectedEndpoint: ConnectionEndpoint?
-    @State private var host = ""
-    @State private var connectionID = UUID()
-    @State private var isConnecting = false
-    @State private var activeAudioMode: AudioTransportMode = .datagram
-    @State private var activeBufferTargetPackets = JitterBufferConfiguration.defaultTargetPackets
-    @State private var pin = ""
-    @State private var authMode: AuthMode = .pair
-    @State private var hasRememberedCredential = false
-    @State private var didLoadRememberedCredential = false
-    @State private var status = "Disconnected"
-    @State private var connectionError: String?
-    @State private var connectionEstablished = false
-    @State private var completedTestStatus: String?
-    @State private var testCompletedNormally = true
-    @State private var receiver = HearPortReceiver()
-    @StateObject private var connectionManager = ReceiverConnectionCoordinator()
-    @State private var pendingControls: [UUID: ReceiverControlSession] = [:]
-    @State private var activePath: ConnectionPath = .network
-    @State private var activeNetworkEndpoint = ""
-    @State private var canvasHasAppeared = false
-    @State private var control: ReceiverControlSession?
-    @State private var audioOutput: PlatformAudioOutputController?
-    @State private var audioOutputState: AudioOutputState?
-    @State private var pairingNeedsAttention = false
-    @AppStorage("hearport.detailedLogging") private var detailedLogging = false
-    @AppStorage("hearport.autoConnect") private var autoConnect = false
-    @AppStorage("hearport.usbAudio.transport") private var usbTransportModeRaw = AudioTransportMode.reliable.rawValue
-    @AppStorage("hearport.audioTransportMode") private var audioTransportModeRaw = AudioTransportMode.datagram.rawValue
-    @AppStorage("hearport.jitterStartupPackets") private var jitterBufferTargetPackets = 8
-    @AppStorage(PlaybackLatencyPreferences.networkTargetKey) private var networkTargetLatencyMs = 50
-    @AppStorage(PlaybackLatencyPreferences.networkMaximumKey) private var networkMaximumLatencyMs = 100
-    @AppStorage(PlaybackLatencyPreferences.usbTargetKey) private var usbTargetLatencyMs = 50
-    @AppStorage(PlaybackLatencyPreferences.usbMaximumKey) private var usbMaximumLatencyMs = 100
-    @AppStorage("hearport.networkAudio.codec") private var networkCodec = "opus"
-    @AppStorage("hearport.networkAudio.bitrate") private var networkBitrate = 256_000
-    @AppStorage("hearport.networkAudio.frames") private var networkFrames = 240
-    @AppStorage("hearport.usbAudio.codec") private var usbCodec = "pcm"
-    @AppStorage("hearport.usbAudio.bitrate") private var usbBitrate = 256_000
-    @AppStorage("hearport.usbAudio.frames") private var usbFrames = 240
-    @State private var activeAudioFormat: AudioStreamFormat = .pcm
-    @State private var activeTargetLatencyMs = 50
-    @State private var activeMaximumLatencyMs = 100
-    @State private var diagnosticsSnapshot = HearPortDiagnostics.shared.snapshot()
-    @State private var exportedDiagnosticsURL: URL?
-    @State private var exportingDiagnostics = false
-    @State private var diagnosticsStatus: String?
-    @State private var showingClearConfirmation = false
-    @State private var calibrationResult: CalibrationResult? = CalibrationResult.load()
-    @State private var calibrationRunResult: CalibrationResult?
-    @State private var adaptiveResult = AdaptiveCalibrationResult.load()
-    @State private var adaptiveRunResult: AdaptiveCalibrationResult?
-    @State private var calibrationProgress: CalibrationProgressSnapshot?
-    @State private var calibrationNow: UInt64 = 0
-    @State private var sendingReport = false
-    @State private var canvasSheet: CanvasSheet?
-    @State private var calibrationTarget: ComputerConnectionTarget?
-    @State private var pendingCalibration: (goal: Int, seconds: Int, maximum: Int)?
-    @State private var completedAdaptiveConnection: UUID?
-    @State private var unpairTarget: ComputerConnectionTarget?
-    @AppStorage("hearport.keepScreenAwake") private var keepScreenAwake = false
-    @State private var currentComputerName = ""
-    @State private var currentComputerIdentity = ""
-    @State private var calibrationRequestID: UUID?
-    @State private var calibrationStartStatus: String?
-    @State private var retainingConnection = false
-    @State private var qualityTracker = LinkStabilityTracker()
-    @State private var linkSample: LinkTimingSample?
-    @State private var musicRound: MusicTestRound?
-    @State private var testRunning = false
-    @State private var roundStartedAt: TimeInterval = 0
-    @State private var roundElapsed: TimeInterval = 0
+    @ObservedObject private var runtime = ReceiverRuntime.shared
+    @ObservedObject private var coordinator = ReceiverRuntime.shared.connectionManager
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    public init() {}
+    public var body: some View {
+        runtime.canvas
+            .onAppear { runtime.updateScene(scenePhase, reduceMotion: reduceMotion) }
+            .onChange(of: scenePhase) { runtime.updateScene($0, reduceMotion: reduceMotion) }
+            .onChange(of: reduceMotion) { runtime.updateScene(scenePhase, reduceMotion: $0) }
+    }
+}
+
+@MainActor public final class ReceiverRuntime: ObservableObject {
+    public static let shared = ReceiverRuntime()
+    private let diagnostics = HearPortDiagnostics.shared
+    @Published private var lastHost = "" { didSet { UserDefaults.standard.set(lastHost, forKey: ConnectionPreferences.lastHostKey) } }
+    @Published private var rememberedHost = "" { didSet { UserDefaults.standard.set(rememberedHost, forKey: "hearport.rememberedHost") } }
+    @Published private var selectedEndpoint: ConnectionEndpoint?
+    @Published private var host = ""
+    @Published private var connectionID = UUID()
+    @Published private var isConnecting = false
+    @Published private var activeAudioMode: AudioTransportMode = .datagram
+    @Published private var activeBufferTargetPackets = JitterBufferConfiguration.defaultTargetPackets
+    @Published private var pin = ""
+    @Published private var authMode: AuthMode = .pair
+    @Published private var hasRememberedCredential = false
+    @Published private var didLoadRememberedCredential = false
+    @Published private var status = "Disconnected"
+    @Published private var connectionError: String?
+    @Published private var connectionEstablished = false
+    @Published private var completedTestStatus: String?
+    @Published private var testCompletedNormally = true
+    @Published private var receiver = HearPortReceiver()
+    let connectionManager = ReceiverConnectionCoordinator()
+    @Published private var pendingControls: [UUID: ReceiverControlSession] = [:]
+    @Published private var activePath: ConnectionPath = .network
+    @Published private var activeNetworkEndpoint = ""
+    @Published private var canvasHasAppeared = false
+    @Published private var control: ReceiverControlSession?
+    @Published private var audioOutput: PlatformAudioOutputController?
+    @Published private var audioOutputState: AudioOutputState?
+    @Published private var pairingNeedsAttention = false
+    @Published private var detailedLogging = false { didSet { UserDefaults.standard.set(detailedLogging, forKey: "hearport.detailedLogging") } }
+    @Published private var autoConnect = false { didSet { UserDefaults.standard.set(autoConnect, forKey: "hearport.autoConnect") } }
+    @Published private var usbTransportModeRaw = AudioTransportMode.reliable.rawValue { didSet { UserDefaults.standard.set(usbTransportModeRaw, forKey: "hearport.usbAudio.transport") } }
+    @Published private var audioTransportModeRaw = AudioTransportMode.datagram.rawValue { didSet { UserDefaults.standard.set(audioTransportModeRaw, forKey: "hearport.audioTransportMode") } }
+    @Published private var jitterBufferTargetPackets = 8 { didSet { UserDefaults.standard.set(jitterBufferTargetPackets, forKey: "hearport.jitterStartupPackets") } }
+    @Published private var networkTargetLatencyMs = 50 { didSet { UserDefaults.standard.set(networkTargetLatencyMs, forKey: PlaybackLatencyPreferences.networkTargetKey) } }
+    @Published private var networkMaximumLatencyMs = 100 { didSet { UserDefaults.standard.set(networkMaximumLatencyMs, forKey: PlaybackLatencyPreferences.networkMaximumKey) } }
+    @Published private var usbTargetLatencyMs = 50 { didSet { UserDefaults.standard.set(usbTargetLatencyMs, forKey: PlaybackLatencyPreferences.usbTargetKey) } }
+    @Published private var usbMaximumLatencyMs = 100 { didSet { UserDefaults.standard.set(usbMaximumLatencyMs, forKey: PlaybackLatencyPreferences.usbMaximumKey) } }
+    @Published private var networkCodec = "opus" { didSet { UserDefaults.standard.set(networkCodec, forKey: "hearport.networkAudio.codec") } }
+    @Published private var networkBitrate = 256_000 { didSet { UserDefaults.standard.set(networkBitrate, forKey: "hearport.networkAudio.bitrate") } }
+    @Published private var networkFrames = 240 { didSet { UserDefaults.standard.set(networkFrames, forKey: "hearport.networkAudio.frames") } }
+    @Published private var usbCodec = "pcm" { didSet { UserDefaults.standard.set(usbCodec, forKey: "hearport.usbAudio.codec") } }
+    @Published private var usbBitrate = 256_000 { didSet { UserDefaults.standard.set(usbBitrate, forKey: "hearport.usbAudio.bitrate") } }
+    @Published private var usbFrames = 240 { didSet { UserDefaults.standard.set(usbFrames, forKey: "hearport.usbAudio.frames") } }
+    @Published private var activeAudioFormat: AudioStreamFormat = .pcm
+    @Published private var activeTargetLatencyMs = 50
+    @Published private var activeMaximumLatencyMs = 100
+    @Published private var diagnosticsSnapshot = HearPortDiagnostics.shared.snapshot()
+    @Published private var exportedDiagnosticsURL: URL?
+    @Published private var exportingDiagnostics = false
+    @Published private var diagnosticsStatus: String?
+    @Published private var showingClearConfirmation = false
+    @Published private var calibrationResult: CalibrationResult? = CalibrationResult.load()
+    @Published private var calibrationRunResult: CalibrationResult?
+    @Published private var adaptiveResult = AdaptiveCalibrationResult.load()
+    @Published private var adaptiveRunResult: AdaptiveCalibrationResult?
+    @Published private var calibrationProgress: CalibrationProgressSnapshot?
+    @Published private var calibrationNow: UInt64 = 0
+    @Published private var sendingReport = false
+    @Published private var canvasSheet: CanvasSheet?
+    @Published private var calibrationTarget: ComputerConnectionTarget?
+    @Published private var pendingCalibration: (goal: Int, seconds: Int, maximum: Int)?
+    @Published private var completedAdaptiveConnection: UUID?
+    @Published private var unpairTarget: ComputerConnectionTarget?
+    @Published private var keepScreenAwake = false { didSet { UserDefaults.standard.set(keepScreenAwake, forKey: "hearport.keepScreenAwake") } }
+    @Published private var currentComputerName = ""
+    @Published private var currentComputerIdentity = ""
+    @Published private var calibrationRequestID: UUID?
+    @Published private var calibrationStartStatus: String?
+    @Published private var retainingConnection = false
+    @Published private var qualityTracker = LinkStabilityTracker()
+    @Published private var linkSample: LinkTimingSample?
+    @Published private var musicRound: MusicTestRound?
+    @Published private var testRunning = false
+    @Published private var roundStartedAt: TimeInterval = 0
+    @Published private var roundElapsed: TimeInterval = 0
+    private var scenePhase: ScenePhase = .active
+    private var reduceMotion = false
 
     private enum CanvasSheet: String, Identifiable {
         case settings, details, recommendations, pairing
         var id: String { rawValue }
     }
 
-    public init() { PlaybackLatencyPreferences.migrate() }
+    private init() {
+        PlaybackLatencyPreferences.migrate()
+        lastHost = UserDefaults.standard.object(forKey: ConnectionPreferences.lastHostKey) as? String ?? ""
+        rememberedHost = UserDefaults.standard.object(forKey: "hearport.rememberedHost") as? String ?? ""
+        detailedLogging = UserDefaults.standard.object(forKey: "hearport.detailedLogging") as? Bool ?? false
+        autoConnect = UserDefaults.standard.object(forKey: "hearport.autoConnect") as? Bool ?? false
+        usbTransportModeRaw = UserDefaults.standard.object(forKey: "hearport.usbAudio.transport") as? String ?? AudioTransportMode.reliable.rawValue
+        audioTransportModeRaw = UserDefaults.standard.object(forKey: "hearport.audioTransportMode") as? String ?? AudioTransportMode.datagram.rawValue
+        jitterBufferTargetPackets = UserDefaults.standard.object(forKey: "hearport.jitterStartupPackets") as? Int ?? 8
+        networkTargetLatencyMs = UserDefaults.standard.object(forKey: PlaybackLatencyPreferences.networkTargetKey) as? Int ?? 50
+        networkMaximumLatencyMs = UserDefaults.standard.object(forKey: PlaybackLatencyPreferences.networkMaximumKey) as? Int ?? 100
+        usbTargetLatencyMs = UserDefaults.standard.object(forKey: PlaybackLatencyPreferences.usbTargetKey) as? Int ?? 50
+        usbMaximumLatencyMs = UserDefaults.standard.object(forKey: PlaybackLatencyPreferences.usbMaximumKey) as? Int ?? 100
+        networkCodec = UserDefaults.standard.object(forKey: "hearport.networkAudio.codec") as? String ?? "opus"
+        networkBitrate = UserDefaults.standard.object(forKey: "hearport.networkAudio.bitrate") as? Int ?? 256_000
+        networkFrames = UserDefaults.standard.object(forKey: "hearport.networkAudio.frames") as? Int ?? 240
+        usbCodec = UserDefaults.standard.object(forKey: "hearport.usbAudio.codec") as? String ?? "pcm"
+        usbBitrate = UserDefaults.standard.object(forKey: "hearport.usbAudio.bitrate") as? Int ?? 256_000
+        usbFrames = UserDefaults.standard.object(forKey: "hearport.usbAudio.frames") as? Int ?? 240
+        keepScreenAwake = UserDefaults.standard.object(forKey: "hearport.keepScreenAwake") as? Bool ?? false
+    }
 
-    public var body: some View {
-        NavigationStack {
+    fileprivate var canvas: some View {
+        NavigationStack { [self] in
             homeView
             .navigationTitle("HearPort")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
+            .toolbar { [self] in
                 ToolbarItem(placement: .principal) {
                     Text("HearPort")
                         .font(.system(size: 32, weight: .semibold))
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button { canvasSheet = .settings } label: {
+                    Button { [self] in canvasSheet = .settings } label: {
                         Image(systemName: "gearshape")
                             .accessibilityLabel(Text("Settings"))
                     }
@@ -109,10 +144,10 @@ import SwiftUI
         }
         .background(Color(uiColor: .systemGroupedBackground))
         .tint(Color.primary)
-        .background {
-            NarrowFormSheet(item: $canvasSheet) { sheet in
-                NavigationStack {
-                    Group {
+        .background { [self] in
+            NarrowFormSheet(item: binding(\.canvasSheet)) { [self] sheet in
+                NavigationStack { [self] in
+                    Group { [self] in
                         switch sheet {
                         case .settings: settingsView
                         case .details: connectionDetailsView
@@ -120,10 +155,10 @@ import SwiftUI
                         case .pairing: connectionSetupView
                         }
                     }
-                    .toolbar {
+                    .toolbar { [self] in
                         ToolbarItem(placement: .navigationBarTrailing) {
                             if sheet != .pairing {
-                                Button("Done") { canvasSheet = nil; pendingCalibration = nil; calibrationTarget = nil }
+                                Button("Done") { [self] in canvasSheet = nil; pendingCalibration = nil; calibrationTarget = nil }
                             }
                         }
                     }
@@ -131,59 +166,8 @@ import SwiftUI
                 .tint(Color.primary)
             }
         }
-        .onAppear {
-            connectionManager.onRequest = { id, route in beginConnection(id: id, route: route) }
-            connectionManager.onCancel = { id in
-                if let candidate = pendingControls.removeValue(forKey: id) { candidate.cancel() }
-                if id == connectionID {
-                    control?.end(reason: 2); control = nil
-                    try? audioOutput?.stop(); audioOutput = nil
-                }
-            }
-            connectionManager.onSearching = {
-                if completedTestStatus == nil { showConnectionSearch() }
-            }
-            connectionManager.start()
-            updateIdleTimer()
-            if control == nil {
-                status = Self.localize("Disconnected")
-            }
-            if !didLoadRememberedCredential {
-                didLoadRememberedCredential = true
-                host = lastHost
-                do {
-                    let remembered = try KeychainRememberedCredentialStore().load()
-                    hasRememberedCredential = remembered != nil
-                    connectionManager.setRememberedIdentity(remembered?.windowsSPKISHA256)
-                    if hasRememberedCredential && rememberedHost.isEmpty {
-                        rememberedHost = lastHost
-                    }
-                    authMode = ConnectionPreferences.defaultAuthMode(
-                        hasRememberedCredential: hasRememberedCredential
-                    )
-                    if autoConnect && hasRememberedCredential {
-                        connect()
-                    }
-                } catch {
-                    authMode = .pair
-                    diagnostics.log(
-                        .warning,
-                        category: .security,
-                        message: "remembered_credential_load_failed",
-                        fields: [
-                            "event": "remembered_credential_load_failed",
-                            "error_type": "\(type(of: error))"
-                        ]
-                    )
-                }
-            }
-            jitterBufferTargetPackets = JitterBufferConfiguration(
-                targetPackets: jitterBufferTargetPackets
-            ).targetPackets
-            diagnostics.level = detailedLogging ? .debug : .info
-            refreshDiagnostics()
-        }
-        .onChange(of: detailedLogging) { enabled in
+        .onAppear { [self] in start(); resumeConnection() }
+        .onChange(of: detailedLogging) { [self] enabled in
             diagnostics.level = enabled ? .debug : .info
             diagnostics.log(
                 .info,
@@ -193,29 +177,23 @@ import SwiftUI
             )
             refreshDiagnostics()
         }
-        .confirmationDialog("Unpair this PC?", isPresented: Binding(get: { unpairTarget != nil }, set: { if !$0 { unpairTarget = nil } }), titleVisibility: .visible) {
+        .confirmationDialog("Unpair this PC?", isPresented: Binding(get: { [self] in unpairTarget != nil }, set: { [self] value in if !value { unpairTarget = nil } }), titleVisibility: .visible) {
             if let target = unpairTarget {
-                Button("Unpair", role: .destructive) { forgetComputer(target) }
+                Button("Unpair", role: .destructive) { [self] in forgetComputer(target) }
             }
-            Button("Cancel", role: .cancel) { unpairTarget = nil }
+            Button("Cancel", role: .cancel) { [self] in unpairTarget = nil }
         } message: {
             Text(unpairTarget?.title ?? "")
         }
-        .onChange(of: keepScreenAwake) { _ in updateIdleTimer() }
-        .onChange(of: testRunning) { _ in updateIdleTimer() }
-        .onChange(of: pendingCalibration != nil) { _ in updateIdleTimer() }
-        .onChange(of: canvasSheet) { sheet in
+        .onChange(of: keepScreenAwake) { [self] _ in updateIdleTimer() }
+        .onChange(of: testRunning) { [self] _ in updateIdleTimer() }
+        .onChange(of: pendingCalibration != nil) { [self] _ in updateIdleTimer() }
+        .onChange(of: canvasSheet) { [self] sheet in
             if sheet == nil && !isConnecting {
                 pendingCalibration = nil; calibrationTarget = nil
             }
         }
-        .onChange(of: scenePhase) { phase in
-            updateIdleTimer()
-            if phase == .active { connectionManager.resumeUSBDiscovery() }
-            if phase == .background { control?.interruptCalibration() }
-            if phase != .active { qualityTracker = LinkStabilityTracker(); linkSample = nil }
-        }
-        .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
+        .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { [self] _ in
             guard scenePhase == .active else { return }
             if connectionEstablished && control != nil && !sendingReport && completedTestStatus == nil && !isConnecting {
                 let sample = receiver.linkTimingSample()
@@ -225,17 +203,98 @@ import SwiftUI
             if calibrationProgress != nil { calibrationNow = DispatchTime.now().uptimeNanoseconds }
             if musicRound != nil { roundElapsed = max(0, ProcessInfo.processInfo.systemUptime - roundStartedAt) }
         }
-        .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.routeChangeNotification)) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.routeChangeNotification)) { [self] _ in
             control?.interruptCalibration(forOutputChange: true)
         }
-        .onChange(of: host) { newHost in
+        .onChange(of: host) { [self] newHost in
             if authMode == .remembered && newHost != rememberedHost {
                 authMode = .pair
             }
         }
-        .onDisappear {
-            disconnect()
+    }
+
+    private let processStartedAt = ProcessInfo.processInfo.systemUptime
+    private var automationRequests: [UUID: TimeInterval] = [:]
+    private var started = false
+    private var recoveryIntent = ConnectionRecoveryIntent()
+    private var requestedRoute: AutomationRoute = .automatic
+
+    public func start() {
+        guard !started else { return }
+        started = true
+        connectionManager.onRequest = { [self] id, route in beginConnection(id: id, route: route) }
+        connectionManager.onCancel = { [self] id in
+            if let candidate = pendingControls.removeValue(forKey: id) { candidate.cancel() }
+            if id == connectionID {
+                control?.end(reason: 2); control = nil
+                try? audioOutput?.stop(); audioOutput = nil
+            }
         }
+        connectionManager.onSearching = { [self] in
+            if completedTestStatus == nil { showConnectionSearch() }
+        }
+        connectionManager.onNetworkAvailable = { [weak self] in self?.resumeConnection() }
+        connectionManager.start()
+        automationEvent("runtime_started")
+        updateIdleTimer()
+        if control == nil {
+            status = Self.localize("Disconnected")
+        }
+        if !didLoadRememberedCredential {
+            didLoadRememberedCredential = true
+            host = lastHost
+            do {
+                let remembered = try KeychainRememberedCredentialStore().load()
+                hasRememberedCredential = remembered != nil
+                connectionManager.setRememberedIdentity(remembered?.windowsSPKISHA256)
+                if hasRememberedCredential && rememberedHost.isEmpty {
+                    rememberedHost = lastHost
+                }
+                authMode = ConnectionPreferences.defaultAuthMode(
+                    hasRememberedCredential: hasRememberedCredential
+                )
+            } catch {
+                authMode = .pair
+                diagnostics.log(
+                    .warning,
+                    category: .security,
+                    message: "remembered_credential_load_failed",
+                    fields: [
+                        "event": "remembered_credential_load_failed",
+                        "error_type": "\(type(of: error))"
+                    ]
+                )
+            }
+        }
+        jitterBufferTargetPackets = JitterBufferConfiguration(
+            targetPackets: jitterBufferTargetPackets
+        ).targetPackets
+        diagnostics.level = detailedLogging ? .debug : .info
+        refreshDiagnostics()
+    }
+
+    private func binding<T>(_ key: ReferenceWritableKeyPath<ReceiverRuntime, T>) -> Binding<T> {
+        Binding(get: { self[keyPath: key] }, set: { self[keyPath: key] = $0 })
+    }
+
+    fileprivate func updateScene(_ phase: ScenePhase, reduceMotion: Bool) {
+        scenePhase = phase; self.reduceMotion = reduceMotion
+        updateIdleTimer()
+        automationEvent("scene", fields: ["phase": String(describing: phase)])
+        if phase == .active { resumeConnection(); connectionManager.resumeUSBDiscovery() }
+        if phase == .background { control?.interruptCalibration() }
+        if phase != .active { qualityTracker = LinkStabilityTracker(); linkSample = nil }
+    }
+
+    private func resumeConnection() {
+        if !hasRememberedCredential, let saved = try? KeychainRememberedCredentialStore().load() {
+            hasRememberedCredential = true
+            connectionManager.setRememberedIdentity(saved.windowsSPKISHA256)
+        }
+        guard control == nil, !isConnecting, completedTestStatus == nil,
+              recoveryIntent.shouldResume(automatic: autoConnect && canvasHasAppeared, remembered: hasRememberedCredential) else { return }
+        authMode = .remembered
+        connect(route: requestedRoute)
     }
 
     private var presentationStage: ConnectionPresentationStage {
@@ -295,7 +354,7 @@ import SwiftUI
     }
 
     private var homeView: some View {
-        GeometryReader { geometry in
+        GeometryReader { [self] geometry in
             ScrollView {
                 VStack(spacing: 28) {
                     // Keep the same symbol and heading in the hierarchy across every stage.
@@ -316,7 +375,7 @@ import SwiftUI
                             .textSelection(.enabled)
                         canvasLinkStatus
                         if pairingNeedsAttention {
-                            Button("Pair again") { authMode = .pair; pin = ""; canvasSheet = .pairing }
+                            Button("Pair again") { [self] in authMode = .pair; pin = ""; canvasSheet = .pairing }
                                 .tint(.blue).buttonStyle(.borderless)
                         }
                         if audioOutputState == .failed && connectionEstablished && !testRunning {
@@ -335,7 +394,7 @@ import SwiftUI
                             .transition(.opacity.combined(with: .move(edge: .bottom)))
                     } else if presentationStage == .completed {
                         if calibrationRunResult != nil || adaptiveRunResult != nil {
-                            Button { canvasSheet = .recommendations } label: {
+                            Button { [self] in canvasSheet = .recommendations } label: {
                                 Text("Review recommendations").font(.headline)
                                     .padding(.horizontal, 24).padding(.vertical, 14)
                                     .foregroundStyle(Color(uiColor: .systemBackground))
@@ -345,9 +404,9 @@ import SwiftUI
                                 Text("Recommendations are saved on this iPad. A diagnostic copy is being sent to the PC.")
                                     .font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
                             }
-                            Button("Back to connections") { disconnect() }
+                            Button("Back to connections") { [self] in disconnect() }
                         } else {
-                            Button { disconnect() } label: {
+                            Button { [self] in disconnect() } label: {
                                 Text("Back to connections").font(.headline)
                                     .padding(.horizontal, 24).padding(.vertical, 14)
                                     .foregroundStyle(Color(uiColor: .systemBackground))
@@ -368,8 +427,8 @@ import SwiftUI
             }
             .background(Color(uiColor: .systemGroupedBackground))
         }
-        .background(CanvasAppearanceObserver { canvasHasAppeared = true })
-        .transaction { transaction in
+        .background(CanvasAppearanceObserver { [self] in canvasHasAppeared = true; resumeConnection() })
+        .transaction { [self] transaction in
             if !canvasHasAppeared { transaction.disablesAnimations = true; transaction.animation = nil }
         }
     }
@@ -402,8 +461,8 @@ import SwiftUI
     private var availableConnections: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Available connections").font(.subheadline).foregroundStyle(.secondary)
-            ForEach(connectionManager.computers) { computer in
-                Button { selectConnection(computer.preferredEndpoint) } label: {
+            ForEach(connectionManager.computers) { [self] computer in
+                Button { [self] in selectConnection(computer.preferredEndpoint) } label: {
                     ViewThatFits(in: .horizontal) {
                         HStack(spacing: 14) {
                             connectionRouteIcon(computer)
@@ -423,19 +482,19 @@ import SwiftUI
                     .frame(minHeight: 34).padding(20).background(canvasSurface).contentShape(Rectangle())
                 }.buttonStyle(.plain)
                 .contextMenu {
-                    Button {
+                    Button { [self] in
                         calibrationTarget = computer
                         calibrationRunResult = nil
                         canvasSheet = .recommendations
                     } label: { Label("Automatic test and recommendations", systemImage: "slider.horizontal.3") }
                     .disabled(!computer.hasNetwork)
                     if hasRememberedCredential && connectionManager.isRemembered(computer.identity) {
-                        Button(role: .destructive) { unpairTarget = computer } label: { Label("Unpair", systemImage: "link") }
+                        Button(role: .destructive) { [self] in unpairTarget = computer } label: { Label("Unpair", systemImage: "link") }
                     }
                 }
             }
             if !lastHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !lastHostIsDiscovered {
-                Button {
+                Button { [self] in
                     selectedEndpoint = nil; host = lastHost
                     if hasRememberedCredential && lastHost == rememberedHost {
                         authMode = .remembered; connect()
@@ -449,7 +508,7 @@ import SwiftUI
                     }.frame(minHeight: 34).padding(20).background(canvasSurface).contentShape(Rectangle())
                 }.buttonStyle(.plain)
             }
-            Button {
+            Button { [self] in
                 selectedEndpoint = nil; canvasSheet = .pairing
             } label: {
                 Label("Enter PC address", systemImage: "plus")
@@ -479,7 +538,7 @@ import SwiftUI
     }
 
     private var lastHostIsDiscovered: Bool {
-        connectionManager.computers.contains { computer in
+        connectionManager.computers.contains { [self] computer in
             computer.networkAddress == lastHost ||
                 (hasRememberedCredential && lastHost == rememberedHost && computer.title == connectionManager.rememberedComputerName)
         }
@@ -548,21 +607,21 @@ import SwiftUI
     }
 
     @ViewBuilder private var playbackActions: some View {
-        Button { canvasSheet = .settings } label: {
+        Button { [self] in canvasSheet = .settings } label: {
             Label("Playback settings", systemImage: "slider.horizontal.3").frame(minHeight: 44)
         }
         .disabled(presentationStage == .reporting)
-        Button { canvasSheet = .details } label: {
+        Button { [self] in canvasSheet = .details } label: {
             Label("Connection details", systemImage: "info.circle").frame(minHeight: 44)
         }
         Spacer(minLength: 0)
-        Button("Disconnect", role: .destructive) { disconnect() }
+        Button("Disconnect", role: .destructive) { [self] in disconnect() }
             .frame(minHeight: 44)
 
     }
 
     private var connectionDetailsView: some View {
-        Form {
+        Form { [self] in
             Section("Current connection") {
                 LabeledContent("Windows PC", value: currentComputerName)
                 LabeledContent("Path", value: activePath == .usb ? "USB" :
@@ -571,7 +630,7 @@ import SwiftUI
                 if musicRound == nil { LabeledContent("Audio format", value: activeAudioFormat.label) }
                 if connectionEstablished && !isConnecting { Label("Identity verified", systemImage: "checkmark.shield") }
             }
-            Section {
+            Section { [self] in
                 LabeledContent("Link stability") { Text(qualityTracker.quality.title).foregroundStyle(qualityTracker.quality.color(for: activePath)) }
                 LabeledContent("Round-trip time", value: linkSample?.roundTripMilliseconds.map { String(format: "%.1f ms", $0) } ?? "—")
                 LabeledContent("Delay variation", value: qualityTracker.variationMilliseconds.map { String(format: "%.1f ms", $0) } ?? "—")
@@ -588,7 +647,7 @@ import SwiftUI
     }
 
     private var connectionSetupView: some View {
-        Form {
+        Form { [self] in
             Section("Windows PC") {
                 TextField("Hostname or IP address", text: Binding(get: { host }, set: {
                     host = $0
@@ -599,7 +658,7 @@ import SwiftUI
                     .autocorrectionDisabled()
             }
             Section("Connection method") {
-                Picker("Authentication", selection: $authMode) {
+                Picker("Authentication", selection: binding(\.authMode)) {
                     if pendingCalibration == nil && hasRememberedCredential && (host == rememberedHost || connectionManager.hasUSB || !connectionManager.endpoints.isEmpty) {
                         Text("Remembered").tag(AuthMode.remembered)
                     }
@@ -607,15 +666,15 @@ import SwiftUI
                     if pendingCalibration == nil { Text("One-time").tag(AuthMode.oneTime) }
                 }
                 if authMode != .remembered {
-                    TextField("6-digit PIN", text: $pin)
+                    TextField("6-digit PIN", text: binding(\.pin))
                         .keyboardType(.numberPad)
                     Text("Enter the code displayed by HearPort on Windows.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
             }
-            Section {
-                Button {
+            Section { [self] in
+                Button { [self] in
                     connect(selected: selectedEndpoint, forCalibration: pendingCalibration != nil)
                     if canvasSheet == .pairing { canvasSheet = nil }
                 } label: {
@@ -628,19 +687,19 @@ import SwiftUI
         }
         .navigationTitle("Connect to a PC")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
+        .toolbar { [self] in
             ToolbarItem(placement: .navigationBarTrailing) {
-                Button("Done") { canvasSheet = nil; pendingCalibration = nil; calibrationTarget = nil }
+                Button("Done") { [self] in canvasSheet = nil; pendingCalibration = nil; calibrationTarget = nil }
             }
         }
     }
 
     private var playbackSettingsSection: some View {
-            Section {
-                audioFormatLink("Network audio", codec: $networkCodec, bitrate: $networkBitrate, frames: $networkFrames,
-                                transport: $audioTransportModeRaw, target: $networkTargetLatencyMs, maximum: $networkMaximumLatencyMs)
-                audioFormatLink("USB audio", codec: $usbCodec, bitrate: $usbBitrate, frames: $usbFrames,
-                                transport: $usbTransportModeRaw, target: $usbTargetLatencyMs, maximum: $usbMaximumLatencyMs)
+            Section { [self] in
+                audioFormatLink("Network audio", codec: binding(\.networkCodec), bitrate: binding(\.networkBitrate), frames: binding(\.networkFrames),
+                                transport: binding(\.audioTransportModeRaw), target: binding(\.networkTargetLatencyMs), maximum: binding(\.networkMaximumLatencyMs))
+                audioFormatLink("USB audio", codec: binding(\.usbCodec), bitrate: binding(\.usbBitrate), frames: binding(\.usbFrames),
+                                transport: binding(\.usbTransportModeRaw), target: binding(\.usbTargetLatencyMs), maximum: binding(\.usbMaximumLatencyMs))
             } header: {
                 Text("Playback")
             }
@@ -650,8 +709,8 @@ import SwiftUI
                                  bitrate: Binding<Int>, frames: Binding<Int>, transport: Binding<String>,
                                  target: Binding<Int>, maximum: Binding<Int>) -> some View {
         NavigationLink {
-            Form {
-                Section {
+            Form { [self] in
+                Section { [self] in
                     Picker("Audio transport mode", selection: transport) {
                         Text("Datagram").tag(AudioTransportMode.datagram.rawValue)
                         Text("Reliable stream").tag(AudioTransportMode.reliable.rawValue)
@@ -674,7 +733,7 @@ import SwiftUI
                 } footer: {
                     Text("Longer packets reduce packet frequency and need more collection time. All processing uses the selected total delay budget. Changes take effect on the next connection.")
                 }
-                Section {
+                Section { [self] in
                     MillisecondsControl("Normal target", value: target, range: 10...max(10, maximum.wrappedValue))
                     MillisecondsControl("Maximum total delay", value: maximum, range: max(20, target.wrappedValue)...2_000)
                 } footer: {
@@ -703,7 +762,7 @@ import SwiftUI
 
     @ViewBuilder private var calibrationResults: some View {
         if let calibrationRunResult {
-            CalibrationResultsView(result: calibrationRunResult, apply: { profile in
+            CalibrationResultsView(result: calibrationRunResult, apply: { [self] profile in
                 _ = calibrationRunResult.apply(profile: profile)
             })
         } else {
@@ -711,9 +770,9 @@ import SwiftUI
                 canStart: canStartCalibration,
                 hasSelectedConnection: calibrationTarget != nil || connectionEstablished || isConnecting,
                 canChooseComputer: !connectionEstablished && !isConnecting,
-                computers: connectionManager.computers, selectedComputer: $calibrationTarget,
+                computers: connectionManager.computers, selectedComputer: binding(\.calibrationTarget),
                 starting: calibrationRequestID != nil,
-                status: calibrationStartStatus, start: startCalibration, apply: {
+                status: calibrationStartStatus, start: startCalibration, apply: { [self] in
                     guard (adaptiveRunResult ?? adaptiveResult)?.apply() == true else { return false }
                     audioTransportModeRaw = UserDefaults.standard.string(forKey: "hearport.audioTransportMode") ?? AudioTransportMode.datagram.rawValue
                     let budget = PlaybackLatencyPreferences.load(usb: false)
@@ -823,8 +882,8 @@ import SwiftUI
         calibrationRequestID = id; calibrationStartStatus = nil
         adaptiveRunResult = nil; calibrationRunResult = nil; calibrationProgress = nil
         testRunning = true
-        control.requestEnvironmentCalibration(seconds: seconds, maximum: maximum, goal: goal) { accepted in
-            DispatchQueue.main.async {
+        control.requestEnvironmentCalibration(seconds: seconds, maximum: maximum, goal: goal) { [self] accepted in
+            DispatchQueue.main.async { [self] in
                 guard calibrationRequestID == id else { return }
                 if accepted { canvasSheet = nil }
                 else {
@@ -834,7 +893,7 @@ import SwiftUI
                 }
             }
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 25) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 25) { [self] in
             guard calibrationRequestID == id else { return }
             calibrationRequestID = nil; testRunning = false
             calibrationStartStatus = Self.localize("The PC did not start calibration. Reconnect and try again.")
@@ -844,18 +903,19 @@ import SwiftUI
     }
 
     private var settingsView: some View {
-        Form {
+        Form { [self] in
             playbackSettingsSection
-            Section {
-                Toggle("Connect on launch", isOn: $autoConnect)
+            Section { [self] in
+                Toggle("Automatically reconnect", isOn: binding(\.autoConnect))
                     .tint(.green)
-                Toggle("Keep screen awake", isOn: $keepScreenAwake).tint(.green)
+                Toggle("Keep screen awake", isOn: binding(\.keepScreenAwake)).tint(.green)
             } header: {
                 Text("Connection")
             } footer: {
                 Text("Uses the last connected PC when its pairing is saved.")
             }
             Section("Support") {
+                NavigationLink("Shortcuts and automation") { automationHelp }
                 calibrationLink
                 NavigationLink {
                     diagnosticsView
@@ -863,9 +923,9 @@ import SwiftUI
                     Text("Diagnostics")
                 }
             }
-            Section {
+            Section { [self] in
                 NavigationLink("About HearPort") {
-                    Form {
+                    Form { [self] in
                         Section("HearPort") {
                             LabeledContent("Version", value: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—")
                             LabeledContent("Build", value: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—")
@@ -886,12 +946,12 @@ import SwiftUI
     }
 
     private var diagnosticsView: some View {
-        Form {
-            Section {
+        Form { [self] in
+            Section { [self] in
                 LabeledContent("Logging level", value: Self.label(for: diagnosticsSnapshot.level))
                 LabeledContent("Recent entries (memory)", value: "\(diagnosticsSnapshot.entryCount)")
                 LabeledContent("Saved log size", value: Self.byteLabel(diagnosticsSnapshot.totalBytes))
-                Toggle("Detailed logging", isOn: $detailedLogging)
+                Toggle("Detailed logging", isOn: binding(\.detailedLogging))
                     .tint(.green)
             } header: {
                 Text("Current log")
@@ -899,7 +959,7 @@ import SwiftUI
                 Text("Secrets, authentication material, and raw audio are excluded from logs.")
             }
             Section("Actions") {
-                Button {
+                Button { [self] in
                     exportDiagnostics()
                 } label: {
                     Label(exportingDiagnostics ? LocalizedStringKey("Exporting diagnostics…") : LocalizedStringKey("Export diagnostics"), systemImage: "square.and.arrow.down")
@@ -911,12 +971,12 @@ import SwiftUI
                         Label("Share exported log", systemImage: "square.and.arrow.up")
                     }
                 }
-                Button("Clear diagnostics", role: .destructive) {
+                Button("Clear diagnostics", role: .destructive) { [self] in
                     showingClearConfirmation = true
                 }
-                .confirmationDialog("Clear retained diagnostics?", isPresented: $showingClearConfirmation, titleVisibility: .visible) {
-                    Button("Clear", role: .destructive) { clearDiagnostics() }
-                    Button("Cancel", role: .cancel) {}
+                .confirmationDialog("Clear retained diagnostics?", isPresented: binding(\.showingClearConfirmation), titleVisibility: .visible) {
+                    Button("Clear", role: .destructive) { [self] in clearDiagnostics() }
+                    Button("Cancel", role: .cancel) { [self] in}
                 }
                 if let diagnosticsStatus {
                     Text(diagnosticsStatus)
@@ -930,11 +990,12 @@ import SwiftUI
         .frame(maxWidth: 600)
         .frame(maxWidth: .infinity)
         .background(Color(uiColor: .systemGroupedBackground))
-        .onAppear { refreshDiagnostics() }
-        .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in refreshDiagnostics() }
+        .onAppear { [self] in refreshDiagnostics() }
+        .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { [self] _ in refreshDiagnostics() }
     }
 
-    private func connect(selected: ConnectionEndpoint? = nil, forCalibration: Bool = false) {
+    private func connect(selected: ConnectionEndpoint? = nil, forCalibration: Bool = false, route: AutomationRoute = .automatic) {
+        recoveryIntent.request(); requestedRoute = route
         guard authMode == .remembered || PairingSecurity.validatePIN(pin) else {
             status = Self.localize("Enter the 6-digit PIN shown on Windows"); return
         }
@@ -950,7 +1011,7 @@ import SwiftUI
         isConnecting = true; status = Self.localize("Searching network and USB…")
         connectionManager.setMaximumLatency(usbMaximumLatencyMs)
         connectionManager.connect(manualHost: host.trimmingCharacters(in: .whitespacesAndNewlines),
-            selected: selected, useRememberedIdentity: authMode == .remembered)
+            selected: selected, useRememberedIdentity: authMode == .remembered, route: route)
     }
 
     private func beginConnection(id: UUID, route: ConnectionEndpoint) {
@@ -967,6 +1028,7 @@ import SwiftUI
             refreshDiagnostics()
             return
         }
+        automationEvent("connection_attempt", fields: ["route": route.path.rawValue, "connection_id": id.uuidString])
         let activeConnectionID = id
         if control == nil {
             isConnecting = true; connectionError = nil
@@ -1000,8 +1062,8 @@ import SwiftUI
         )
         var resolvedNetworkEndpoint = ""
         if route.path == .network {
-            session.transport.onRemoteAddress = { address in
-                DispatchQueue.main.async {
+            session.transport.onRemoteAddress = { [self] address in
+                DispatchQueue.main.async { [self] in
                     resolvedNetworkEndpoint = address
                     if connectionID == id { activeNetworkEndpoint = address }
                 }
@@ -1022,7 +1084,7 @@ import SwiftUI
             return reserve
         }
         session.prepareCalibrationOutputReserve = prepareOutputReserve
-        session.calibrationContext = {
+        session.calibrationContext = { [self] in
             let output = AVAudioSession.sharedInstance()
             return CalibrationContext(device: UIDevice.current.model,
                 operatingSystem: UIDevice.current.systemName + " " + UIDevice.current.systemVersion,
@@ -1033,10 +1095,11 @@ import SwiftUI
                               outputReserveMilliseconds: prepareOutputReserve())
         }
         var authenticatedIdentity: Data?
-        session.onAuthenticated = { [weak session] identity, features in
-            DispatchQueue.main.async {
+        session.onAuthenticated = { [self, weak session] identity, features in
+            DispatchQueue.main.async { [self] in
                 guard let session, pendingControls[id] === session else { return }
                 authenticatedIdentity = identity
+                automationEvent("peer_authenticated", fields: ["connection_id": id.uuidString])
                 if requestedAuthMode == .pair {
                     hasRememberedCredential = true; authMode = .remembered; pin = ""
                     connectionManager.setRememberedIdentity(identity)
@@ -1064,20 +1127,22 @@ import SwiftUI
                 session.activate()
             }
         }
-        session.onAuthenticationRejected = { [weak session] message in
-            DispatchQueue.main.async {
+        session.onAuthenticationRejected = { [self, weak session] message in
+            DispatchQueue.main.async { [self] in
                 guard let session, pendingControls[id] === session else { return }
                 disconnect()
                 selectedEndpoint = route
                 if route.path == .network { host = route.host }
                 pairingNeedsAttention = true
+                recoveryIntent.reject()
+                automationEvent("authentication_rejected")
                 connectionError = Self.localize(message)
                 status = connectionError ?? Self.localize("Connection failed")
                 diagnostics.log(.warning, category: .pairing, message: "remembered_auth_rejected_credentials_retained")
             }
         }
-        session.onSessionEnded = { [weak session] reason in
-            DispatchQueue.main.async {
+        session.onSessionEnded = { [self, weak session] reason in
+            DispatchQueue.main.async { [self] in
                 if reason == 3 {
                     guard connectionID == id, let session else { return }
                     do {
@@ -1122,6 +1187,14 @@ import SwiftUI
                         return
                     }
                     let completed = completedTestStatus
+                    if completed == nil && recoveryIntent.shouldResume(automatic: autoConnect && canvasHasAppeared, remembered: hasRememberedCredential) {
+                        control?.cancel(); control = nil
+                        try? audioOutput?.stop(); audioOutput = nil
+                        connectionEstablished = false; audioOutputState = nil
+                        connectionManager.ended(id); showConnectionSearch()
+                        automationEvent("peer_stopped_waiting")
+                        return
+                    }
                     control?.cancel(); control = nil
                     connectionManager.stop(); connectionID = UUID()
                     isConnecting = false; connectionError = nil
@@ -1130,11 +1203,11 @@ import SwiftUI
                 } else { connectionManager.ended(id) }
             }
         }
-        session.onDiagnosticSessionStarted = {
-            DispatchQueue.main.async { if connectionID == id { connectionManager.pinActive() } }
+        session.onDiagnosticSessionStarted = { [self] in
+            DispatchQueue.main.async { [self] in if connectionID == id { connectionManager.pinActive() } }
         }
-        session.onCalibrationProgress = { progress in
-            DispatchQueue.main.async {
+        session.onCalibrationProgress = { [self] progress in
+            DispatchQueue.main.async { [self] in
                 guard connectionID == activeConnectionID, completedTestStatus == nil, !sendingReport else { return }
                 calibrationProgress = progress
                 calibrationNow = DispatchTime.now().uptimeNanoseconds
@@ -1142,8 +1215,8 @@ import SwiftUI
                     "Validating recommendations" : progress.stage == "interrupted" ? "Calibration interrupted" : "Sampling network")
             }
         }
-        session.onAdaptiveCalibrationResult = { result in
-            DispatchQueue.main.async {
+        session.onAdaptiveCalibrationResult = { [self] result in
+            DispatchQueue.main.async { [self] in
                 guard connectionID == activeConnectionID else { return }
                 adaptiveRunResult = result
                 if result.canApply { adaptiveResult = result }
@@ -1156,8 +1229,8 @@ import SwiftUI
                 canvasSheet = .recommendations
             }
         }
-        session.onCalibrationResult = { result in
-            DispatchQueue.main.async {
+        session.onCalibrationResult = { [self] result in
+            DispatchQueue.main.async { [self] in
                 guard connectionID == activeConnectionID else { return }
                 let firstResult = calibrationRunResult == nil
                 calibrationRunResult = result
@@ -1170,8 +1243,8 @@ import SwiftUI
                 if firstResult { canvasSheet = .recommendations }
             }
         }
-        session.onTransportState = { newState in
-            DispatchQueue.main.async {
+        session.onTransportState = { [self] newState in
+            DispatchQueue.main.async { [self] in
                 if newState == .failed || newState == .closed { connectionManager.ended(id) }
                 guard connectionID == activeConnectionID else { return }
                 if newState == .failed || newState == .closed {
@@ -1193,14 +1266,14 @@ import SwiftUI
                 refreshDiagnostics()
             }
         }
-        session.onError = { message in
+        session.onError = { [self] message in
             diagnostics.log(
                 .warning,
                 category: .app,
                 message: "ui_connection_error",
                 fields: ["event": "ui_connection_error", "message_bytes": "\(message.utf8.count)"]
             )
-            DispatchQueue.main.async {
+            DispatchQueue.main.async { [self] in
                 if authenticatedIdentity == nil && connectionManager.isWaiting && control == nil && requestedAuthMode != .remembered {
                     connectionManager.stop(); isConnecting = false
                     pendingCalibration = nil; calibrationTarget = nil
@@ -1222,21 +1295,22 @@ import SwiftUI
                 refreshDiagnostics()
             }
         }
-        session.onAudioFormat = { format in
-            DispatchQueue.main.async {
+        session.onAudioFormat = { [self] format in
+            DispatchQueue.main.async { [self] in
                 guard connectionID == id else { return }
                 activeAudioFormat = format
                 diagnostics.log(.info, category: .audio, message: "ui_audio_format_negotiated",
                     fields: ["physical_path": route.path.rawValue, "format": format.label])
             }
         }
-        session.onReady = { [weak session] in
-            DispatchQueue.main.async {
+        session.onReady = { [self, weak session] in
+            DispatchQueue.main.async { [self] in
                 guard connectionID == activeConnectionID, completedTestStatus == nil else { return }
                 // Ready also resumes playback after the PC acknowledges an older retained report.
                 sendingReport = false
                 isConnecting = false
                 connectionEstablished = true
+                automationEvent("session_ready", fields: ["connection_id": id.uuidString])
                 activeAudioFormat = session?.activeFormat ?? .pcm
                 retainingConnection = true
                 connectionError = nil
@@ -1289,8 +1363,8 @@ import SwiftUI
                 refreshDiagnostics()
             }
         }
-        session.onMusicTestRound = { round in
-            DispatchQueue.main.async {
+        session.onMusicTestRound = { [self] round in
+            DispatchQueue.main.async { [self] in
                 guard connectionID == activeConnectionID, completedTestStatus == nil, !sendingReport else { return }
                 musicRound = round
                 roundStartedAt = ProcessInfo.processInfo.systemUptime; roundElapsed = 0
@@ -1298,8 +1372,8 @@ import SwiftUI
                 refreshDiagnostics()
             }
         }
-        session.onDiagnosticReportSending = {
-            DispatchQueue.main.async {
+        session.onDiagnosticReportSending = { [self] in
+            DispatchQueue.main.async { [self] in
                 guard connectionID == activeConnectionID else { return }
                 connectionManager.pinActive()
                 sendingReport = true
@@ -1307,8 +1381,8 @@ import SwiftUI
                 refreshDiagnostics()
             }
         }
-        session.onDiagnosticReportReceived = { reason in
-            DispatchQueue.main.async {
+        session.onDiagnosticReportReceived = { [self] reason in
+            DispatchQueue.main.async { [self] in
                 guard connectionID == activeConnectionID else { return }
                 let message = calibrationRunResult != nil ? (completedTestStatus ?? "") : Self.localize(reason == 1
                     ? "Test complete. Report saved on the PC."
@@ -1357,6 +1431,7 @@ import SwiftUI
     }
 
     private func disconnect(reason: UInt32 = 1) {
+        recoveryIntent.pause()
         pendingCalibration = nil; calibrationTarget = nil
         completedAdaptiveConnection = nil
         let hadActiveSession = control != nil || audioOutput != nil
@@ -1366,8 +1441,8 @@ import SwiftUI
         connectionID = UUID()
         let closedID = connectionID
         if let closing {
-            closing.end(reason: reason) {
-                DispatchQueue.main.async {
+            closing.end(reason: reason) { [self] in
+                DispatchQueue.main.async { [self] in
                     guard connectionID == closedID, !isConnecting, control == nil else { return }
                     connectionManager.stop()
                 }
@@ -1400,8 +1475,8 @@ import SwiftUI
 
     private func startAudioOutput(receiver: HearPortReceiver, id: UUID) throws {
         let output = PlatformAudioOutputController(receiver: receiver)
-        output.onStateChanged = { [weak output] state in
-            DispatchQueue.main.async {
+        output.onStateChanged = { [self, weak output] state in
+            DispatchQueue.main.async { [self] in
                 guard connectionID == id, let output, audioOutput === output else { return }
                 audioOutputState = state
             }
@@ -1409,6 +1484,8 @@ import SwiftUI
         do { try output.start() }
         catch { try? output.stop(); throw error }
         audioOutput = output; audioOutputState = .playing
+        automationEvent("audio_engine_started", fields: ["connection_id": id.uuidString])
+        observeReceivedAudio(output, id: id, until: ProcessInfo.processInfo.systemUptime + 60)
     }
 
     private func retryAudioOutput() {
@@ -1440,10 +1517,10 @@ import SwiftUI
             fields: ["event": "ui_export_requested"]
         )
         let log = diagnostics
-        connectionManager.recordUSBStatus {
-            DispatchQueue.global(qos: .utility).async {
+        connectionManager.recordUSBStatus { [self] in
+            DispatchQueue.global(qos: .utility).async { [self] in
                 let result = Result { try log.export() }
-                DispatchQueue.main.async {
+                DispatchQueue.main.async { [self] in
                     exportingDiagnostics = false
                     switch result {
                     case let .success(url):
@@ -1539,6 +1616,146 @@ import SwiftUI
 
     private static func localize(_ key: String) -> String {
         NSLocalizedString(key, bundle: .main, comment: "")
+    }
+}
+
+
+extension ReceiverRuntime {
+    private func automationEvent(_ stage: String, fields: [String: String] = [:]) {
+        let now = ProcessInfo.processInfo.systemUptime
+        automationRequests = automationRequests.filter { now - $0.value < 120 }
+        var common = fields
+        common["stage"] = stage
+        common["pid"] = "\(ProcessInfo.processInfo.processIdentifier)"
+        common["process_ms"] = "\(Int((now - processStartedAt) * 1_000))"
+        common["ui_appeared"] = "\(canvasHasAppeared)"
+        common["application_state"] = "\(UIApplication.shared.applicationState.rawValue)"
+        common["os"] = UIDevice.current.systemVersion
+        common["build"] = Bundle.main.object(forInfoDictionaryKey: "HearPortBuildID") as? String ?? "local"
+        if automationRequests.isEmpty {
+            diagnostics.log(.info, category: .app, message: "automation_stage", fields: common)
+        } else {
+            for (id, began) in automationRequests {
+                var entry = common
+                entry["request_id"] = id.uuidString
+                entry["elapsed_ms"] = "\(Int((now - began) * 1_000))"
+                diagnostics.log(.info, category: .app, message: "automation_stage", fields: entry)
+            }
+        }
+    }
+
+    private func observeReceivedAudio(_ output: PlatformAudioOutputController, id: UUID, until: TimeInterval) {
+        guard connectionID == id, audioOutput === output else { return }
+        if output.hasRenderedReceivedAudio {
+            automationEvent("received_audio_rendered", fields: ["connection_id": id.uuidString])
+        } else if ProcessInfo.processInfo.systemUptime < until {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self, weak output] in
+                guard let self, let output else { return }
+                self.observeReceivedAudio(output, id: id, until: until)
+            }
+        }
+    }
+
+    public func automationStatus(source: String = "status") -> String {
+        start()
+        automationEvent("status_requested", fields: ["source": source])
+        return automationReply(audioOutput?.hasRenderedReceivedAudio == true ? "received_audio_rendered" :
+            audioOutput != nil ? "engine_started" : isConnecting ? "waiting" :
+            pairingNeedsAttention ? "authentication_rejected" : "disconnected")
+    }
+
+    private func automationReply(_ result: String, request: UUID? = nil) -> String {
+        var value: [String: String] = ["result": result, "route": control != nil ? activePath.rawValue : requestedRoute.rawValue,
+            "paired": "\(hasRememberedCredential)", "engine": audioOutputState.map { String(describing: $0) } ?? "stopped",
+            "pid": "\(ProcessInfo.processInfo.processIdentifier)"]
+        if let request { value["request_id"] = request.uuidString }
+        let data = (try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys])) ?? Data()
+        return String(data: data, encoding: .utf8) ?? result
+    }
+
+    public func markAutomationTrigger() -> String {
+        start()
+        let id = UUID(); automationRequests[id] = ProcessInfo.processInfo.systemUptime
+        automationEvent("trigger_marker", fields: ["marker_id": id.uuidString])
+        return automationReply("trigger_recorded", request: id)
+    }
+
+    public func automationDisconnect() -> String {
+        start(); automationEvent("disconnect_requested")
+        disconnect()
+        return automationReply("disconnected")
+    }
+
+    public func automationConnect(route: AutomationRoute, source: String) async -> String {
+        start()
+        let id = UUID(); automationRequests[id] = ProcessInfo.processInfo.systemUptime
+        automationEvent("action_entered", fields: ["source": source, "requested_route": route.rawValue])
+        guard !pairingNeedsAttention else { return automationReply("authentication_rejected", request: id) }
+        guard !testRunning && !sendingReport && pendingCalibration == nil else { return automationReply("test_running", request: id) }
+        // Reload after an earlier attempt while Keychain was unavailable before first unlock.
+        do {
+            let saved = try KeychainRememberedCredentialStore().load()
+            hasRememberedCredential = saved != nil
+            connectionManager.setRememberedIdentity(saved?.windowsSPKISHA256)
+        } catch {
+            automationEvent("credential_unavailable")
+            return automationReply("credential_unavailable", request: id)
+        }
+        guard hasRememberedCredential else { return automationReply("pair_in_app", request: id) }
+        if control != nil && !route.includes(activePath) {
+            return automationReply("another_route_active", request: id)
+        }
+        if isConnecting && route != requestedRoute {
+            return automationReply("another_request_active", request: id)
+        }
+        recoveryIntent.request()
+        if control == nil && !isConnecting {
+            host = rememberedHost.isEmpty ? lastHost : rememberedHost
+            authMode = .remembered
+            connect(route: route)
+        } else if connectionEstablished && audioOutputState == .failed { retryAudioOutput() }
+        automationEvent("request_accepted")
+        // Keep the invocation alive briefly for authentication/audio startup; this is not a keepalive.
+        for _ in 0..<32 {
+            if Task.isCancelled { return automationReply("cancelled", request: id) }
+            if audioOutput != nil { break }
+            if pairingNeedsAttention || audioOutputState == .failed || !isConnecting { break }
+            try? await Task.sleep(nanoseconds: 250_000_000)
+        }
+        let result = pairingNeedsAttention ? "authentication_rejected" :
+            audioOutput?.hasRenderedReceivedAudio == true ? "received_audio_rendered" :
+            audioOutput != nil ? "engine_started" : audioOutputState == .failed ? "audio_failed" :
+            isConnecting ? "waiting" : "disconnected"
+        automationEvent("action_returned", fields: ["result": result])
+        return automationReply(result, request: id)
+    }
+
+    public func handleAutomationURL(_ url: URL) async {
+        guard let command = AutomationCommand(url: url) else {
+            automationEvent("url_rejected"); return
+        }
+        switch command {
+        case let .connect(route): _ = await automationConnect(route: route, source: "url_foreground")
+        case .disconnect: _ = automationDisconnect()
+        case .status: _ = automationStatus(source: "url_foreground"); canvasSheet = .details
+        }
+    }
+
+    private var automationHelp: some View {
+        Form {
+            Section("Shortcuts") {
+                Text("Add HearPort actions in Shortcuts. Play PC audio uses an audio playback action; Background connect and Open and connect allow comparison.")
+                Text("Choose Automatic, Network only or USB only. Only the saved paired PC is used. Pair in HearPort first.")
+            }
+            Section("Personal automation") {
+                Text("For joining your Wi-Fi, run Play PC audio with Network only. For charger connected, use USB only: a charger does not prove a PC data connection is ready.")
+                Text("Choose Run Immediately if available. System permissions, first unlock and foreground actions may still require interaction.")
+            }
+            Section("Verification") {
+                Text("Record automation trigger can precede a connection action. Read connection status returns a request result; export Diagnostics after testing to compare trigger, authentication, audio engine and received audio stages.")
+                Text("An engine start does not prove audible sound. A silent PC may send no audio. Locked, background and force-quit cases need testing on this iPad.")
+            }
+        }.navigationTitle("Shortcuts and automation").navigationBarTitleDisplayMode(.inline)
     }
 }
 

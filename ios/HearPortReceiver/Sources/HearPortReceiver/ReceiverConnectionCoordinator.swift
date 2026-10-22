@@ -90,6 +90,10 @@ public struct ConnectionEndpoint: Identifiable {
     private var retrySeconds: Double = 1
     private var history = ConnectionAttemptHistory()
     private var networkTestOnly = false
+    private var routeRestriction = AutomationRoute.automatic
+    private let pathMonitor = NWPathMonitor()
+    private var lastNetworkStatus: NWPath.Status?
+    public var onNetworkAvailable: (() -> Void)?
     public var hasUSB: Bool { usbEndpoint != nil }
     public var isWaiting: Bool { policy.wantsConnection && policy.active == nil }
 
@@ -97,6 +101,18 @@ public struct ConnectionEndpoint: Identifiable {
     init(tunnel: USBPacketTunnel) { self.tunnel = tunnel }
     public func start() {
         guard browser == nil else { return }
+        pathMonitor.pathUpdateHandler = { [weak self] path in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                let restored = path.status == .satisfied && self.lastNetworkStatus != .satisfied
+                self.lastNetworkStatus = path.status
+                if restored {
+                    self.history = ConnectionAttemptHistory(); self.retrySeconds = 1
+                    self.onNetworkAvailable?(); self.attempt()
+                }
+            }
+        }
+        pathMonitor.start(queue: DispatchQueue(label: "com.hearport.path"))
         tunnel.onAvailable = { [weak self] port in DispatchQueue.main.async {
             guard let self else { return }
             self.usbEndpoint = ConnectionEndpoint(usbPort: port); self.usbStatus = "USB available"
@@ -144,11 +160,13 @@ public struct ConnectionEndpoint: Identifiable {
         rememberedIdentity = hash.flatMap { $0.count == 32 ? $0.map { String(format: "%02x", $0) }.joined() : nil }
         rememberedName = hash.map { "HearPort-" + $0.prefix(6).map { String(format: "%02x", $0) }.joined() }
     }
-    public func connect(manualHost: String, selected: ConnectionEndpoint? = nil, useRememberedIdentity: Bool = true) {
+    public func connect(manualHost: String, selected: ConnectionEndpoint? = nil, useRememberedIdentity: Bool = true,
+                        route: AutomationRoute = .automatic) {
         stop()
         fallback = selected?.path == .network ? selected : (selected == nil && !manualHost.isEmpty ? ConnectionEndpoint(host: manualHost) : nil)
         selectedIdentity = selected?.identity ?? (useRememberedIdentity ? rememberedIdentity : nil)
         selectedRouteID = selected?.id ?? (selectedIdentity == nil ? fallback?.id : nil)
+        routeRestriction = route
         policy.wantsConnection = true; history = ConnectionAttemptHistory(); networkTestOnly = false; retrySeconds = 1
         attempt()
     }
@@ -269,8 +287,8 @@ public struct ConnectionEndpoint: Identifiable {
             routeID: selectedRouteID, fallbackRouteID: fallback?.id)
         let matches: (ConnectionEndpoint) -> Bool = { selection.includes(identity: $0.identity, routeID: $0.id) }
         var endpoint: ConnectionEndpoint?
-        if !networkTestOnly, let usbEndpoint, policy.path != .usb, usable(usbEndpoint), matches(usbEndpoint) { endpoint = usbEndpoint }
-        if endpoint == nil && policy.active == nil {
+        if routeRestriction.includes(.usb), !networkTestOnly, let usbEndpoint, policy.path != .usb, usable(usbEndpoint), matches(usbEndpoint) { endpoint = usbEndpoint }
+        if routeRestriction.includes(.network), endpoint == nil && policy.active == nil {
             let candidates = ((fallback.map { [$0] } ?? []) + networks).filter(matches)
             if let selected = history.choose(candidates.map { $0.id }, at: Date()) { endpoint = candidates.first { $0.id == selected } }
         }
@@ -295,6 +313,6 @@ public struct ConnectionEndpoint: Identifiable {
         DispatchQueue.main.asyncAfter(deadline: .now() + retrySeconds, execute: work)
         retrySeconds = min(10, retrySeconds * 2)
     }
-    deinit { browser?.cancel(); resolvers.values.forEach { $0.cancel() }; tunnel.stop(); retry?.cancel() }
+    deinit { pathMonitor.cancel(); browser?.cancel(); resolvers.values.forEach { $0.cancel() }; tunnel.stop(); retry?.cancel() }
 }
 #endif
