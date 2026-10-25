@@ -1,5 +1,10 @@
 # HearPort 0.1.0 release checklist
 
+## Chinese UI font fix (2026-10-25)
+
+- [x] Confirmed missing Segoe UI font linking in the user's Sandbox with Microsoft YaHei UI installed. A direct Chinese glyph test failed under the old font choice and passed with the corrected selection.
+- [x] Source `caf35c4fd39efdf994e4e198a4688d18b983e8ec`: Windows Actions [40196291192](https://github.com/lsy223622/HearPort/actions/runs/40196291192) passed 26 CTest (Chinese glyph coverage passed, not skipped), 29 Python checks, local-DLL checks and GUI startup/paint checks; CodeQL [40196290928](https://github.com/lsy223622/HearPort/actions/runs/40196290928) passed. Download hashes and 100 runtime files verified; the same user's Sandbox was switched to the verified Actions package and passed window checks.
+
 ## Portable runtime loading fix (2026-10-22)
 
 - [x] Reproduced the old package's `0xC0000135` startup failure in a fresh Windows Sandbox, with local VC runtime files present and no System32 VC runtime. Confirmed MsQuic's System32-only import flags and successful local-runtime preload control.
