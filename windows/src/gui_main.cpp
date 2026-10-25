@@ -37,6 +37,7 @@
 #include "hearport/windows/sender_host.h"
 #include "hearport/windows/network_probe.h"
 #include "hearport/windows/auto_start.h"
+#include "hearport/windows/gui_font.h"
 
 namespace {
 
@@ -322,10 +323,7 @@ class Application {
 
   void CreateFontForDpi() {
     HFONT old_font = font_;
-    font_ = CreateFontW(-MulDiv(12, dpi_, 96), 0, 0, 0, FW_NORMAL, FALSE,
-                        FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
-                        CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-                        DEFAULT_PITCH, L"Segoe UI");
+    font_ = hearport::windows::CreateGuiFont(dpi_, GetUserDefaultUILanguage());
     if (tabs_) SendMessageW(tabs_, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
     for (auto& page : groups_) {
       for (HWND group : page) {
