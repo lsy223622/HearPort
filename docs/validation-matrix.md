@@ -5,6 +5,7 @@
 - In the user's running Windows Sandbox, the native UI language was Simplified Chinese and Microsoft YaHei UI was installed, but Segoe UI's GDI font-link entries were absent. Direct glyph queries returned missing glyphs for Segoe UI and valid glyphs for Microsoft YaHei UI.
 - Chinese UI now uses Microsoft YaHei UI directly; English retains Segoe UI and existing DPI sizing. No system font or registry changes are required.
 - The native glyph regression failed with the old font-selection logic and passed after correction. Local 26 CTest and 29 Python checks passed. The same Sandbox passed the native Chinese glyph/DPI test and existing window layout/repaint checks. CI reports the font test as skipped if the required Chinese font is absent; that result is not Chinese rendering evidence.
+- Delivery source `caf35c4fd39efdf994e4e198a4688d18b983e8ec`: Windows Actions [40196291192](https://github.com/lsy223622/HearPort/actions/runs/40196291192) passed all 26 CTest, including the Chinese glyph test without skipping, 29 Python checks, app-local DLL checks and GUI startup/paint checks; CodeQL [40196290928](https://github.com/lsy223622/HearPort/actions/runs/40196290928) passed. Download hashes and all 100 runtime files verified. The Actions package was started and passed layout/repaint checks in the user's same Sandbox; no font-link registry entries were changed.
 
 ## Portable runtime loading regression (2026-10-22)
 
