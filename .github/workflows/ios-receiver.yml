@@ -50,6 +50,18 @@ jobs:
       - name: Fetch pinned Opus source
         run: python3 scripts/fetch_opus.py
 
+      - name: Verify SPAKE2 provider MSRV, vectors and native FFI
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.87.0 --profile minimal
+          cargo +1.87.0 test --locked --manifest-path security/spake2-provider/Cargo.toml --all-targets
+          rustc --version --verbose
+          cmake -S . -B out/security-tests -DHEARPORT_BUILD_WINDOWS=OFF -DCMAKE_BUILD_TYPE=Release
+          cmake --build out/security-tests --target hearport_security_tests --parallel 4
+          ctest --test-dir out/security-tests -R '^hearport_security_tests$' --output-on-failure
+          python3 -m unittest tests.reference.test_security_vectors -v
+
       - name: Validate shortcut sources
         run: python3 -m unittest tests.test_shortcuts tests.test_automation_analysis -q
 
@@ -139,6 +151,7 @@ jobs:
           set -euo pipefail
           rustup target add aarch64-apple-ios
           cargo build \
+            --locked \
             --manifest-path security/spake2-provider/Cargo.toml \
             --release \
             --target aarch64-apple-ios

@@ -14,11 +14,12 @@ if(HEARPORT_CARGO_EXECUTABLE)
   endif()
   add_custom_command(
     OUTPUT "${HEARPORT_SPAKE2_PROVIDER_LIBRARY}"
-    COMMAND "${HEARPORT_CARGO_EXECUTABLE}" build --release
+    COMMAND "${HEARPORT_CARGO_EXECUTABLE}" build --locked --release
             --manifest-path "${CMAKE_CURRENT_SOURCE_DIR}/spake2-provider/Cargo.toml"
             --target-dir "${CMAKE_CURRENT_BINARY_DIR}/spake2-provider-target"
     DEPENDS
       "${CMAKE_CURRENT_SOURCE_DIR}/spake2-provider/Cargo.toml"
+      "${CMAKE_CURRENT_SOURCE_DIR}/spake2-provider/Cargo.lock"
       "${CMAKE_CURRENT_SOURCE_DIR}/spake2-provider/src/lib.rs"
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/spake2-provider"
     VERBATIM)

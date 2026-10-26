@@ -28,6 +28,44 @@ or “trust all certificates” fallback. The Swift default is
 Rust provider as an Apple-platform static library/XCFramework and compile the
 `HEARPORT_SPAKE2_PROVIDER` bridge before enabling pairing.
 
+## Dependency security and reproducible builds
+
+The 2026-10-26 security update changes only `crypto-bigint` 0.7.5 to 0.7.9
+and `ctutils` 0.4.2 to 0.4.5 in the 47-package lockfile. These satisfy
+[RUSTSEC-2026-0387](https://rustsec.org/advisories/RUSTSEC-2026-0387.html)
+(`crypto-bigint >=0.7.6`) and
+[RUSTSEC-2026-0385](https://rustsec.org/advisories/RUSTSEC-2026-0385.html)
+(`ctutils >=0.4.4`). Version 0.7.6 was already yanked when checked; the selected
+non-yanked releases require Rust 1.87, including the minimum `crypto-bigint`
+security release. The provider therefore declares Rust 1.87 and both native
+release workflows test its existing vectors with that toolchain.
+
+`cargo tree --locked -e features -i crypto-bigint` confirms the production path
+through `pakery-crypto` 0.4.0, `p256` 0.14.0 and `elliptic-curve` 0.14.1;
+`primefield` also consumes the same integer implementation. The enabled
+`crypto-bigint` features are `hybrid-array`, `rand_core`, `subtle`, and `zeroize`.
+`ctutils` is reached through `crypto-bigint`, `digest`, and `sec1`, with `subtle`
+enabled. `pakery-crypto` keeps `p256`, `spake2`, and `std`; `pakery-spake2` keeps
+its existing normal dependency path and development-only `test-utils` feature.
+No curve, protocol, KDF, or FFI signature changes are involved.
+
+This is an actual arithmetic dependency: P-256 field/scalar operations use
+`primefield` Montgomery arithmetic and `crypto-bigint`/`ctutils` operations.
+The selected x64 Windows and arm64 iOS targets do not exercise the advisory's
+32-bit-only `u128` comparison case. Package presence and source-level arithmetic
+reachability do not prove that every affected function executes, nor demonstrate
+a practical timing exploit on either target. No machine-code constant-time
+proof is claimed by the functional tests.
+
+CMake builds the provider static library with `cargo build --locked --release`
+and tracks both `Cargo.toml` and `Cargo.lock` as inputs, so a dependency update
+invalidates the native library. The iOS workflow independently builds with
+`--locked --release --target aarch64-apple-ios`, copies that output into the
+app's link directory, and force-loads it during the Xcode archive. Neither
+workflow restores Rust build outputs or uses a tracked precompiled provider;
+the Windows cache contains vcpkg dependencies only. Release dependency notices
+are generated from the locked graph for the platform being packaged.
+
 ## Profile details
 
 The provider and the Python/Swift vectors implement the exact v1 profile:

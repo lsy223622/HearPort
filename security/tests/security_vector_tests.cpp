@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cstddef>
 #include <string_view>
+#include <utility>
 
 namespace {
 
@@ -59,6 +60,27 @@ int main() {
   assert(scalar.has_value());
   assert(*scalar == Hex<32>(
                          "953b4ede8ce205547f1e941484ea9c4171029c3b305327f36ee8837a7ba70884"));
+
+  for (const bool matching_pin : {true, false}) {
+    const auto receiver_scalar = matching_pin ? scalar : PinToScalar(Bytes("000002"));
+    assert(receiver_scalar.has_value());
+    auto party_a = Spake2Session::Begin(Spake2Role::windows_party_a, *scalar,
+                                      identity_a, identity_b);
+    auto party_b = Spake2Session::Begin(Spake2Role::receiver_party_b, *receiver_scalar,
+                                      identity_a, identity_b);
+    assert(party_a.has_value() && party_b.has_value());
+    const auto point_a = party_a->public_point();
+    const auto point_b = party_b->public_point();
+    auto result_a = std::move(*party_a).Finish(point_b);
+    auto result_b = std::move(*party_b).Finish(point_a);
+    assert(result_a.has_value() && result_b.has_value());
+    assert(result_a->VerifyPeerConfirmation(result_b->confirmation()) == matching_pin);
+    assert(result_b->VerifyPeerConfirmation(result_a->confirmation()) == matching_pin);
+    assert((result_a->session_key() == result_b->session_key()) == matching_pin);
+    auto bad_confirmation = result_b->confirmation();
+    bad_confirmation[0] ^= std::byte{1};
+    assert(!result_a->VerifyPeerConfirmation(bad_confirmation));
+  }
   const auto spki_der = Hex<8>("3006020100020101");
   const auto spki_hash = Sha256Spki(spki_der);
   assert(spki_hash.has_value());

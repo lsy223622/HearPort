@@ -111,7 +111,7 @@ Both workflows also support manual runs from the Actions page.
 
 ## Local development verification
 
-Use Python 3.11+, Rust/Cargo, CMake and a VS 2022 x64 developer shell.
+Use Python 3.11+, Rust/Cargo 1.87+, CMake and a VS 2022 x64 developer shell.
 Install `msquic:x64-windows` in vcpkg and set `VCPKG_ROOT` to that checkout.
 The separate build directory selects Release MsQuic explicitly:
 
