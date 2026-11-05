@@ -1,5 +1,13 @@
 # HearPort 0.1.0 validation matrix
 
+## Connection modes and shortcut acceptance (2026-11-05)
+
+- Device observations: audio playback intents connected and played without presenting the app, including when it had no existing app-switcher card; the foreground intent opened the app. Network-only playback stayed on LAN when USB became available; USB-only playback waited after unplugging even with LAN available. These observations do not establish locked-device or reboot-trigger behavior.
+- Source `3526f3246e23d8b622dfd0eb968586cd85ef2772` shares a persisted Automatic / Network only / USB only selection between playback settings, manual/recovery connections and accepted connection shortcuts. Changing the selection in settings restarts an active/pending connection, while an idle selection only saves preferences. Network calibration retains its explicit network sampling policy without overwriting the playback preference. Recovery messages follow the effective search route.
+- iOS Actions [42002798864](https://github.com/lsy223622/HearPort/actions/runs/42002798864) passed all 222 Swift/QUIC tests, including saved-route defaults/selections, and archived unsigned build 194. Archive metadata verified seven distinct intents/shortcuts, three route parameters and foreground/audio protocol declarations. Local shortcut/analyzer/document checks: 7 passed; English/Chinese localization keys match without duplicates.
+- Windows Actions [42002798733](https://github.com/lsy223622/HearPort/actions/runs/42002798733) and CodeQL [42002798328](https://github.com/lsy223622/HearPort/actions/runs/42002798328) passed.
+- Downloaded IPA source/build identity, unsigned packaging and SHA-256 verified: `9fde16f93a7f8724df14b3a63b72c30ea5e0a6ed8656400bffeecf67711dcd20`. Device acceptance pending for the new settings picker, route persistence after relaunch, mode-specific recovery text and the seven-action Shortcuts catalog. Usage and result interpretation: [connection-automation.md](connection-automation.md).
+
 ## Live home-canvas observation (2026-11-05)
 
 - Build 192 device logs recorded authenticated sessions and started audio output while the reported home screen still showed available connections; `ui_disconnected` was recorded at 08:21:09 UTC despite the reported playback screen remaining visible. Foreground transitions caused the stale presentation to refresh.
