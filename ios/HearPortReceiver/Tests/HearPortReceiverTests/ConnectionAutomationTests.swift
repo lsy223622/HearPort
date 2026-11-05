@@ -16,6 +16,19 @@ final class ConnectionAutomationTests: XCTestCase {
         XCTAssertFalse(intent.shouldResume(automatic: true, remembered: false))
     }
 
+    func testSavedRouteDefaultsAndExplicitSelections() {
+        let name = "HearPortRouteTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: name)!
+        defer { defaults.removePersistentDomain(forName: name) }
+        XCTAssertEqual(AutomationRoute.load(defaults: defaults), .automatic)
+        for route in AutomationRoute.allCases {
+            defaults.set(route.rawValue, forKey: AutomationRoute.preferenceKey)
+            XCTAssertEqual(AutomationRoute.load(defaults: defaults), route)
+        }
+        defaults.set("invalid", forKey: AutomationRoute.preferenceKey)
+        XCTAssertEqual(AutomationRoute.load(defaults: defaults), .automatic)
+    }
+
     func testRouteRestrictionNeverFallsBackToOtherRoute() {
         XCTAssertTrue(AutomationRoute.automatic.includes(.usb))
         XCTAssertTrue(AutomationRoute.automatic.includes(.network))

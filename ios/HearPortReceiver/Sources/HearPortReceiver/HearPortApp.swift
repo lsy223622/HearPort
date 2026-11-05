@@ -114,6 +114,7 @@ import AppIntents
     }
 
     private init() {
+        requestedRoute = AutomationRoute.load()
         PlaybackLatencyPreferences.migrate()
         lastHost = UserDefaults.standard.object(forKey: ConnectionPreferences.lastHostKey) as? String ?? ""
         rememberedHost = UserDefaults.standard.object(forKey: "hearport.rememberedHost") as? String ?? ""
@@ -233,7 +234,7 @@ import AppIntents
     private var automationRequests: [UUID: AutomationInvocation] = [:]
     private var started = false
     private var recoveryIntent = ConnectionRecoveryIntent()
-    private var requestedRoute: AutomationRoute = .automatic
+    @Published private var requestedRoute: AutomationRoute = .automatic { didSet { UserDefaults.standard.set(requestedRoute.rawValue, forKey: AutomationRoute.preferenceKey) } }
     private var automaticResumeInProgress = false
 
     public func start() {
@@ -315,6 +316,17 @@ import AppIntents
         automaticResumeInProgress = true
     }
 
+    private var searchRoute: AutomationRoute {
+        pendingCalibration != nil ? .network : requestedRoute
+    }
+
+    private func setConnectionRoute(_ route: AutomationRoute) {
+        guard route != requestedRoute else { return }
+        let reconnect = control != nil || isConnecting
+        requestedRoute = route
+        if reconnect { connect(selected: selectedEndpoint, route: route) }
+    }
+
     private var presentationStage: ConnectionPresentationStage {
         .resolve(completed: completedTestStatus != nil, reporting: sendingReport,
             recovering: retainingConnection && isConnecting, connecting: isConnecting,
@@ -362,7 +374,7 @@ import AppIntents
     private var canvasSubtitle: String {
         switch presentationStage {
         case .idle: return connectionError ?? Self.localize("Bring Windows audio to this iPad.")
-        case .connecting: return Self.localize("Searching network and USB…")
+        case .connecting: return Self.localize(searchRoute.searchMessageKey)
         case .reporting: return Self.localize("Waiting for the PC to confirm receipt.")
         case .completed: return completedTestStatus ?? ""
         case .playing where audioOutputState == .failed:
@@ -462,7 +474,7 @@ import AppIntents
                     .font(.subheadline).foregroundStyle(.blue)
             }
         } else if presentationStage == .recovering {
-            Label("Searching network and USB…", systemImage: "arrow.triangle.2.circlepath")
+            Label(Self.localize(searchRoute.searchMessageKey), systemImage: "arrow.triangle.2.circlepath")
                 .font(.subheadline).foregroundStyle(.secondary)
         } else if presentationStage == .completed {
             Image(systemName: "checkmark.circle.fill").foregroundStyle(.teal).accessibilityHidden(true)
@@ -613,12 +625,10 @@ import AppIntents
                     .font(.subheadline).foregroundStyle(.secondary)
             } else if calibrationProgress == nil {
                 HStack(alignment: .firstTextBaseline) {
-                    Text("Playback budget").foregroundStyle(.secondary)
+                    Text("Playback budget").foregroundStyle(.primary)
                     Spacer(minLength: 12)
-                    Text("\(activeTargetLatencyMs) / \(activeMaximumLatencyMs) ms").monospacedDigit()
+                    Text("Target \(activeTargetLatencyMs) / Maximum \(activeMaximumLatencyMs) ms").monospacedDigit()
                 }.font(.subheadline)
-                Text("Target / maximum · configured, not measured latency")
-                    .font(.caption).foregroundStyle(.secondary)
             }
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 12) { playbackActions }
@@ -718,6 +728,12 @@ import AppIntents
 
     private var playbackSettingsSection: some View {
             Section { [self] in
+                Picker("Connection mode", selection: Binding(get: { requestedRoute }, set: { setConnectionRoute($0) })) {
+                    ForEach(AutomationRoute.allCases, id: \.self) { route in
+                        Text(Self.localize(route.titleKey)).tag(route)
+                    }
+                }
+                .disabled(testRunning || sendingReport || pendingCalibration != nil)
                 audioFormatLink("Network audio", codec: binding(\.networkCodec), bitrate: binding(\.networkBitrate), frames: binding(\.networkFrames),
                                 transport: binding(\.audioTransportModeRaw), target: binding(\.networkTargetLatencyMs), maximum: binding(\.networkMaximumLatencyMs))
                 audioFormatLink("USB audio", codec: binding(\.usbCodec), bitrate: binding(\.usbBitrate), frames: binding(\.usbFrames),
@@ -1021,9 +1037,11 @@ import AppIntents
         .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { [self] _ in refreshDiagnostics() }
     }
 
-    private func connect(selected: ConnectionEndpoint? = nil, forCalibration: Bool = false, route: AutomationRoute = .automatic) {
+    private func connect(selected: ConnectionEndpoint? = nil, forCalibration: Bool = false, route: AutomationRoute? = nil) {
+        let route = route ?? (forCalibration ? .network : requestedRoute)
         automaticResumeInProgress = false
-        recoveryIntent.request(); requestedRoute = route
+        recoveryIntent.request()
+        if !forCalibration { requestedRoute = route }
         guard authMode == .remembered || PairingSecurity.validatePIN(pin) else {
             status = Self.localize("Enter the 6-digit PIN shown on Windows"); return
         }
@@ -1036,7 +1054,7 @@ import AppIntents
         calibrationRequestID = nil; calibrationStartStatus = nil
         musicRound = nil; testRunning = false; currentComputerName = ""
         qualityTracker = LinkStabilityTracker(); linkSample = nil
-        isConnecting = true; status = Self.localize("Searching network and USB…")
+        isConnecting = true; status = Self.localize(searchRoute.searchMessageKey)
         connectionManager.setMaximumLatency(usbMaximumLatencyMs)
         connectionManager.connect(manualHost: host.trimmingCharacters(in: .whitespacesAndNewlines),
             selected: selected, useRememberedIdentity: authMode == .remembered, route: route)
@@ -1439,7 +1457,7 @@ import AppIntents
 
     private func showConnectionSearch() {
         isConnecting = true; connectionError = nil
-        status = Self.localize("Searching network and USB…")
+        status = Self.localize(searchRoute.searchMessageKey)
     }
 
     private func updateIdleTimer() {
@@ -1763,6 +1781,10 @@ extension ReceiverRuntime {
                 connect(route: route)
             } else { return finishAutomation("another_request_active", request: id) }
         }
+        if control != nil && route != requestedRoute {
+            authMode = .remembered
+            connect(route: route)
+        }
         recoveryIntent.request()
         if control == nil && !isConnecting {
             host = rememberedHost.isEmpty ? lastHost : rememberedHost
@@ -1800,7 +1822,7 @@ extension ReceiverRuntime {
         Form {
             Section("Shortcuts") {
                 ShortcutsLink()
-                Text("Add HearPort actions in Shortcuts. Play PC audio uses an audio playback action; Background connect and Open and connect allow comparison.")
+                Text("Play PC audio connects and starts playback without opening HearPort. Open and connect brings HearPort to the foreground.")
                 Text("Choose Automatic, Network only or USB only. Only the saved paired PC is used. Pair in HearPort first.")
             }
             Section("Personal automation") {
