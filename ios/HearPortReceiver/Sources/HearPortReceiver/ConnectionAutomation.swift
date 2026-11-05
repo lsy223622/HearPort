@@ -2,6 +2,24 @@ import Foundation
 
 public enum AutomationRoute: String, CaseIterable, Sendable {
     case automatic, network, usb
+    static let preferenceKey = "hearport.connectionRoute"
+    static func load(defaults: UserDefaults = .standard) -> Self {
+        Self(rawValue: defaults.string(forKey: preferenceKey) ?? "") ?? .automatic
+    }
+    var titleKey: String {
+        switch self {
+        case .automatic: return "Automatic (USB preferred)"
+        case .network: return "Network only"
+        case .usb: return "USB only"
+        }
+    }
+    var searchMessageKey: String {
+        switch self {
+        case .automatic: return "Searching network and USB…"
+        case .network: return "Searching network…"
+        case .usb: return "Searching USB…"
+        }
+    }
     func includes(_ path: ConnectionPath) -> Bool { self == .automatic || rawValue == path.rawValue }
 }
 

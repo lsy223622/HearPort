@@ -23,18 +23,6 @@ struct PlayPCAudioIntent: AudioPlaybackIntent {
     }
 }
 
-struct BackgroundConnectIntent: AppIntent {
-    static var title: LocalizedStringResource = "Background connect"
-    static var description = IntentDescription("Compare ordinary background execution with the audio playback action.")
-    static var openAppWhenRun = false
-    static var authenticationPolicy: IntentAuthenticationPolicy = .alwaysAllowed
-    @Parameter(title: "Connection route", default: .automatic) var route: HearPortRoute
-    init() {}
-    @MainActor func perform() async throws -> some IntentResult & ReturnsValue<String> {
-        .result(value: await ReceiverRuntime.shared.automationConnect(route: route.route, source: "background_intent"))
-    }
-}
-
 struct OpenAndConnectIntent: AppIntent {
     static var title: LocalizedStringResource = "Open and connect"
     static var description = IntentDescription("Open HearPort and connect to the saved paired PC. Unlocking may be required.")
@@ -93,24 +81,6 @@ struct PlayUSBAudioIntent: AudioPlaybackIntent {
     }
 }
 
-struct BackgroundNetworkIntent: AppIntent {
-    static var title: LocalizedStringResource = "Background network"
-    static var openAppWhenRun = false
-    static var authenticationPolicy: IntentAuthenticationPolicy = .alwaysAllowed
-    @MainActor func perform() async throws -> some IntentResult & ReturnsValue<String> {
-        .result(value: await ReceiverRuntime.shared.automationConnect(route: .network, source: "background_network"))
-    }
-}
-
-struct BackgroundUSBIntent: AppIntent {
-    static var title: LocalizedStringResource = "Background USB"
-    static var openAppWhenRun = false
-    static var authenticationPolicy: IntentAuthenticationPolicy = .alwaysAllowed
-    @MainActor func perform() async throws -> some IntentResult & ReturnsValue<String> {
-        .result(value: await ReceiverRuntime.shared.automationConnect(route: .usb, source: "background_usb"))
-    }
-}
-
 @available(iOS 17.2, *)
 struct HearPortShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
@@ -120,12 +90,6 @@ struct HearPortShortcuts: AppShortcutsProvider {
                     shortTitle: "Play via network", systemImageName: "wifi")
         AppShortcut(intent: PlayUSBAudioIntent(), phrases: ["Play over USB with \(.applicationName)"],
                     shortTitle: "Play via USB", systemImageName: "cable.connector")
-        AppShortcut(intent: BackgroundConnectIntent(), phrases: ["Connect in the background with \(.applicationName)"],
-                    shortTitle: "Background connect", systemImageName: "network")
-        AppShortcut(intent: BackgroundNetworkIntent(), phrases: ["Connect over network in the background with \(.applicationName)"],
-                    shortTitle: "Background network", systemImageName: "wifi")
-        AppShortcut(intent: BackgroundUSBIntent(), phrases: ["Connect over USB in the background with \(.applicationName)"],
-                    shortTitle: "Background USB", systemImageName: "cable.connector")
         AppShortcut(intent: OpenAndConnectIntent(), phrases: ["Open and connect with \(.applicationName)"],
                     shortTitle: "Open and connect", systemImageName: "desktopcomputer")
         AppShortcut(intent: DisconnectPCAudioIntent(), phrases: ["Disconnect PC audio with \(.applicationName)"],
