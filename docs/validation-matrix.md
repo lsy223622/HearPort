@@ -1,5 +1,13 @@
 # HearPort 0.1.0 validation matrix
 
+## Live home-canvas observation (2026-11-05)
+
+- Build 192 device logs recorded authenticated sessions and started audio output while the reported home screen still showed available connections; `ui_disconnected` was recorded at 08:21:09 UTC despite the reported playback screen remaining visible. Foreground transitions caused the stale presentation to refresh.
+- Source `32333ff12d82341af539567689e666926c4c4002` gives the content inside the deferred `GeometryReader` its own SwiftUI view observing both `ReceiverRuntime` and `ReceiverConnectionCoordinator`. Layout size and existing stage transitions are retained; runtime changes no longer depend on the geometry closure being re-evaluated.
+- iOS Actions [41995708805](https://github.com/lsy223622/HearPort/actions/runs/41995708805) passed all 221 Swift/QUIC tests and the unsigned iOS archive (build 193); CodeQL [41995707864](https://github.com/lsy223622/HearPort/actions/runs/41995707864) passed. These checks cover compilation and existing behavior, not the live SwiftUI refresh regression on a physical iPad.
+- Downloaded build 193 was verified against archive metadata: matching source/build identity, IPA SHA-256 and unsigned packaging. SHA-256: `42676125f6b531b646eaee06421ae0bc5f46f9d2adc0d88d93bcb292d1b9b69b`.
+- Device acceptance pending: connect and manually disconnect without leaving the foreground, then check automatic reconnect and LAN/USB route/status changes. The screen should reflect each transition without switching apps or rotating the device. Private diagnostic logs remain local.
+
 ## Rust cryptographic dependency security update (2026-10-26)
 
 - Delivery source `d8d6e78f22cf3b950056e03d70a683256eaa3b47`: only `crypto-bigint` 0.7.5 to 0.7.9 and `ctutils` 0.4.2 to 0.4.5 changed in the 47-package lockfile. Dependency constraints, SPAKE2/P-256, KDF, protocol and FFI declarations remain unchanged. The repaired dependencies require Rust 1.87; the manifest and development instructions now state that minimum.
