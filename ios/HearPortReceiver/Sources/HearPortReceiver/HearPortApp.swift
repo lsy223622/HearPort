@@ -18,6 +18,16 @@ import AppIntents
     }
 }
 
+@MainActor private struct ReceiverHomeCanvas: View {
+    @ObservedObject var runtime: ReceiverRuntime
+    @ObservedObject var coordinator: ReceiverConnectionCoordinator
+    let size: CGSize
+
+    var body: some View {
+        runtime.homeContent(size: size)
+    }
+}
+
 @MainActor public final class ReceiverRuntime: ObservableObject {
     public static let shared = ReceiverRuntime()
     private let diagnostics = HearPortDiagnostics.shared
@@ -363,82 +373,86 @@ import AppIntents
 
     private var homeView: some View {
         GeometryReader { [self] geometry in
-            ScrollView {
-                VStack(spacing: 28) {
-                    // Keep the same symbol and heading in the hierarchy across every stage.
-                    VStack(spacing: 16) {
-                        ConnectionStatusSymbol(connected: symbolConnected, path: activePath,
-                            quality: qualityTracker.quality, recovering: presentationStage == .recovering, connecting: isConnecting)
-                            .frame(width: showsConnections ? 160 : 190, height: showsConnections ? 160 : 190)
-                            .padding(.top, showsConnections ? 4 : 22)
-                        Text(canvasTitle)
-                            .font(.largeTitle.weight(.bold))
-                            .multilineTextAlignment(.center)
-                            .contentTransition(.opacity)
-                            .accessibilityAddTraits(.isHeader)
-                        Text(canvasSubtitle)
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center)
-                            .textSelection(.enabled)
-                        canvasLinkStatus
-                        if pairingNeedsAttention {
-                            Button("Pair again") { [self] in authMode = .pair; pin = ""; canvasSheet = .pairing }
-                                .tint(.blue).buttonStyle(.borderless)
-                        }
-                        if audioOutputState == .failed && connectionEstablished && !testRunning {
-                            Button("Retry playback", action: retryAudioOutput)
-                                .tint(.blue).buttonStyle(.borderless)
-                        }
-                        if presentationStage == .connecting || presentationStage == .recovering || presentationStage == .reporting {
-                            ProgressView().padding(.top, 4)
-                        }
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.bottom, 10)
-
-                    if showsConnections {
-                        availableConnections
-                            .transition(.opacity.combined(with: .move(edge: .bottom)))
-                    } else if presentationStage == .completed {
-                        if calibrationRunResult != nil || adaptiveRunResult != nil {
-                            Button { [self] in canvasSheet = .recommendations } label: {
-                                Text("Review recommendations").font(.headline)
-                                    .padding(.horizontal, 24).padding(.vertical, 14)
-                                    .foregroundStyle(Color(uiColor: .systemBackground))
-                                    .background(Color.primary, in: RoundedRectangle(cornerRadius: 12))
-                            }.buttonStyle(.plain)
-                            if sendingReport {
-                                Text("Recommendations are saved on this iPad. A diagnostic copy is being sent to the PC.")
-                                    .font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
-                            }
-                            Button("Back to connections") { [self] in disconnect() }
-                        } else {
-                            Button { [self] in disconnect() } label: {
-                                Text("Back to connections").font(.headline)
-                                    .padding(.horizontal, 24).padding(.vertical, 14)
-                                    .foregroundStyle(Color(uiColor: .systemBackground))
-                                    .background(Color.primary, in: RoundedRectangle(cornerRadius: 12))
-                            }.buttonStyle(.plain)
-                        }
-                    } else {
-                        playbackSummary
-                            .transition(.opacity.combined(with: .move(edge: .bottom)))
-                    }
-                }
-                .frame(maxWidth: 760)
-                .padding(.horizontal, geometry.size.width < 500 ? 20 : 40)
-                .padding(.vertical, 24)
-                .frame(maxWidth: .infinity)
-                .frame(minHeight: geometry.size.height, alignment: .top)
-                .animation(reduceMotion || !canvasHasAppeared ? nil : .easeInOut(duration: 0.45), value: presentationStage)
-            }
-            .background(Color(uiColor: .systemGroupedBackground))
+            ReceiverHomeCanvas(runtime: self, coordinator: connectionManager, size: geometry.size)
         }
         .background(CanvasAppearanceObserver { [self] in canvasHasAppeared = true; resumeConnection() })
         .transaction { [self] transaction in
             if !canvasHasAppeared { transaction.disablesAnimations = true; transaction.animation = nil }
         }
+    }
+
+    fileprivate func homeContent(size: CGSize) -> some View {
+        ScrollView {
+            VStack(spacing: 28) {
+                // Keep the same symbol and heading in the hierarchy across every stage.
+                VStack(spacing: 16) {
+                    ConnectionStatusSymbol(connected: symbolConnected, path: activePath,
+                        quality: qualityTracker.quality, recovering: presentationStage == .recovering, connecting: isConnecting)
+                        .frame(width: showsConnections ? 160 : 190, height: showsConnections ? 160 : 190)
+                        .padding(.top, showsConnections ? 4 : 22)
+                    Text(canvasTitle)
+                        .font(.largeTitle.weight(.bold))
+                        .multilineTextAlignment(.center)
+                        .contentTransition(.opacity)
+                        .accessibilityAddTraits(.isHeader)
+                    Text(canvasSubtitle)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .textSelection(.enabled)
+                    canvasLinkStatus
+                    if pairingNeedsAttention {
+                        Button("Pair again") { [self] in authMode = .pair; pin = ""; canvasSheet = .pairing }
+                            .tint(.blue).buttonStyle(.borderless)
+                    }
+                    if audioOutputState == .failed && connectionEstablished && !testRunning {
+                        Button("Retry playback", action: retryAudioOutput)
+                            .tint(.blue).buttonStyle(.borderless)
+                    }
+                    if presentationStage == .connecting || presentationStage == .recovering || presentationStage == .reporting {
+                        ProgressView().padding(.top, 4)
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.bottom, 10)
+
+                if showsConnections {
+                    availableConnections
+                        .transition(.opacity.combined(with: .move(edge: .bottom)))
+                } else if presentationStage == .completed {
+                    if calibrationRunResult != nil || adaptiveRunResult != nil {
+                        Button { [self] in canvasSheet = .recommendations } label: {
+                            Text("Review recommendations").font(.headline)
+                                .padding(.horizontal, 24).padding(.vertical, 14)
+                                .foregroundStyle(Color(uiColor: .systemBackground))
+                                .background(Color.primary, in: RoundedRectangle(cornerRadius: 12))
+                        }.buttonStyle(.plain)
+                        if sendingReport {
+                            Text("Recommendations are saved on this iPad. A diagnostic copy is being sent to the PC.")
+                                .font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                        }
+                        Button("Back to connections") { [self] in disconnect() }
+                    } else {
+                        Button { [self] in disconnect() } label: {
+                            Text("Back to connections").font(.headline)
+                                .padding(.horizontal, 24).padding(.vertical, 14)
+                                .foregroundStyle(Color(uiColor: .systemBackground))
+                                .background(Color.primary, in: RoundedRectangle(cornerRadius: 12))
+                        }.buttonStyle(.plain)
+                    }
+                } else {
+                    playbackSummary
+                        .transition(.opacity.combined(with: .move(edge: .bottom)))
+                }
+            }
+            .frame(maxWidth: 760)
+            .padding(.horizontal, size.width < 500 ? 20 : 40)
+            .padding(.vertical, 24)
+            .frame(maxWidth: .infinity)
+            .frame(minHeight: size.height, alignment: .top)
+            .animation(reduceMotion || !canvasHasAppeared ? nil : .easeInOut(duration: 0.45), value: presentationStage)
+        }
+        .background(Color(uiColor: .systemGroupedBackground))
     }
 
     @ViewBuilder private var canvasLinkStatus: some View {
