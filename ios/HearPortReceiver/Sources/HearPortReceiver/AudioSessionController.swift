@@ -178,7 +178,8 @@ public final class PlatformAudioOutputController {
     private let receiver: HearPortReceiver
     private let lifecycle: AudioLifecycleController
     private let audioSession = AVAudioSession.sharedInstance()
-    private let engine = AVAudioEngine()
+    private var engine = AVAudioEngine()
+    private var recovery = AudioPlaybackRecovery()
     private var sourceNode: AVAudioSourceNode?
     private var observers: [NSObjectProtocol] = []
     private var drift = DriftController()
@@ -234,6 +235,8 @@ public final class PlatformAudioOutputController {
         receiver.recordAudioOutput(route: output.portName, sampleRate: outputSampleRate)
         drift = DriftController(nominalRatio: 48_000.0 / outputSampleRate)
         resampler.reset()
+        recovery.start()
+        receiver.handleAudioLifecycle(.interruptionEnded)
         try configureEngine()
         installAudioNotifications()
         lifecycle.startSpeakerSession()
@@ -275,6 +278,7 @@ public final class PlatformAudioOutputController {
     }
 
     public func stop() throws {
+        recovery.stop()
         receiver.diagnostics.log(
             .info,
             category: .audio,
@@ -357,14 +361,15 @@ public final class PlatformAudioOutputController {
             object: audioSession,
             queue: .main
         ) { [weak self] _ in
-            self?.receiver.diagnostics.log(
+            guard let self, self.recovery.canRecoverAutomatically else { return }
+            self.receiver.diagnostics.log(
                 .info,
                 category: .audio,
                 message: "audio_route_changed",
                 fields: ["event": "route_changed"]
             )
-            self?.receiver.handleAudioLifecycle(.routeChanged)
-            self?.rebuildEngine()
+            self.receiver.handleAudioLifecycle(.routeChanged)
+            self.rebuildEngine()
         })
         observers.append(center.addObserver(
             forName: AVAudioSession.interruptionNotification,
@@ -377,6 +382,7 @@ public final class PlatformAudioOutputController {
                 return
             }
             if type == .began {
+                self.recovery.interrupt()
                 self.onStateChanged?(.interrupted)
                 self.receiver.diagnostics.log(
                     .info,
@@ -389,16 +395,45 @@ public final class PlatformAudioOutputController {
                 self.drift.reset()
                 self.resampler.reset()
             } else {
+                let rawOptions = notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
+                let shouldResume = AVAudioSession.InterruptionOptions(rawValue: rawOptions).contains(.shouldResume)
                 self.receiver.diagnostics.log(
                     .info,
                     category: .audio,
                     message: "audio_interruption_ended",
-                    fields: ["event": "interruption_ended"]
+                    fields: ["event": "interruption_ended", "should_resume": "\(shouldResume)"]
                 )
+                guard self.recovery.endInterruption(shouldResume: shouldResume) else { return }
                 self.receiver.handleAudioLifecycle(.interruptionEnded)
                 self.rebuildEngine()
             }
         })
+        observers.append(center.addObserver(
+            forName: AVAudioSession.mediaServicesWereResetNotification,
+            object: audioSession,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            self.recovery.mediaServicesReset()
+            self.receiver.handleAudioLifecycle(.interruptionBegan)
+            self.stopEngineForRecovery()
+            self.engine = AVAudioEngine()
+            self.drift.reset()
+            self.resampler.reset()
+            do { try self.audioSession.setCategory(.playback, mode: .default, options: []) }
+            catch {
+                self.receiver.diagnostics.log(.error, category: .audio, message: "audio_session_reset_failed",
+                    fields: ["error_type": "\(type(of: error))"])
+            }
+            self.onStateChanged?(.failed)
+            self.receiver.diagnostics.log(.info, category: .audio, message: "audio_media_services_reset")
+        })
+    }
+
+    public func resumeAfterExecutionOpportunity() {
+        guard recovery.canRecoverAutomatically, !engine.isRunning else { return }
+        receiver.handleAudioLifecycle(.interruptionEnded)
+        rebuildEngine()
     }
 
     private func stopEngineForRecovery() {

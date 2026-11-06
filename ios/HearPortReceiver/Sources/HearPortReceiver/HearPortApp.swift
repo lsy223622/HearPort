@@ -36,12 +36,12 @@ import AppIntents
     @Published private var selectedEndpoint: ConnectionEndpoint?
     @Published private var host = ""
     @Published private var connectionID = UUID()
-    @Published private var isConnecting = false
+    @Published private var isConnecting = false { didSet { updateSystemPlayback() } }
     @Published private var activeAudioMode: AudioTransportMode = .datagram
     @Published private var activeBufferTargetPackets = JitterBufferConfiguration.defaultTargetPackets
     @Published private var pin = ""
     @Published private var authMode: AuthMode = .pair
-    @Published private var hasRememberedCredential = false
+    @Published private var hasRememberedCredential = false { didSet { updateSystemPlayback() } }
     @Published private var didLoadRememberedCredential = false
     @Published private var status = "Disconnected"
     @Published private var connectionError: String?
@@ -55,8 +55,8 @@ import AppIntents
     @Published private var activeNetworkEndpoint = ""
     @Published private var canvasHasAppeared = false
     @Published private var control: ReceiverControlSession?
-    @Published private var audioOutput: PlatformAudioOutputController?
-    @Published private var audioOutputState: AudioOutputState?
+    @Published private var audioOutput: PlatformAudioOutputController? { didSet { updateSystemPlayback() } }
+    @Published private var audioOutputState: AudioOutputState? { didSet { updateSystemPlayback() } }
     @Published private var pairingNeedsAttention = false
     @Published private var detailedLogging = false { didSet { UserDefaults.standard.set(detailedLogging, forKey: "hearport.detailedLogging") } }
     @Published private var autoConnect = false { didSet { UserDefaults.standard.set(autoConnect, forKey: "hearport.autoConnect") } }
@@ -87,14 +87,16 @@ import AppIntents
     @Published private var adaptiveRunResult: AdaptiveCalibrationResult?
     @Published private var calibrationProgress: CalibrationProgressSnapshot?
     @Published private var calibrationNow: UInt64 = 0
-    @Published private var sendingReport = false
+    @Published private var sendingReport = false { didSet { updateSystemPlayback() } }
     @Published private var canvasSheet: CanvasSheet?
     @Published private var calibrationTarget: ComputerConnectionTarget?
-    @Published private var pendingCalibration: (goal: Int, seconds: Int, maximum: Int)?
+    @Published private var pendingCalibration: (goal: Int, seconds: Int, maximum: Int)? {
+        didSet { if pendingCalibration != nil { backgroundRecovery.end(reason: "calibration") }; updateSystemPlayback() }
+    }
     @Published private var completedAdaptiveConnection: UUID?
     @Published private var unpairTarget: ComputerConnectionTarget?
     @Published private var keepScreenAwake = false { didSet { UserDefaults.standard.set(keepScreenAwake, forKey: "hearport.keepScreenAwake") } }
-    @Published private var currentComputerName = ""
+    @Published private var currentComputerName = "" { didSet { updateSystemPlayback() } }
     @Published private var currentComputerIdentity = ""
     @Published private var calibrationRequestID: UUID?
     @Published private var calibrationStartStatus: String?
@@ -102,7 +104,9 @@ import AppIntents
     @Published private var qualityTracker = LinkStabilityTracker()
     @Published private var linkSample: LinkTimingSample?
     @Published private var musicRound: MusicTestRound?
-    @Published private var testRunning = false
+    @Published private var testRunning = false {
+        didSet { if testRunning { backgroundRecovery.end(reason: "diagnostics") }; updateSystemPlayback() }
+    }
     @Published private var roundStartedAt: TimeInterval = 0
     @Published private var roundElapsed: TimeInterval = 0
     private var scenePhase: ScenePhase = .active
@@ -236,14 +240,50 @@ import AppIntents
     private var recoveryIntent = ConnectionRecoveryIntent()
     @Published private var requestedRoute: AutomationRoute = .automatic { didSet { UserDefaults.standard.set(requestedRoute.rawValue, forKey: AutomationRoute.preferenceKey) } }
     private var automaticResumeInProgress = false
+    private let backgroundRecovery = PlaybackBackgroundRecovery()
+    private lazy var systemPlayback = SystemPlaybackControls()
+    private var diagnosticPlayback = false
+
+    private func updateSystemPlayback() {
+        guard started else { return }
+        let state: SystemPlaybackControls.State
+        if diagnosticPlayback || testRunning || sendingReport || pendingCalibration != nil || completedTestStatus != nil {
+            state = .unavailable
+        } else if audioOutput != nil && audioOutputState == .playing {
+            state = .playing
+        } else if isConnecting {
+            state = hasRememberedCredential ? .connecting : .unavailable
+        } else {
+            state = hasRememberedCredential ? .paused : .unavailable
+        }
+        systemPlayback.update(state, computerName: currentComputerName)
+    }
+
+    private func beginBackgroundRecovery() {
+        guard audioOutput != nil else { return }
+        backgroundRecovery.begin(eligible: audioOutputState == .playing && !diagnosticPlayback &&
+            !testRunning && !sendingReport && pendingCalibration == nil && completedTestStatus == nil &&
+            recoveryIntent.shouldResume(automatic: autoConnect && canvasHasAppeared, remembered: hasRememberedCredential))
+    }
 
     public func start() {
         guard !started else { return }
         started = true
+        systemPlayback.onPlay = { [weak self] in
+            guard let self, !self.diagnosticPlayback else { return }
+            Task { _ = await self.automationConnect(route: self.requestedRoute, source: "remote_play") }
+        }
+        systemPlayback.onStop = { [weak self] in
+            guard let self, !self.diagnosticPlayback, !self.testRunning, !self.sendingReport,
+                  self.pendingCalibration == nil, self.completedTestStatus == nil else { return }
+            self.disconnect()
+        }
+        updateSystemPlayback()
         connectionManager.onRequest = { [self] id, route in beginConnection(id: id, route: route) }
         connectionManager.onCancel = { [self] id in
             if let candidate = pendingControls.removeValue(forKey: id) { candidate.cancel() }
             if id == connectionID {
+                beginBackgroundRecovery()
                 control?.end(reason: 2); control = nil
                 try? audioOutput?.stop(); audioOutput = nil
             }
@@ -299,7 +339,10 @@ import AppIntents
         scenePhase = phase; self.reduceMotion = reduceMotion
         updateIdleTimer()
         automationEvent("scene", fields: ["phase": String(describing: phase)])
-        if phase == .active { resumeConnection(); connectionManager.resumeUSBDiscovery() }
+        if phase == .active {
+            audioOutput?.resumeAfterExecutionOpportunity()
+            resumeConnection(); connectionManager.resumeUSBDiscovery()
+        }
         if phase == .background { control?.interruptCalibration() }
         if phase != .active { qualityTracker = LinkStabilityTracker(); linkSample = nil }
     }
@@ -417,7 +460,7 @@ import AppIntents
                         Button("Pair again") { [self] in authMode = .pair; pin = ""; canvasSheet = .pairing }
                             .tint(.blue).buttonStyle(.borderless)
                     }
-                    if audioOutputState == .failed && connectionEstablished && !testRunning {
+                    if (audioOutputState == .failed || audioOutputState == .interrupted) && connectionEstablished && !testRunning {
                         Button("Retry playback", action: retryAudioOutput)
                             .tint(.blue).buttonStyle(.borderless)
                     }
@@ -1151,6 +1194,9 @@ import AppIntents
                     connectionManager.setRememberedIdentity(identity)
                 }
                 guard connectionManager.authenticated(id, identity: identity, features: features) else { return }
+                diagnosticPlayback = features & (ControlFeature.networkProbe | ControlFeature.environmentCalibration |
+                    ControlFeature.musicTest | ControlFeature.timedDiagnostics) != 0
+                if diagnosticPlayback { backgroundRecovery.end(reason: "diagnostics") }
                 connectionID = id; control = session; receiver = activeReceiver
                 pendingControls.removeValue(forKey: id)
                 activePath = route.path
@@ -1238,6 +1284,7 @@ import AppIntents
                     }
                     let completed = completedTestStatus
                     if completed == nil && recoveryIntent.shouldResume(automatic: autoConnect && canvasHasAppeared, remembered: hasRememberedCredential) {
+                        beginBackgroundRecovery()
                         control?.cancel(); control = nil
                         try? audioOutput?.stop(); audioOutput = nil
                         connectionEstablished = false; audioOutputState = nil
@@ -1250,11 +1297,17 @@ import AppIntents
                     isConnecting = false; connectionError = nil
                     sendingReport = false; testRunning = false
                     status = completed ?? Self.localize("PC stopped the connection")
-                } else { connectionManager.ended(id) }
+                } else { beginBackgroundRecovery(); connectionManager.ended(id) }
             }
         }
         session.onDiagnosticSessionStarted = { [self] in
-            DispatchQueue.main.async { [self] in if connectionID == id { connectionManager.pinActive() } }
+            DispatchQueue.main.async { [self] in
+                guard connectionID == id else { return }
+                diagnosticPlayback = true
+                backgroundRecovery.end(reason: "diagnostics")
+                updateSystemPlayback()
+                connectionManager.pinActive()
+            }
         }
         session.onCalibrationProgress = { [self] progress in
             DispatchQueue.main.async { [self] in
@@ -1295,6 +1348,9 @@ import AppIntents
         }
         session.onTransportState = { [self] newState in
             DispatchQueue.main.async { [self] in
+                if connectionID == activeConnectionID && (newState == .failed || newState == .closed) {
+                    beginBackgroundRecovery()
+                }
                 if newState == .failed || newState == .closed { connectionManager.ended(id) }
                 guard connectionID == activeConnectionID else { return }
                 if newState == .failed || newState == .closed {
@@ -1330,6 +1386,7 @@ import AppIntents
                     connectionError = Self.localize(message); status = connectionError ?? Self.localize("Connection failed")
                     return
                 }
+                if connectionID == activeConnectionID { beginBackgroundRecovery() }
                 connectionManager.ended(id)
                 guard connectionID == activeConnectionID else { return }
                 guard completedTestStatus == nil else { sendingReport = false; return }
@@ -1482,6 +1539,7 @@ import AppIntents
     }
 
     private func disconnect(reason: UInt32 = 1) {
+        backgroundRecovery.end(reason: "disconnected")
         if !automationRequests.isEmpty { automationEvent("request_stopped"); automationRequests.removeAll() }
         recoveryIntent.pause()
         pendingCalibration = nil; calibrationTarget = nil
@@ -1512,6 +1570,7 @@ import AppIntents
         currentComputerIdentity = ""; calibrationRequestID = nil; calibrationStartStatus = nil
         try? audioOutput?.stop()
         audioOutput = nil
+        diagnosticPlayback = false
         audioOutputState = nil; pairingNeedsAttention = false
         status = Self.localize("Disconnected")
         if hadActiveSession {
@@ -1536,6 +1595,7 @@ import AppIntents
         do { try output.start() }
         catch { try? output.stop(); throw error }
         audioOutput = output; audioOutputState = .playing
+        if !diagnosticPlayback && !testRunning { backgroundRecovery.playbackStarted() }
         automationEvent("audio_engine_started", fields: ["connection_id": id.uuidString])
         observeReceivedAudio(output, id: id, until: ProcessInfo.processInfo.systemUptime + 60)
     }
@@ -1790,7 +1850,9 @@ extension ReceiverRuntime {
             host = rememberedHost.isEmpty ? lastHost : rememberedHost
             authMode = .remembered
             connect(route: route)
-        } else if connectionEstablished && audioOutputState == .failed { retryAudioOutput() }
+        } else if connectionEstablished && (audioOutputState == .failed || audioOutputState == .interrupted) {
+            retryAudioOutput()
+        }
         connectionManager.resumeUSBDiscovery()
         automationEvent("request_accepted", request: id)
         // Keep the invocation alive briefly for authentication/audio startup; this is not a keepalive.

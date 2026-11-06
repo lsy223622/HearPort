@@ -16,6 +16,7 @@
 "The Windows PC does not support this audio mode." = "Windows 电脑不支持当前音频模式。";
 "The Windows PC reported a connection error." = "Windows 电脑报告连接错误。";
 "Playing" = "正在播放";
+"PC audio" = "电脑音频";
 "Network test running" = "正在进行网络测试";
 "Music test running" = "正在进行音乐测试";
 "Music test %d/8 · %@ · %@" = "音乐测试 %d/8 · %@ · %@";
