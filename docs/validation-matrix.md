@@ -1,5 +1,13 @@
 # HearPort 0.1.0 validation matrix
 
+## Background playback recovery and system media controls (2026-11-07)
+
+- Application source `39ce86132fbe4b439d47fe3882d3f4c35a1bce61` adds a single, nonrenewing background recovery allowance capped at 20 seconds after eligible playback transport loss; recovery success, explicit disconnect, authentication rejection, diagnostics/calibration and system expiry end the allowance. Audio interruption recovery respects `shouldResume`; media-service reset recreates audio objects and requires an explicit playback request. Now Playing presents live PC audio with play/pause/stop controls; play uses the saved route and remembered authentication, and stop pauses automatic recovery. Diagnostic sessions disable media commands.
+- Delivery source `161fa3f12a55ef5b221f0ccf4332bfcb68f5764a` moves the two iOS jobs to `macos-15`. The preceding run was cancelled before any steps because GitHub rejected the retired `macos-14` runner configuration; it was not a source/test failure.
+- iOS Actions [42263118206](https://github.com/lsy223622/HearPort/actions/runs/42263118206) passed all 227 Swift/QUIC tests, including five new recovery regressions, and the unsigned iPad archive with Xcode 16.4 (build 196). Existing shortcut/automation-analysis checks also passed locally (4 tests). CodeQL [42263117529](https://github.com/lsy223622/HearPort/actions/runs/42263117529) passed.
+- Downloaded IPA metadata matches build 196, delivery source and run identity; its SHA-256 matches the archive record: `55f2b856acc7f3151d96f851dc96fce52051c4e37d5dcf4ced8508df397b9a45`. The packaged app retains `UIBackgroundModes = audio`; no provisioning profile, code-signature directory or Mach-O code-signature command is present.
+- Device acceptance pending: locked playback through a brief LAN/USB outage on permitted routes; manual stop during recovery; lock-screen/Control Center/headset play and stop using the saved mode; interruption resume permission and explicit playback after a media-service reset. CI verifies state policies and iPadOS compilation, not actual scheduling time, remote-command delivery or background survival on a physical iPad. The build 193 UI-refresh and build 194 connection-mode acceptance checks remain pending unless separately confirmed.
+
 ## Connection modes and shortcut acceptance (2026-11-05)
 
 - Device observations: audio playback intents connected and played without presenting the app, including when it had no existing app-switcher card; the foreground intent opened the app. Network-only playback stayed on LAN when USB became available; USB-only playback waited after unplugging even with LAN available. These observations do not establish locked-device or reboot-trigger behavior.
