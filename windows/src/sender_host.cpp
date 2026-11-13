@@ -93,6 +93,19 @@ bool SenderHost::RemovePairing() {
 }
 std::string SenderHost::pairing_pin() const { return authentications_[0]->pairing_pin(); }
 SenderService& SenderHost::service() { std::lock_guard lock(mutex_); return *services_[last_]; }
+SenderAuthentication* SenderHost::ActiveAuthentication() {
+  std::lock_guard lock(mutex_);
+  const auto active = selection_.active();
+  return active && !stopping_ ? authentications_[*active - 1].get() : nullptr;
+}
+std::optional<std::uint32_t> SenderHost::SystemVolume() {
+  auto* authentication = ActiveAuthentication();
+  return authentication ? authentication->SystemVolume() : std::nullopt;
+}
+bool SenderHost::RequestSystemVolume(std::optional<std::uint32_t> percent) {
+  auto* authentication = ActiveAuthentication();
+  return authentication && authentication->RequestSystemVolume(percent);
+}
 bool SenderHost::WaitForDebugCompletion(std::chrono::milliseconds timeout) {
   const auto until=std::chrono::steady_clock::now()+timeout;
   std::unique_lock lock(mutex_);

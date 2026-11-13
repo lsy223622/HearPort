@@ -110,6 +110,7 @@ import AppIntents
     @Published private var roundStartedAt: TimeInterval = 0
     @Published private var roundElapsed: TimeInterval = 0
     private var scenePhase: ScenePhase = .active
+    private lazy var remoteSystemVolume = RemoteSystemVolume()
     private var reduceMotion = false
 
     private enum CanvasSheet: String, Identifiable {
@@ -159,6 +160,7 @@ import AppIntents
             }
         }
         .background(Color(uiColor: .systemGroupedBackground))
+        .background { self.remoteSystemVolume.backingView }
         .tint(Color.primary)
         .background { [self] in
             NarrowFormSheet(item: binding(\.canvasSheet)) { [self] sheet in
@@ -1408,6 +1410,17 @@ import AppIntents
                 activeAudioFormat = format
                 diagnostics.log(.info, category: .audio, message: "ui_audio_format_negotiated",
                     fields: ["physical_path": route.path.rawValue, "format": format.label])
+            }
+        }
+        session.onSystemVolumeRequest = { [weak self, weak session] percent, reply in
+            DispatchQueue.main.async {
+                guard let self, let session, self.control === session,
+                      self.audioOutputState == .playing, !self.diagnosticPlayback,
+                      !self.testRunning, !self.sendingReport, self.pendingCalibration == nil else {
+                    reply(nil)
+                    return
+                }
+                self.remoteSystemVolume.request(percent, reply: reply)
             }
         }
         session.onReady = { [self, weak session] in

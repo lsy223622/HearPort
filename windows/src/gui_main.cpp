@@ -70,6 +70,7 @@ constexpr int kMusicFile = 114;
 constexpr int kMusicTest = 115;
 constexpr int kCalibrationResults = 116;
 constexpr int kDetailedLogging = 117;
+constexpr int kIPadVolume = 118;
 constexpr int kTrayOpen = 201;
 constexpr int kTrayExit = 202;
 
@@ -254,7 +255,7 @@ class Application {
       SetAutoStart(true);
     }
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-    INITCOMMONCONTROLSEX common_controls{sizeof(common_controls), ICC_TAB_CLASSES};
+    INITCOMMONCONTROLSEX common_controls{sizeof(common_controls), ICC_TAB_CLASSES | ICC_BAR_CLASSES};
     InitCommonControlsEx(&common_controls);
 
     WNDCLASSEXW window_class{};
@@ -591,6 +592,10 @@ class Application {
     pairing_action_ = Control(0, L"BUTTON", Tr(L"Pair new iPad", L"配对新 iPad"),
             WS_TABSTOP | BS_PUSHBUTTON, kPair);
     toggle_ = Control(0, L"BUTTON", L"", WS_TABSTOP | BS_PUSHBUTTON, kToggle);
+    volume_label_ = Control(0, L"STATIC", L"", SS_LEFT, 0);
+    volume_slider_ = Control(0, TRACKBAR_CLASSW, Tr(L"iPad volume", L"iPad 音量"),
+                             WS_TABSTOP | WS_DISABLED | TBS_NOTICKS, kIPadVolume);
+    SendMessageW(volume_slider_, TBM_SETRANGE, FALSE, MAKELONG(0, 100));
 
     Control(1, L"BUTTON", Tr(L"Live diagnostics…", L"实时诊断…"), WS_TABSTOP | BS_PUSHBUTTON, kDiagnostics);
     Control(1, L"BUTTON", Tr(L"Network test…", L"网络测试…"), WS_TABSTOP | BS_PUSHBUTTON, kNetworkProbe);
@@ -658,7 +663,7 @@ class Application {
     SendMessageW(footer_exit_, WM_SETFONT,
                  reinterpret_cast<WPARAM>(font_), TRUE);
     if (groups_[0].size() != 3 || groups_[1].size() != 2 ||
-        groups_[2].size() != 2 || pages_[0].size() != 8 ||
+        groups_[2].size() != 2 || pages_[0].size() != 10 ||
         pages_[1].size() != 11 || pages_[2].size() != 7 ||
         !port_frame_ || !port_edit_ || !footer_close_ || !footer_exit_) {
       return false;
@@ -695,12 +700,14 @@ class Application {
     auto& overview = pages_[0];
     Place(overview[0], 100, 78, group_width - 80, 24);
     Place(overview[1], 100, 105, std::max(100, width - 282), 42);
-    Place(overview[2], 44, 185, group_width - 24, 24);
-    Place(overview[3], 44, 213, group_width - 24, 24);
-    Place(overview[4], 44, 241, group_width - 24, 24);
+    Place(overview[2], 44, 181, group_width - 24, 22);
+    Place(overview[3], 44, 203, group_width - 24, 22);
+    Place(overview[4], 44, 225, group_width - 24, 22);
     Place(overview[5], 44, 312, group_width - 24, 45);
     Place(overview[6], width - 162, 359, 118, 29);
     Place(overview[7], width - 162, 108, 118, 29);
+    Place(volume_label_, 44, 249, 155, 22);
+    Place(volume_slider_, 199, 246, group_width - 179, 27);
 
     auto& diagnostics = pages_[1];
     const int column = (group_width - 40) / 3;
@@ -840,7 +847,24 @@ class Application {
     DestroyMenu(menu);
   }
 
+  void UpdateVolume() {
+    if (!volume_slider_) return;
+    const auto volume = host_ && connected_ ? host_->SystemVolume() : std::nullopt;
+    if (!volume) volume_editing_ = false;
+    if (IsWindowEnabled(volume_slider_) != volume.has_value()) {
+      EnableWindow(volume_slider_, volume.has_value());
+    }
+    if (volume && !volume_editing_ &&
+        SendMessageW(volume_slider_, TBM_GETPOS, 0, 0) != *volume) {
+      SendMessageW(volume_slider_, TBM_SETPOS, TRUE, *volume);
+    }
+    const auto label = Tr(L"iPad volume", L"iPad 音量") +
+        (volume ? L"  " + std::to_wstring(*volume) + L"%" : L"");
+    SetTextIfChanged(volume_label_, label.c_str());
+  }
+
   void UpdateStatus() {
+    UpdateVolume();
     std::wstring heading;
     std::wstring detail;
     std::wstring audio_label = Tr(L"Audio source: Windows default output",
@@ -1570,6 +1594,9 @@ class Application {
   }
 
   void OnTimer() {
+    if (host_ && connected_ && current_page_ == 0 && IsWindowVisible(hwnd_) && !volume_editing_) {
+      host_->RequestSystemVolume(std::nullopt);
+    }
     if (running_ || pin_expires_) UpdateStatus();
     if (!diagnostic_duration_ || !service_) return;
     if (service_->WaitForDebugCompletion(std::chrono::milliseconds(0))) {
@@ -1663,6 +1690,17 @@ class Application {
         return 0;
       case WM_TIMER:
         if (wparam == kTimer) OnTimer();
+        return 0;
+      case WM_HSCROLL:
+        if (!volume_slider_ || reinterpret_cast<HWND>(lparam) != volume_slider_) {
+          return DefWindowProcW(hwnd_, message, wparam, lparam);
+        }
+        volume_editing_ = LOWORD(wparam) != TB_ENDTRACK;
+        if (!volume_editing_ && host_ && connected_ && IsWindowEnabled(volume_slider_)) {
+          const auto percent = static_cast<std::uint32_t>(SendMessageW(volume_slider_, TBM_GETPOS, 0, 0));
+          if (host_->SystemVolume() != percent) host_->RequestSystemVolume(percent);
+          UpdateVolume();
+        }
         return 0;
       case WM_SIZE:
         if (wparam == SIZE_MINIMIZED) {
@@ -1825,6 +1863,9 @@ class Application {
   HWND footer_close_ = nullptr;
   HWND footer_exit_ = nullptr;
   HWND status_ = nullptr;
+  HWND volume_label_ = nullptr;
+  HWND volume_slider_ = nullptr;
+  bool volume_editing_ = false;
   HWND status_detail_ = nullptr;
   HWND computer_ = nullptr;
   HWND audio_ = nullptr;

@@ -172,6 +172,9 @@ bool ValidateEnvelope(const ControlEnvelope& envelope) noexcept {
     return false;
   }
   switch (envelope.type) {
+    case ControlMessageType::system_volume_request:
+    case ControlMessageType::system_volume_report:
+      return envelope.request_id != 0 && envelope.volume_percent.value_or(0) <= 100;
     case ControlMessageType::session_end: {
       auto empty=envelope; empty.type=ControlMessageType::receiver_ready; empty.reason=0;
       return (envelope.reason==1 || envelope.reason==2 || envelope.reason==3) && ValidateEnvelope(empty);
@@ -580,6 +583,25 @@ bool ParseAudioProgress(std::span<const std::byte> bytes,
   return stream_seen && generation_seen;
 }
 
+bool ParseSystemVolume(std::span<const std::byte> bytes, ControlEnvelope& envelope) noexcept {
+  Reader reader(bytes);
+  while (!reader.AtEnd()) {
+    std::uint32_t field = 0;
+    std::uint8_t wire = 0;
+    if (!reader.ReadTag(field, wire)) return false;
+    if (field == 1 && wire == 0) {
+      if (!reader.ReadVarint(envelope.request_id)) return false;
+    } else if (field == 2 && wire == 0) {
+      std::uint32_t percent = 0;
+      if (!reader.ReadVarint(percent)) return false;
+      envelope.volume_percent = percent;
+    } else if (!reader.Skip(wire)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 bool ParseCoordinated(std::span<const std::byte> bytes,
                       ControlEnvelope& envelope) noexcept {
   Reader reader(bytes);
@@ -667,6 +689,11 @@ std::vector<std::byte> EncodeControlEnvelope(const ControlEnvelope& envelope) {
         scalar(3, envelope.remote_received_ns);
         scalar(4, envelope.remote_sent_ns);
       }
+      break;
+    case ControlMessageType::system_volume_request:
+    case ControlMessageType::system_volume_report:
+      scalar(1, envelope.request_id);
+      if (envelope.volume_percent) scalar(2, *envelope.volume_percent);
       break;
     case ControlMessageType::repair_request:
       scalar(1, envelope.stream_id);
@@ -795,6 +822,8 @@ std::vector<std::byte> EncodeControlEnvelope(const ControlEnvelope& envelope) {
       case ControlMessageType::clock_request: return 41u;
       case ControlMessageType::clock_response: return 42u;
       case ControlMessageType::repair_request: return 43u;
+      case ControlMessageType::system_volume_request: return 47u;
+      case ControlMessageType::system_volume_report: return 48u;
     }
     return 0u;
   }();
@@ -822,7 +851,7 @@ std::optional<ControlEnvelope> DecodeControlEnvelope(
         field == 1 || field == 2 || field == 3 || field == 10 ||
         field == 11 || field == 12 || field == 13 || field == 14 ||
         field == 20 || field == 21 || field == 30 || field == 31 ||
-        (field >= 32 && field <= 46);
+        (field >= 32 && field <= 48);
     if (!known_field || wire_type != 2) {
       if (!reader.Skip(wire_type)) return std::nullopt;
       continue;
@@ -836,6 +865,12 @@ std::optional<ControlEnvelope> DecodeControlEnvelope(
   ControlEnvelope envelope;
   bool parsed = false;
   switch (selected_field) {
+    case 47:
+    case 48:
+      envelope.type = selected_field == 47 ? ControlMessageType::system_volume_request
+                                           : ControlMessageType::system_volume_report;
+      parsed = ParseSystemVolume(selected_submessage, envelope);
+      break;
     case 45:
       envelope.type=ControlMessageType::session_end;
       parsed=ParseStream(selected_submessage,envelope);

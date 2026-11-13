@@ -106,6 +106,34 @@ bool SenderAuthentication::Send(const wire::ControlEnvelope& envelope) {
   }
 }
 
+bool SenderAuthentication::CanControlSystemVolume() const {
+  return authenticated_ && session_credential_ && stream_id_ && flow_ == Flow::idle &&
+         peer_supports_system_volume_ && !calibration_request_pending_ &&
+         !service_.debug_duration() && !service_.network_probe() &&
+         !service_.music_test() && !service_.environment_calibration();
+}
+
+std::optional<std::uint32_t> SenderAuthentication::SystemVolume() {
+  std::lock_guard lock(mutex_);
+  return CanControlSystemVolume() ? system_volume_ : std::nullopt;
+}
+
+bool SenderAuthentication::RequestSystemVolume(std::optional<std::uint32_t> percent) {
+  std::lock_guard lock(mutex_);
+  if (!CanControlSystemVolume() || (percent && *percent > 100)) return false;
+  const auto now = std::chrono::steady_clock::now();
+  if (!percent && now - volume_requested_at_ < std::chrono::seconds(2)) return false;
+  if (++volume_request_id_ == 0) ++volume_request_id_;
+  wire::ControlEnvelope request;
+  request.type = wire::ControlMessageType::system_volume_request;
+  request.request_id = volume_request_id_;
+  request.volume_percent = percent;
+  volume_requested_at_ = now;
+  volume_request_pending_ = Send(request);
+  if (percent && volume_request_pending_) system_volume_.reset();
+  return volume_request_pending_;
+}
+
 bool SenderAuthentication::Fail(ErrorCode code, std::string_view message) {
   wire::ControlEnvelope error;
   error.type = wire::ControlMessageType::error;
@@ -139,6 +167,7 @@ bool SenderAuthentication::HandleConnect(
   wire::ControlEnvelope default_format;
   if (!service_.ConfigureAudioFormat(default_format)) return false;
   peer_supports_calibration_ = (envelope.feature_bits & wire::kFeatureEnvironmentCalibration) != 0;
+  peer_supports_system_volume_ = (envelope.feature_bits & wire::kFeatureSystemVolume) != 0;
   peer_coordinated_audio_ = (envelope.feature_bits & wire::kFeatureCoordinatedAudio) != 0;
   service_.ConfigureCoordinatedAudio(peer_coordinated_audio_);
 
@@ -290,6 +319,7 @@ bool SenderAuthentication::CompleteAuthentication(bool remember) {
   if (service_.music_test()) ready.feature_bits |= wire::kFeatureMusicTest;
   if (service_.music_test()) ready.feature_bits |= wire::kFeatureCompressionMusic;
   if (service_.environment_calibration()) ready.feature_bits |= wire::kFeatureEnvironmentCalibration;
+  if (peer_supports_system_volume_ && session_credential_) ready.feature_bits |= wire::kFeatureSystemVolume;
   if (service_.network_probe()) {
     ready.feature_bits |=
         wire::kFeatureNetworkProbe | wire::kFeatureNetworkProbeRepeat;
@@ -442,6 +472,13 @@ bool SenderAuthentication::HandleControlPayload(
     return Fail(ErrorCode::protocol, "malformed control envelope");
   }
   switch (envelope->type) {
+    case wire::ControlMessageType::system_volume_report:
+      if (CanControlSystemVolume() && volume_request_pending_ &&
+          envelope->request_id == volume_request_id_) {
+        system_volume_ = envelope->volume_percent;
+        volume_request_pending_ = false;
+      }
+      return true;
     case wire::ControlMessageType::session_end_ack:
       if (!authenticated_) return false;
       service_.AcknowledgeEnd();
@@ -601,6 +638,10 @@ void SenderAuthentication::Reset() noexcept {
   peer_wants_reliable_ = false;
   peer_coordinated_audio_ = false;
   peer_supports_calibration_ = false;
+  peer_supports_system_volume_ = false;
+  system_volume_.reset();
+  volume_request_pending_ = false;
+  volume_requested_at_ = {};
   peer_supports_adaptive_calibration_ = false;
   report_upload_active_ = false;
   report_upload_session_id_.fill(std::byte{0});

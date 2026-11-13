@@ -259,5 +259,19 @@ int main() {
   Require(decoded_manifest.has_value(), "probe manifest decodes");
   Require(hearport::wire::EncodeControlEnvelope(*decoded_manifest) == manifest,
           "probe manifest is preserved exactly");
+  const auto read_volume = Envelope(47, VarintField(1, 7));
+  const auto set_zero = Envelope(47, Join({VarintField(1, 7), VarintField(2, 0)}));
+  const auto reported = Envelope(48, Join({VarintField(1, 7), VarintField(2, 100)}));
+  for (const auto& payload : {read_volume, set_zero, reported}) {
+    const auto decoded = hearport::wire::DecodeControlEnvelope(payload);
+    Require(decoded.has_value() && decoded->request_id == 7, "volume request ID decodes");
+    Require(hearport::wire::EncodeControlEnvelope(*decoded) == payload,
+            "volume zero, omitted volume and maximum volume stay distinct");
+  }
+  Require(!hearport::wire::DecodeControlEnvelope(
+              Envelope(47, Join({VarintField(1, 7), VarintField(2, 101)}))),
+          "out-of-range system volume is rejected");
+  Require(!hearport::wire::DecodeControlEnvelope(Envelope(48, VarintField(2, 50))),
+          "volume report requires a request ID");
   return 0;
 }

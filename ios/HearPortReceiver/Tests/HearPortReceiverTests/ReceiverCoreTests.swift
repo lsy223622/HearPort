@@ -3,6 +3,20 @@ import XCTest
 @testable import HearPortReceiver
 
 final class ReceiverCoreTests: XCTestCase {
+    func testSystemVolumeWireDistinguishesReadFromSetZero() throws {
+        let request = envelope(47, body: varintField(1, 7))
+        let mute = envelope(47, body: varintField(1, 7) + varintField(2, 0))
+        let report = envelope(48, body: varintField(1, 7) + varintField(2, 100))
+        for (bytes, message) in [(request, ControlMessage.systemVolumeRequest(id: 7, percent: nil)),
+                                 (mute, .systemVolumeRequest(id: 7, percent: 0)),
+                                 (report, .systemVolumeReport(id: 7, percent: 100))] {
+            XCTAssertEqual(try ControlEnvelope.decode(bytes).message, message)
+            XCTAssertEqual(try ControlEnvelope(message).encoded(), bytes)
+        }
+        XCTAssertThrowsError(try ControlEnvelope.decode(envelope(47, body: varintField(1, 7) + varintField(2, 101))))
+        XCTAssertThrowsError(try ControlEnvelope.decode(envelope(48, body: varintField(2, 50))))
+    }
+
     func testCoordinatedSetupAnd64BitClockCanonicalBytes() throws {
         let setup = envelope(40, body: varintField(1, 7) + varintField(2, 50) +
                                        varintField(3, 100) + varintField(4, 10))

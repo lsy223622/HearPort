@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -46,6 +47,8 @@ class SenderAuthentication {
   std::string pairing_pin() const;
   void SetConnectionHandler(std::function<void(bool, bool)> handler);
   void SetCalibrationRequestHandler(std::function<void(CalibrationOptions)> handler);
+  std::optional<std::uint32_t> SystemVolume();
+  bool RequestSystemVolume(std::optional<std::uint32_t> percent);
 
   bool HandleControlPayload(std::span<const std::byte> payload);
   void OnDebugSessionEnded(std::array<std::byte, 16> session_id,
@@ -80,6 +83,7 @@ class SenderAuthentication {
   bool HandleReportEnd(const wire::ControlEnvelope& envelope);
   bool StartMediaStream(bool diagnostic = false);
   bool ChoosePairingPin();
+  bool CanControlSystemVolume() const;
 
   SenderService& service_;
   mutable std::mutex mutex_;
@@ -104,6 +108,11 @@ class SenderAuthentication {
   bool peer_supports_adaptive_calibration_ = false;
   bool peer_supports_live_compression_ = false;
   bool peer_supports_calibration_ = false;
+  bool peer_supports_system_volume_ = false;
+  std::optional<std::uint32_t> system_volume_;
+  std::uint32_t volume_request_id_ = 0;
+  bool volume_request_pending_ = false;
+  std::chrono::steady_clock::time_point volume_requested_at_{};
   bool report_upload_active_ = false;
   std::array<std::byte, 16> report_upload_session_id_{};
   std::array<std::byte, 16> debug_session_id_{};

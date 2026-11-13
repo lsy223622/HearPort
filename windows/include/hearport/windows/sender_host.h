@@ -16,6 +16,8 @@ class SenderHost {
   bool RemovePairing();
   std::string pairing_pin() const;
   SenderService& service();
+  std::optional<std::uint32_t> SystemVolume();
+  bool RequestSystemVolume(std::optional<std::uint32_t> percent);
   bool WaitForDebugCompletion(std::chrono::milliseconds timeout);
   void SetConnectionHandler(ConnectionHandler handler) { handler_=std::move(handler); }
   void SetCalibrationRequestHandler(std::function<void(CalibrationOptions)> handler);
@@ -23,6 +25,7 @@ class SenderHost {
  private:
   bool Activate(unsigned index);
   void Connected(unsigned index,bool connected,bool reliable);
+  SenderAuthentication* ActiveAuthentication();
   std::unique_ptr<SenderService> services_[2];
   std::unique_ptr<SenderAuthentication> authentications_[2];
   std::shared_ptr<SenderPairingState> pairing_;
