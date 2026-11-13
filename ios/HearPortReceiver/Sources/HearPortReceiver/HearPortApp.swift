@@ -991,6 +991,7 @@ import AppIntents
     private var settingsView: some View {
         Form { [self] in
             playbackSettingsSection
+            SystemVolumeExperiment()
             Section { [self] in
                 Toggle("Automatically reconnect", isOn: binding(\.autoConnect))
                     .tint(.green)
