@@ -66,6 +66,10 @@ std::optional<SenderOptions> ParseSenderOptions(
       options.quic.has_certificate_spki_sha256 = true;
     } else if (argument == "--open-pairing") {
       options.open_pairing = true;
+    } else if (argument == "--capture=endpoint") {
+      options.capture_source = CaptureSource::endpoint;
+    } else if (argument == "--capture=process") {
+      options.capture_source = CaptureSource::process;
     } else if (argument.starts_with("--debug-seconds=")) {
       std::uint32_t seconds = 0;
       if (!ParseInteger(argument.substr(16), seconds) ||

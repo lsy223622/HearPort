@@ -16,6 +16,7 @@
   } while (false)
 
 using hearport::windows::ParseSenderOptions;
+using hearport::windows::CaptureSource;
 
 int main() {
   const auto ordinary_arguments = std::array<std::string_view, 3>{
@@ -27,6 +28,12 @@ int main() {
   assert(ordinary->quic.port == 52137);
   assert(!ordinary->open_pairing);
   assert(!ordinary->debug_seconds.has_value());
+  assert(ordinary->capture_source == CaptureSource::process);
+  const auto endpoint = ParseSenderOptions(std::array<std::string_view, 1>{"--capture=endpoint"});
+  assert(endpoint && endpoint->capture_source == CaptureSource::endpoint);
+  const auto process = ParseSenderOptions(std::array<std::string_view, 1>{"--capture=process"});
+  assert(process && process->capture_source == CaptureSource::process);
+  assert(!ParseSenderOptions(std::array<std::string_view, 1>{"--capture=unknown"}));
 
   for (const auto value : {"60", "300", "600", "610", "3600"}) {
     std::string debug_argument = "--debug-seconds=";

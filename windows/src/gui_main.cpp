@@ -43,6 +43,7 @@
 namespace {
 
 using hearport::windows::SenderAuthentication;
+using hearport::windows::CaptureSource;
 using hearport::windows::SenderDiagnosticLogger;
 using hearport::windows::SenderService;
 using Clock = std::chrono::steady_clock;
@@ -72,6 +73,7 @@ constexpr int kMusicTest = 115;
 constexpr int kCalibrationResults = 116;
 constexpr int kDetailedLogging = 117;
 constexpr int kIPadVolume = 118;
+constexpr int kCaptureSource = 119;
 constexpr int kTrayOpen = 201;
 constexpr int kTrayExit = 202;
 
@@ -189,15 +191,24 @@ bool SystemDarkMode() {
          light == 0;
 }
 
-bool SavePort(std::uint16_t port) {
+CaptureSource LoadCaptureSource() {
+  DWORD value = 0;
+  DWORD size = sizeof(value);
+  if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\HearPort", L"CaptureSource",
+                   RRF_RT_REG_DWORD, nullptr, &value, &size) == ERROR_SUCCESS && value == 1) {
+    return CaptureSource::endpoint;
+  }
+  return CaptureSource::process;
+}
+
+bool SaveSetting(const wchar_t* name, DWORD value) {
   HKEY key = nullptr;
   if (RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\HearPort", 0, nullptr,
                       0, KEY_SET_VALUE, nullptr, &key, nullptr) !=
       ERROR_SUCCESS) {
     return false;
   }
-  const DWORD value = port;
-  const bool saved = RegSetValueExW(key, L"Port", 0, REG_DWORD,
+  const bool saved = RegSetValueExW(key, name, 0, REG_DWORD,
                                     reinterpret_cast<const BYTE*>(&value),
                                     sizeof(value)) == ERROR_SUCCESS;
   RegCloseKey(key);
@@ -650,6 +661,14 @@ class Application {
             Tr(L"The TLS certificate is created locally and reused. Replacing it requires pairing again.",
                L"连接证书由程序在本机创建并复用；更换证书后需要重新配对。"),
             SS_LEFT, 0);
+    Control(2, L"STATIC", Tr(L"Audio capture", L"音频采集"), SS_LEFT | SS_CENTERIMAGE, 0);
+    capture_source_control_ = Control(2, WC_COMBOBOXW, L"",
+                                     WS_TABSTOP | CBS_DROPDOWNLIST, kCaptureSource);
+    for (const auto& label : {Tr(L"Process loopback", L"进程回环"),
+                              Tr(L"Default output device", L"默认输出设备")}) {
+      SendMessageW(capture_source_control_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label.c_str()));
+    }
+    SendMessageW(capture_source_control_, CB_SETCURSEL, capture_source_ == CaptureSource::endpoint, 0);
 
     footer_close_ = CreateWindowExW(
         0, L"BUTTON", Tr(L"Minimize to tray", L"最小化到托盘").c_str(),
@@ -669,7 +688,7 @@ class Application {
                  reinterpret_cast<WPARAM>(font_), TRUE);
     if (groups_[0].size() != 3 || groups_[1].size() != 2 ||
         groups_[2].size() != 2 || pages_[0].size() != 10 ||
-        pages_[1].size() != 11 || pages_[2].size() != 7 ||
+        pages_[1].size() != 11 || pages_[2].size() != 9 ||
         !port_frame_ || !port_edit_ || !footer_close_ || !footer_exit_) {
       return false;
     }
@@ -734,7 +753,9 @@ class Application {
     Place(settings[3], 5, 5, 78, 20);
     Place(settings[4], width - 162, 160, 118, 29);
     Place(settings[5], 44, 312, group_width - 24, 29);
-    Place(settings[6], 44, 211, group_width - 24, 51);
+    Place(settings[6], 44, 228, group_width - 24, 41);
+    Place(settings[7], 44, 196, 146, 28);
+    Place(settings[8], 196, 196, group_width - 176, 100);
 
     Place(footer_close_, width - 250, 428, 132, 29);
     Place(footer_exit_, width - 110, 428, 100, 29);
@@ -945,8 +966,14 @@ class Application {
     UpdateVolume();
     std::wstring heading;
     std::wstring detail;
-    std::wstring audio_label = Tr(L"Audio source: Windows default output",
-                                  L"音频来源：Windows 默认输出设备");
+    const auto source = connected_ && service_ ? service_->capture_source() : capture_source_;
+    std::wstring audio_label = source == CaptureSource::process
+        ? Tr(L"Audio source: Process loopback", L"音频来源：进程回环")
+        : Tr(L"Audio source: Windows default output", L"音频来源：Windows 默认输出设备");
+    const bool capture_enabled = !diagnostic_duration_ && !music_test_active_ && !unpair_pending_;
+    if (!!IsWindowEnabled(capture_source_control_) != capture_enabled) {
+      EnableWindow(capture_source_control_, capture_enabled);
+    }
     if (running_ && music_test_active_) {
       audio_label = Tr(L"Audio source: selected file excerpt", L"音频来源：所选文件的固定片段");
       const auto seconds = service_->music_test_frames_processed() / 48'000;
@@ -1224,6 +1251,7 @@ class Application {
     };
     host_ = std::make_unique<hearport::windows::SenderHost>(*identity, data_dir_ / L"diagnostics");
     host_->Configure([&](SenderService& service) {
+      service.ConfigureCaptureSource(capture_source_);
       service.ConfigureNetworkProbe(network_probe);
       service.ConfigureDebugDuration(diagnostics);
       if (calibration) service.ConfigureCalibration({static_cast<std::uint16_t>(calibration_seconds_), static_cast<std::uint16_t>(calibration_maximum_), calibration_goal_});
@@ -1636,6 +1664,25 @@ class Application {
     }
   }
 
+  void SaveCaptureSourceFromControl() {
+    const auto selection = SendMessageW(capture_source_control_, CB_GETCURSEL, 0, 0);
+    if (selection != 0 && selection != 1) return;
+    const auto source = selection == 1 ? CaptureSource::endpoint : CaptureSource::process;
+    if (source == capture_source_) return;
+    if (!SaveSetting(L"CaptureSource", static_cast<DWORD>(selection))) {
+      SendMessageW(capture_source_control_, CB_SETCURSEL, capture_source_ == CaptureSource::endpoint, 0);
+      MessageBoxW(hwnd_, Tr(L"Could not save audio capture settings.",
+                             L"无法保存音频采集设置。").c_str(), L"HearPort", MB_OK | MB_ICONERROR);
+      return;
+    }
+    capture_source_ = source;
+    if (running_) {
+      StopService();
+      StartService();
+    }
+    UpdateStatus();
+  }
+
   void SavePortFromControl() {
     wchar_t text[16]{};
     GetWindowTextW(port_edit_, text, ARRAYSIZE(text));
@@ -1647,7 +1694,7 @@ class Application {
                              .c_str(), L"HearPort", MB_OK | MB_ICONWARNING);
       return;
     }
-    if (!SavePort(static_cast<std::uint16_t>(value))) {
+    if (!SaveSetting(L"Port", static_cast<DWORD>(value))) {
       MessageBoxW(hwnd_, Tr(L"Could not save the port.", L"无法保存端口。")
                              .c_str(), L"HearPort", MB_OK | MB_ICONERROR);
       return;
@@ -1848,6 +1895,9 @@ class Application {
             logger_.SetDetailedLogging(SendMessageW(detailed_logging_, BM_GETCHECK, 0, 0) == BST_CHECKED);
             break;
           case kSavePort: SavePortFromControl(); break;
+          case kCaptureSource:
+            if (HIWORD(wparam) == CBN_SELCHANGE) SaveCaptureSourceFromControl();
+            break;
           case kAutoStart:
             if (!SetAutoStart(SendMessageW(auto_start_, BM_GETCHECK, 0, 0) ==
                               BST_CHECKED)) {
@@ -1985,6 +2035,8 @@ class Application {
   bool tray_ready_ = false;
   bool dark_ = false;
   std::uint16_t port_ = 52137;
+  CaptureSource capture_source_ = LoadCaptureSource();
+  HWND capture_source_control_ = nullptr;
   std::wstring error_;
   std::filesystem::path data_dir_;
   std::optional<Clock::time_point> pin_expires_;

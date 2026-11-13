@@ -55,7 +55,7 @@ else()
   target_compile_definitions(hearport_windows_platform PRIVATE HEARPORT_HAS_MSQUIC=0)
 endif()
 
-target_link_libraries(hearport_windows_platform PRIVATE ole32 avrt advapi32 crypt32 mfplat mfreadwrite mfuuid ws2_32 xmllite shlwapi dnsapi shell32)
+target_link_libraries(hearport_windows_platform PRIVATE ole32 avrt advapi32 crypt32 mfplat mfreadwrite mfuuid ws2_32 xmllite shlwapi dnsapi shell32 mmdevapi)
 
 add_executable(hearport_sender src/main.cpp)
 target_link_libraries(hearport_sender PRIVATE hearport_windows_platform)
