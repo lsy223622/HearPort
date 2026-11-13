@@ -76,6 +76,8 @@ class SenderService {
   bool ConfigurePlayoutBudget(std::uint32_t target_ms, std::uint32_t maximum_ms,
                               std::uint32_t output_reserve_ms);
   void ConfigureNetworkProbe(bool enabled);
+  void ConfigureCaptureSource(CaptureSource source) { capture_source_ = source; }
+  CaptureSource capture_source() const noexcept { return capture_.source(); }
   void ConfigureCalibration(CalibrationOptions options);
   bool adaptive_calibration() const { return calibration_options_ && calibration_options_->goal; }
   bool environment_calibration() const noexcept { return calibration_options_.has_value(); }
@@ -175,6 +177,7 @@ class SenderService {
   void StopCapture();
   std::unique_ptr<QuicServer> quic_;
   WasapiLoopbackCapture capture_;
+  CaptureSource capture_source_ = CaptureSource::process;
   std::optional<PcmNormalizer> normalizer_;
   std::optional<PcmFormat> normalizer_format_;
   AudioPacketizer packetizer_;

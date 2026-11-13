@@ -285,7 +285,8 @@ bool SenderService::BeginStream(
   if (!network_probe_ && !music_clip_ && !capture_started_) {
     if (!capture_.Start([this](std::span<const std::byte> bytes, const PcmFormat& format, std::uint64_t at) {
           HandleCapturePacket(bytes, format, at);
-        }, [this] { HandleCaptureReset(); })) return false;
+        }, [this] { HandleCaptureReset(); }, capture_source_,
+        [this](std::string_view line) { LogDiagnostic(line); })) return false;
     capture_started_ = true;
   }
   }

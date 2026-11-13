@@ -67,8 +67,16 @@ also preserve them. The iPad's
 **Keep screen awake** setting applies while HearPort is in the foreground;
 automatic tests also keep the screen awake while running.
 
-HearPort captures the Windows default output using shared-mode WASAPI Loopback
-and sends audio to the iPad. The receiver uses QUIC, local buffering, and audio
+HearPort uses WASAPI Process Loopback by default and excludes its own process
+tree. This captures app audio across output devices before their master volume
+or mute settings. Individual app volume settings still affect the mix. If
+Process Loopback cannot start, HearPort uses the Windows default output device.
+Choose **Settings → Audio capture → Default output device** to use that source
+explicitly. Its captured level can follow Windows output volume, depending on
+the device. Changing the selection restarts the sender. The command-line sender
+accepts `--capture=process` (default) or `--capture=endpoint`.
+
+The receiver uses QUIC, local buffering, and audio
 output timing to keep playback responsive through ordinary network variation.
 
 ## Diagnostics and evidence

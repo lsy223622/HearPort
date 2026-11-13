@@ -41,7 +41,8 @@ int main(int argc, char** argv) {
   auto parsed = hearport::windows::ParseSenderOptions(arguments);
   if (!parsed.has_value()) {
     std::cerr << "invalid sender arguments; --debug-seconds must be between "
-                 "60 and 3600, and certificate hashes must be valid hex\n";
+                 "60 and 3600, --capture must be process or endpoint, "
+                 "and certificate hashes must be valid hex\n";
     return 2;
   }
   auto options = std::move(parsed->quic);
@@ -84,6 +85,7 @@ int main(int argc, char** argv) {
 
   hearport::windows::SenderHost host(options, report_root);
   host.Configure([&](hearport::windows::SenderService& service) {
+    service.ConfigureCaptureSource(parsed->capture_source);
     service.ConfigureDebugDuration(debug_seconds.has_value() ? std::optional<std::chrono::seconds>(std::chrono::seconds(*debug_seconds)) : std::nullopt);
     service.SetDebugOutputDirectory(report_root);
   });
