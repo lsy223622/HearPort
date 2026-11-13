@@ -274,6 +274,10 @@ void TrayPopup::Update(bool connected, std::optional<std::uint32_t> volume) {
   impl_->connected = connected;
   impl_->volume = volume;
   if (!impl_->window) return;
+  if (!volume) {
+    impl_->dragging = false;
+    impl_->pending_value.reset();
+  }
   const auto title = connected ? Translate(L"iPad connected", L"iPad 已连接")
                                : Translate(L"iPad not connected", L"iPad 未连接");
   if (impl_->state.Text() != title) impl_->state.Text(title);
