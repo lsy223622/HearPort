@@ -12,6 +12,7 @@
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Graphics.h>
 #include <winrt/Windows.System.h>
+#include <winrt/Windows.UI.h>
 #include <winrt/Windows.UI.ViewManagement.h>
 #include <winrt/Microsoft.UI.Composition.h>
 #include <winrt/Microsoft.UI.Composition.SystemBackdrops.h>
@@ -37,6 +38,10 @@ using namespace winrt::Microsoft::UI::Xaml;
 using namespace winrt::Microsoft::UI::Xaml::Controls;
 using namespace winrt::Microsoft::UI::Xaml::Input;
 using namespace winrt::Microsoft::UI::Composition::SystemBackdrops;
+
+constexpr double kSliderWidth = 196;
+constexpr double kThumbDiameter = 18;
+constexpr double kTrackTravel = kSliderWidth - kThumbDiameter;
 
 const wchar_t* Translate(const wchar_t* english, const wchar_t* chinese) {
   return PRIMARYLANGID(GetUserDefaultUILanguage()) == LANG_CHINESE ? chinese : english;
@@ -95,15 +100,24 @@ struct TrayPopup::Impl {
   HWND hwnd = nullptr;
   HWND opening_foreground = nullptr;
   Dispatching::DispatcherQueueTimer dismiss_timer{nullptr};
+  Dispatching::DispatcherQueueTimer entrance_timer{nullptr};
+  std::chrono::steady_clock::time_point entrance_start;
+  int entrance_x = 0;
+  int entrance_y = 0;
+  int entrance_offset = 0;
   bool pointer_was_down = false;
   DesktopAcrylicController acrylic{nullptr};
   SystemBackdropConfiguration backdrop{nullptr};
   StackPanel content{nullptr};
+  Border frame{nullptr};
   StackPanel volume_row{nullptr};
   TextBlock state{nullptr};
   TextBlock percent{nullptr};
   Button open_button{nullptr};
   Slider slider{nullptr};
+  Border slider_fill{nullptr};
+  Border slider_thumb{nullptr};
+  Border slider_track{nullptr};
   bool updating = false;
   bool dragging = false;
   bool connected = false;
@@ -119,6 +133,9 @@ struct TrayPopup::Impl {
 
   void UpdateLabel() const {
     percent.Text(std::to_wstring(Position()) + L"%");
+    const double filled = kTrackTravel * slider.Value() / 100;
+    slider_fill.Width(filled);
+    Canvas::SetLeft(slider_thumb, filled);
   }
 
   void CancelDrag() {
@@ -129,6 +146,7 @@ struct TrayPopup::Impl {
   void Hide() {
     if (app_window && app_window.IsVisible()) {
       dismiss_timer.Stop();
+      entrance_timer.Stop();
       app_window.Hide();
       CancelDrag();
     }
@@ -195,22 +213,40 @@ struct TrayPopup::Impl {
     });
   }
 
-  void Animate(float from_y) {
-    if (!winrt::Windows::UI::ViewManagement::UISettings().AnimationsEnabled()) return;
-    using namespace std::chrono_literals;
-    const auto visual = Hosting::ElementCompositionPreview::GetElementVisual(content);
-    const auto compositor = visual.Compositor();
-    Hosting::ElementCompositionPreview::SetIsTranslationEnabled(content, true);
-    const auto slide = compositor.CreateScalarKeyFrameAnimation();
-    slide.Duration(170ms);
-    slide.InsertKeyFrame(0, from_y);
-    slide.InsertKeyFrame(1, 0, compositor.CreateCubicBezierEasingFunction({0.16f, 1}, {0.3f, 1}));
-    visual.Properties().StartAnimation(L"Translation.Y", slide);
-    const auto fade = compositor.CreateScalarKeyFrameAnimation();
-    fade.Duration(145ms);
-    fade.InsertKeyFrame(0, 0.35f);
-    fade.InsertKeyFrame(1, 1);
-    visual.StartAnimation(L"Opacity", fade);
+  void AdvanceEntrance() {
+    constexpr auto duration = std::chrono::milliseconds(350);
+    const auto now = std::chrono::steady_clock::now();
+    // WinUI can spend several frames creating its first surface.
+    if (entrance_start == std::chrono::steady_clock::time_point{}) entrance_start = now;
+    const double elapsed = std::chrono::duration<double>(now - entrance_start) / duration;
+    // Quintic ease-out: the surface clears the tray quickly and settles at its anchor.
+    const double remaining = 1 - std::clamp(elapsed, 0.0, 1.0);
+    const int offset = static_cast<int>(std::lround(entrance_offset * std::pow(remaining, 5)));
+    SetWindowPos(hwnd, nullptr, entrance_x, entrance_y + offset, 0, 0,
+                 SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    if (!offset) entrance_timer.Stop();
+  }
+
+  void UpdateChrome(ElementTheme theme) const {
+    using winrt::Windows::UI::Color;
+    using Media::SolidColorBrush;
+    const bool dark = theme == ElementTheme::Dark;
+    const bool high_contrast = winrt::Windows::UI::ViewManagement::AccessibilitySettings().HighContrast();
+    const auto system_color = [](int index) {
+      const auto rgb = GetSysColor(index);
+      return Color{255, GetRValue(rgb), GetGValue(rgb), GetBValue(rgb)};
+    };
+    const auto accent = winrt::Windows::UI::ViewManagement::UISettings().GetColorValue(
+        dark ? winrt::Windows::UI::ViewManagement::UIColorType::AccentLight2
+             : winrt::Windows::UI::ViewManagement::UIColorType::AccentDark1);
+    frame.BorderBrush(SolidColorBrush(high_contrast ? system_color(COLOR_WINDOWTEXT)
+        : dark ? Color{48, 255, 255, 255} : Color{42, 0, 0, 0}));
+    slider_track.Background(SolidColorBrush(high_contrast ? system_color(COLOR_WINDOWTEXT)
+        : dark ? Color{255, 157, 157, 157} : Color{255, 122, 122, 122}));
+    slider_fill.Background(SolidColorBrush(high_contrast ? system_color(COLOR_HIGHLIGHT) : accent));
+    slider_thumb.Background(slider_fill.Background());
+    slider_thumb.BorderBrush(SolidColorBrush(high_contrast ? system_color(COLOR_WINDOW)
+        : dark ? Color{255, 67, 67, 67} : Color{255, 234, 234, 234}));
   }
 
   void Create() {
@@ -247,6 +283,9 @@ struct TrayPopup::Impl {
     dismiss_timer = dispatcher.DispatcherQueue().CreateTimer();
     dismiss_timer.Interval(std::chrono::milliseconds(25));
     dismiss_timer.Tick([this](auto&&, auto&&) { CheckDismiss(); });
+    entrance_timer = dispatcher.DispatcherQueue().CreateTimer();
+    entrance_timer.Interval(std::chrono::milliseconds(16));
+    entrance_timer.Tick([this](auto&&, auto&&) { AdvanceEntrance(); });
 
     content = StackPanel();
     content.Padding({18, 15, 18, 12});
@@ -278,14 +317,44 @@ struct TrayPopup::Impl {
     percent.TextAlignment(TextAlignment::Right);
     percent.VerticalAlignment(VerticalAlignment::Center);
     slider = Slider();
-    slider.Width(196);
+    slider.Width(kSliderWidth);
     slider.Minimum(0);
     slider.Maximum(100);
     slider.StepFrequency(1);
     slider.IsThumbToolTipEnabled(false);
     Automation::AutomationProperties::SetName(slider, Translate(L"iPad volume", L"iPad 音量"));
+    Grid slider_surface;
+    slider_surface.Width(kSliderWidth);
+    slider_surface.Height(32);
+    Canvas slider_art;
+    slider_art.IsHitTestVisible(false);
+    slider_track = Border();
+    slider_track.Width(kTrackTravel);
+    slider_track.Height(4);
+    slider_track.CornerRadius({2, 2, 2, 2});
+    Canvas::SetLeft(slider_track, kThumbDiameter / 2);
+    Canvas::SetTop(slider_track, 14);
+    slider_fill = Border();
+    slider_fill.Height(4);
+    slider_fill.CornerRadius({2, 2, 2, 2});
+    Canvas::SetLeft(slider_fill, kThumbDiameter / 2);
+    Canvas::SetTop(slider_fill, 14);
+    slider_thumb = Border();
+    slider_thumb.Width(kThumbDiameter);
+    slider_thumb.Height(kThumbDiameter);
+    slider_thumb.CornerRadius({9, 9, 9, 9});
+    slider_thumb.BorderThickness({4, 4, 4, 4});
+    Canvas::SetTop(slider_thumb, 7);
+    slider_art.Children().Append(slider_track);
+    slider_art.Children().Append(slider_fill);
+    slider_art.Children().Append(slider_thumb);
+    slider.Opacity(0);
+    slider.GotFocus([this](auto&&, auto&&) { slider_thumb.BorderThickness({3, 3, 3, 3}); });
+    slider.LostFocus([this](auto&&, auto&&) { slider_thumb.BorderThickness({4, 4, 4, 4}); });
+    slider_surface.Children().Append(slider);
+    slider_surface.Children().Append(slider_art);
     volume_row.Children().Append(speaker);
-    volume_row.Children().Append(slider);
+    volume_row.Children().Append(slider_surface);
     volume_row.Children().Append(percent);
     content.Children().Append(volume_row);
 
@@ -339,7 +408,15 @@ struct TrayPopup::Impl {
       args.Handled(true);
       Hide();
     });
-    window.Content(content);
+    frame = Border();
+    frame.CornerRadius({8, 8, 8, 8});
+    frame.BorderThickness({1, 1, 1, 1});
+    frame.Child(content);
+    window.Content(frame);
+    UpdateChrome(frame.ActualTheme());
+    frame.ActualThemeChanged([this](FrameworkElement const& root, auto&&) {
+      UpdateChrome(root.ActualTheme());
+    });
     ApplyBackdrop(content);
   }
 };
@@ -352,6 +429,7 @@ TrayPopup::~TrayPopup() {
   *impl_->alive = false;
   if (impl_->window) {
     if (impl_->dismiss_timer) impl_->dismiss_timer.Stop();
+    if (impl_->entrance_timer) impl_->entrance_timer.Stop();
     if (impl_->acrylic) impl_->acrylic.Close();
     if (impl_->hwnd) RemoveWindowSubclass(impl_->hwnd, Impl::WindowProc, 1);
     if (impl_->closing.value) impl_->window.Closed(impl_->closing);
@@ -383,12 +461,19 @@ HRESULT TrayPopup::Show(const RECT& anchor) {
   const int above = anchor.top - height - scale(8);
   const int preferred_y = above >= work.top ? above : anchor.bottom + scale(8);
   const int y = std::clamp<int>(preferred_y, work.top, std::max<int>(work.top, work.bottom - height));
-  impl_->app_window.MoveAndResize({x, y, width, height});
+  impl_->entrance_x = x;
+  impl_->entrance_y = y;
+  impl_->entrance_offset = winrt::Windows::UI::ViewManagement::UISettings().AnimationsEnabled()
+      ? scale(preferred_y == above ? 32 : -32) : 0;
+  impl_->app_window.MoveAndResize({x, y + impl_->entrance_offset, width, height});
   impl_->opening_foreground = GetForegroundWindow();
   impl_->pointer_was_down = Impl::PointerDown();
   impl_->window.Activate();
   SetForegroundWindow(impl_->hwnd);
-  impl_->Animate(preferred_y == above ? 9.0f : -9.0f);
+  if (impl_->entrance_offset) {
+    impl_->entrance_start = {};
+    impl_->entrance_timer.Start();
+  }
   impl_->dismiss_timer.Start();
   impl_->open_button.Focus(FocusState::Programmatic);
   return S_OK;
@@ -413,6 +498,11 @@ void TrayPopup::Update(bool connected, std::optional<std::uint32_t> volume) {
   if (impl_->volume_row.Visibility() != visibility) {
     impl_->volume_row.Visibility(visibility);
     if (visible()) {
+      if (impl_->entrance_timer.IsRunning()) {
+        impl_->entrance_timer.Stop();
+        SetWindowPos(impl_->hwnd, nullptr, impl_->entrance_x, impl_->entrance_y, 0, 0,
+                     SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+      }
       auto size = impl_->app_window.Size();
       auto position = impl_->app_window.Position();
       const int height = MulDiv(volume ? 142 : 104, size.Width, 320);
