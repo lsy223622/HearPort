@@ -15,6 +15,7 @@ public final class ReceiverControlSession {
     private var deferActivation = false
     private var activated = false
     public var onReady: (() -> Void)?
+    var onSystemVolumeRequest: ((UInt32?, @escaping (UInt32?) -> Void) -> Void)?
     public var onAudioFormat: ((AudioStreamFormat) -> Void)?
     public var onError: ((String) -> Void)?
     public var onAuthenticationRejected: ((String) -> Void)?
@@ -442,6 +443,7 @@ public final class ReceiverControlSession {
         let features = ControlFeature.diagnosticsUpload | ControlFeature.networkProbe |
             ControlFeature.networkProbeRepeat | ControlFeature.coordinatedAudio | ControlFeature.musicTest | ControlFeature.environmentCalibration |
             ControlFeature.compressionMusic | ControlFeature.liveCompression | ControlFeature.adaptiveCalibration |
+            ControlFeature.systemVolume |
             (audioMode == .reliable ? ControlFeature.reliableAudio : 0)
         let envelope = ControlEnvelope(.connectRequest(authMode: mode,
                                                        peerID: peerID,
@@ -562,6 +564,21 @@ public final class ReceiverControlSession {
             ]
         )
         switch envelope.message {
+        case let .systemVolumeRequest(id, percent):
+            guard ready, !ending, mode != .oneTime,
+                  (peerFeatures & ControlFeature.systemVolume) != 0 else { return }
+            guard let streamID = activeAudioStreamID, let onSystemVolumeRequest else {
+                send(.systemVolumeReport(id: id, percent: nil))
+                return
+            }
+            onSystemVolumeRequest(percent) { [weak self] actual in
+                guard let self else { return }
+                self.transport.perform { [weak self] in
+                    guard let self, self.ready, !self.ending,
+                          self.activeAudioStreamID == streamID else { return }
+                    self.send(.systemVolumeReport(id: id, percent: actual))
+                }
+            }
         case let .pairSpakeA(peerPoint):
             diagnostics.log(
                 .info,
@@ -1037,7 +1054,7 @@ public final class ReceiverControlSession {
         case .connectRequest, .pairSpakeB, .pairConfirmB,
              .authResponse, .startStreamAck, .receiverReady,
              .diagnosticsReportStart, .diagnosticsReportChunk,
-             .diagnosticsReportEnd, .audioProgress, .clockRequest, .repairRequest:
+             .diagnosticsReportEnd, .audioProgress, .clockRequest, .repairRequest, .systemVolumeReport:
             throw PairingSecurityError.providerFailure(-4)
         }
     }

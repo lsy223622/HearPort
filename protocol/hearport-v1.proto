@@ -151,6 +151,16 @@ message RepairRequest {
   repeated uint32 sequences = 4 [packed = false];
 }
 
+// Negotiated by feature bit 2048 on an authenticated playback session.
+message SystemVolumeRequest {
+  uint32 request_id = 1;
+  optional uint32 volume_percent = 2; // 0–100. Omitted to read.
+}
+message SystemVolumeReport {
+  uint32 request_id = 1;
+  optional uint32 volume_percent = 2; // 0–100. Omitted when unavailable.
+}
+
 message ErrorMessage {
   ErrorCode code = 1;                // ERROR_CODE_UNSPECIFIED is invalid
   string message = 2;                // diagnostic only
@@ -189,5 +199,7 @@ message ControlEnvelope {
     ProbeManifest probe_manifest = 44;
     SessionEnd session_end = 45;
     SessionEndAck session_end_ack = 46;
+    SystemVolumeRequest system_volume_request = 47;
+    SystemVolumeReport system_volume_report = 48;
   }
 }

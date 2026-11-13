@@ -39,6 +39,8 @@ enum class ControlMessageType : std::uint8_t {
   clock_request,
   clock_response,
   repair_request,
+  system_volume_request,
+  system_volume_report,
 };
 
 inline constexpr std::uint32_t kFeatureDiagnosticsUpload = 1u;
@@ -52,6 +54,7 @@ inline constexpr std::uint32_t kFeatureTimedDiagnostics = 128u;
 inline constexpr std::uint32_t kFeatureCompressionMusic = 256u;
 inline constexpr std::uint32_t kFeatureLiveCompression = 512u;
 inline constexpr std::uint32_t kFeatureAdaptiveCalibration = 1024u;
+inline constexpr std::uint32_t kFeatureSystemVolume = 2048u;
 inline constexpr std::size_t kDiagnosticReportChunkMaxBytes = 60u * 1024u;
 
 // This is the small, schema-shaped value used at the platform boundary. The
@@ -83,6 +86,7 @@ struct ControlEnvelope {
   std::uint32_t audio_frame_count = 0;
   std::uint32_t codec_lookahead_frames = 0;
   std::uint32_t request_id = 0;
+  std::optional<std::uint32_t> volume_percent;
   std::uint64_t local_sent_ns = 0;
   std::uint64_t remote_received_ns = 0;
   std::uint64_t remote_sent_ns = 0;

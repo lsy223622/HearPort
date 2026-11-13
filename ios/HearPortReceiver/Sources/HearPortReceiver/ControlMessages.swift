@@ -32,6 +32,7 @@ public enum ControlFeature {
     public static let compressionMusic: UInt32 = 256
     public static let liveCompression: UInt32 = 512
     public static let adaptiveCalibration: UInt32 = 1024
+    public static let systemVolume: UInt32 = 2048
 }
 
 public struct AudioProgressTiming: Equatable, Sendable {
@@ -74,6 +75,8 @@ public enum ControlMessage: Equatable, Sendable {
                        remoteReceived: UInt64, remoteSent: UInt64)
     case repairRequest(streamID: UInt32, generation: UInt32,
                        remainingMilliseconds: UInt32, sequences: [UInt32])
+    case systemVolumeRequest(id: UInt32, percent: UInt32?)
+    case systemVolumeReport(id: UInt32, percent: UInt32?)
 
     public var diagnosticName: String {
         switch self {
@@ -104,6 +107,8 @@ public enum ControlMessage: Equatable, Sendable {
         case .clockRequest: return "clock_request"
         case .clockResponse: return "clock_response"
         case .repairRequest: return "repair_request"
+        case .systemVolumeRequest: return "system_volume_request"
+        case .systemVolumeReport: return "system_volume_report"
         }
     }
 }
@@ -119,6 +124,13 @@ public struct ControlEnvelope: Equatable, Sendable {
         let body: Data
         let field: UInt32
         switch message {
+        case let .systemVolumeRequest(id, percent), let .systemVolumeReport(id, percent):
+            guard id != 0, (percent ?? 0) <= 100 else { throw ControlMessageError.invalidMessage }
+            var writer = ProtoWriter()
+            writer.writeVarintField(1, value: id)
+            if let percent { writer.writeVarintField(2, value: percent) }
+            body = writer.data
+            if case .systemVolumeRequest = message { field = 47 } else { field = 48 }
         case let .connectRequest(authMode, peerID, features):
             guard (authMode == .remembered && peerID.count == 16) ||
                     (authMode != .remembered && peerID.isEmpty) else {
@@ -347,7 +359,7 @@ public struct ControlEnvelope: Equatable, Sendable {
                 continue
             }
             switch outer.field {
-            case 1, 2, 3, 10, 11, 12, 13, 14, 20, 21, 30, 31, 32...46:
+            case 1, 2, 3, 10, 11, 12, 13, 14, 20, 21, 30, 31, 32...48:
                 selected = (outer.field, body)
             default:
                 lastUnknownField = outer.field
@@ -375,6 +387,16 @@ public struct ControlEnvelope: Equatable, Sendable {
             guard case let .varint(reason)? = fields[1], reason == 1 || reason == 2 || reason == 3 else { throw ControlMessageError.invalidMessage }
             message = .sessionEnd(reason: reason)
         case 46: message = try parseEmpty(selected.body, .sessionEndAck)
+        case 47, 48:
+            let fields = try parseFields(selected.body)
+            guard case let .varint(id)? = fields[1], id != 0 else { throw ControlMessageError.invalidMessage }
+            var percent: UInt32?
+            if case let .varint(value)? = fields[2] {
+                guard value <= 100 else { throw ControlMessageError.invalidMessage }
+                percent = value
+            }
+            message = selected.field == 47 ? .systemVolumeRequest(id: id, percent: percent)
+                                           : .systemVolumeReport(id: id, percent: percent)
         case 32: message = try parseEmpty(selected.body, .receiverReady)
         case 33: message = try parseDiagnosticsStart(selected.body)
         case 34: message = try parseDiagnosticsEnd(selected.body)
