@@ -294,6 +294,14 @@ class Application {
 
     MSG message{};
     while (GetMessageW(&message, nullptr, 0, 0) > 0) {
+      if (tray_popup_ && IsWindowVisible(tray_popup_) &&
+          (message.hwnd == tray_popup_ || IsChild(tray_popup_, message.hwnd))) {
+        if (message.message == WM_KEYDOWN && message.wParam == VK_ESCAPE) {
+          ShowWindow(tray_popup_, SW_HIDE);
+          continue;
+        }
+        if (IsDialogMessageW(tray_popup_, &message)) continue;
+      }
       if (!IsDialogMessageW(hwnd_, &message)) {
         TranslateMessage(&message);
         DispatchMessageW(&message);
@@ -807,6 +815,12 @@ class Application {
       InvalidateRect(button, nullptr, TRUE);
     }
     InvalidateRect(hwnd_, nullptr, TRUE);
+    if (tray_popup_ && dark_ != was_dark) {
+      for (HWND control : {tray_volume_label_, tray_volume_slider_, tray_open_}) {
+        SetWindowTheme(control, dark_ ? L"DarkMode_Explorer" : nullptr, nullptr);
+      }
+      RedrawWindow(tray_popup_, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
+    }
     if (tray_ready_ && dark_ != was_dark) {
       NOTIFYICONDATAW icon{};
       icon.cbSize = sizeof(icon);
@@ -853,11 +867,117 @@ class Application {
   }
 
   void ShowWindowFromTray() {
+    if (tray_popup_) ShowWindow(tray_popup_, SW_HIDE);
     ShowWindow(hwnd_, SW_RESTORE);
     SetForegroundWindow(hwnd_);
   }
 
+  static LRESULT CALLBACK TrayPopupProc(HWND hwnd, UINT message, WPARAM wparam,
+                                        LPARAM lparam, UINT_PTR id, DWORD_PTR data) {
+    auto* app = reinterpret_cast<Application*>(data);
+    switch (message) {
+      case WM_ACTIVATE:
+        if (LOWORD(wparam) == WA_INACTIVE) ShowWindow(hwnd, SW_HIDE);
+        break;
+      case WM_CLOSE:
+        ShowWindow(hwnd, SW_HIDE);
+        return 0;
+      case WM_COMMAND:
+        if (LOWORD(wparam) == kTrayOpen) {
+          app->ShowWindowFromTray();
+          return 0;
+        }
+        break;
+      case WM_HSCROLL:
+        if (reinterpret_cast<HWND>(lparam) == app->tray_volume_slider_) {
+          if (!app->volume_editing_) app->CommitVolume(app->tray_volume_slider_, true);
+          return 0;
+        }
+        break;
+      case WM_CTLCOLORSTATIC:
+        SetBkMode(reinterpret_cast<HDC>(wparam), TRANSPARENT);
+        SetTextColor(reinterpret_cast<HDC>(wparam),
+            app->dark_ ? RGB(242, 242, 242) : GetSysColor(COLOR_WINDOWTEXT));
+        return reinterpret_cast<LRESULT>(app->TrayPopupBrush());
+      case WM_ERASEBKGND: {
+        RECT area{};
+        GetClientRect(hwnd, &area);
+        FillRect(reinterpret_cast<HDC>(wparam), &area, app->TrayPopupBrush());
+        return 1;
+      }
+      case WM_NCDESTROY:
+        RemoveWindowSubclass(hwnd, TrayPopupProc, id);
+        break;
+    }
+    return DefSubclassProc(hwnd, message, wparam, lparam);
+  }
+
+  HBRUSH TrayPopupBrush() const {
+    return dark_ ? dark_brush_ : GetSysColorBrush(COLOR_WINDOW);
+  }
+
+  void ToggleTrayPopup(POINT anchor) {
+    if (tray_popup_ && IsWindowVisible(tray_popup_)) {
+      ShowWindow(tray_popup_, SW_HIDE);
+      return;
+    }
+    if (!tray_popup_) {
+      tray_popup_ = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_CONTROLPARENT,
+          L"STATIC", L"HearPort", WS_POPUP | WS_BORDER | WS_CLIPCHILDREN, anchor.x, anchor.y, 0, 0,
+          hwnd_, nullptr, instance_, nullptr);
+      if (!tray_popup_) return;
+      SetWindowSubclass(tray_popup_, TrayPopupProc, 1, reinterpret_cast<DWORD_PTR>(this));
+      tray_volume_label_ = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE,
+          0, 0, 0, 0, tray_popup_, nullptr, instance_, nullptr);
+      tray_volume_slider_ = CreateWindowExW(0, TRACKBAR_CLASSW, L"",
+          WS_CHILD | WS_VISIBLE | WS_TABSTOP | TBS_NOTICKS,
+          0, 0, 0, 0, tray_popup_, nullptr, instance_, nullptr);
+      tray_open_ = CreateWindowExW(0, L"BUTTON", Tr(L"Open HearPort", L"打开 HearPort").c_str(),
+          WS_CHILD | WS_VISIBLE | WS_TABSTOP, 0, 0, 0, 0, tray_popup_,
+          reinterpret_cast<HMENU>(static_cast<INT_PTR>(kTrayOpen)), instance_, nullptr);
+      if (!tray_volume_label_ || !tray_volume_slider_ || !tray_open_) {
+        DestroyWindow(tray_popup_);
+        tray_popup_ = tray_volume_label_ = tray_volume_slider_ = tray_open_ = nullptr;
+        return;
+      }
+      SendMessageW(tray_volume_slider_, TBM_SETRANGE, FALSE, MAKELPARAM(0, 100));
+      SetWindowSubclass(tray_volume_slider_, VolumeSubclassProc, 1, reinterpret_cast<DWORD_PTR>(this));
+    }
+    NOTIFYICONIDENTIFIER icon{sizeof(icon), hwnd_, kTrayIcon};
+    RECT bounds{anchor.x, anchor.y, anchor.x, anchor.y};
+    if (FAILED(Shell_NotifyIconGetRect(&icon, &bounds))) {
+      bounds = {anchor.x, anchor.y, anchor.x, anchor.y};
+    }
+    MONITORINFO monitor{sizeof(monitor)};
+    if (!GetMonitorInfoW(MonitorFromRect(&bounds, MONITOR_DEFAULTTONEAREST), &monitor)) return;
+    // Move to the icon's monitor before measuring the popup and its controls.
+    SetWindowPos(tray_popup_, nullptr, bounds.left, bounds.top, 0, 0, SWP_NOACTIVATE | SWP_NOZORDER);
+    const auto popup_dpi = GetDpiForWindow(tray_popup_);
+    const auto scale = [popup_dpi](int value) { return MulDiv(value, popup_dpi, 96); };
+    const int width = scale(330);
+    const int height = scale(108);
+    const auto& work = monitor.rcWork;
+    const int x = std::clamp<int>(bounds.right - width, work.left, std::max<int>(work.left, work.right - width));
+    const int preferred_y = bounds.top >= work.top + height ? bounds.top - height : bounds.bottom;
+    const int y = std::clamp<int>(preferred_y, work.top, std::max<int>(work.top, work.bottom - height));
+    const auto previous_font = tray_font_;
+    tray_font_ = hearport::windows::CreateGuiFont(popup_dpi, GetUserDefaultUILanguage());
+    for (HWND control : {tray_volume_label_, tray_volume_slider_, tray_open_}) {
+      SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(tray_font_), FALSE);
+      SetWindowTheme(control, dark_ ? L"DarkMode_Explorer" : nullptr, nullptr);
+    }
+    if (previous_font) DeleteObject(previous_font);
+    MoveWindow(tray_volume_label_, scale(16), scale(13), scale(142), scale(30), TRUE);
+    MoveWindow(tray_volume_slider_, scale(156), scale(13), scale(158), scale(30), TRUE);
+    MoveWindow(tray_open_, scale(179), scale(60), scale(135), scale(30), TRUE);
+    UpdateVolume();
+    SetWindowPos(tray_popup_, HWND_TOPMOST, x, y, width, height, SWP_SHOWWINDOW);
+    SetForegroundWindow(tray_popup_);
+    SetFocus(IsWindowEnabled(tray_volume_slider_) ? tray_volume_slider_ : tray_open_);
+  }
+
   void ShowTrayMenu() {
+    if (tray_popup_) ShowWindow(tray_popup_, SW_HIDE);
     HMENU menu = CreatePopupMenu();
     if (!menu) return;
     const std::wstring open = Tr(L"Open HearPort", L"打开 HearPort");
@@ -885,26 +1005,26 @@ class Application {
         SendMessageW(hwnd, TBM_GETTHUMBRECT, 0, reinterpret_cast<LPARAM>(&thumb));
         const POINT point{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
         SetFocus(hwnd);
-        app->volume_drag_start_ = app->VolumePosition();
+        app->volume_drag_start_ = app->VolumePosition(hwnd);
         const bool on_thumb = PtInRect(&thumb, point) != FALSE;
         app->volume_drag_offset_ = on_thumb
             ? point.x - (thumb.left + thumb.right) / 2 : 0;
         app->volume_editing_ = true;
         SetCapture(hwnd);
-        if (!on_thumb) app->MoveVolumeThumb(point.x);
+        if (!on_thumb) app->MoveVolumeThumb(hwnd, point.x);
         return 0;
       }
       case WM_MOUSEMOVE:
         if (GetCapture() != hwnd) break;
-        app->MoveVolumeThumb(GET_X_LPARAM(lparam));
+        app->MoveVolumeThumb(hwnd, GET_X_LPARAM(lparam));
         return 0;
       case WM_LBUTTONUP:
         if (GetCapture() != hwnd) break;
-        app->CommitVolume(app->VolumePosition() != app->volume_drag_start_);
+        app->CommitVolume(hwnd, app->VolumePosition(hwnd) != app->volume_drag_start_);
         ReleaseCapture();
         return 0;
       case WM_CAPTURECHANGED:
-        if (app->volume_editing_) app->CommitVolume(false);
+        if (app->volume_editing_) app->CommitVolume(hwnd, false);
         break;
       case WM_NCDESTROY:
         RemoveWindowSubclass(hwnd, VolumeSubclassProc, subclass_id);
@@ -913,33 +1033,40 @@ class Application {
     return DefSubclassProc(hwnd, message, wparam, lparam);
   }
 
-  std::uint32_t VolumePosition() const {
-    return static_cast<std::uint32_t>(SendMessageW(volume_slider_, TBM_GETPOS, 0, 0));
+  static std::uint32_t VolumePosition(HWND slider) {
+    return static_cast<std::uint32_t>(SendMessageW(slider, TBM_GETPOS, 0, 0));
   }
 
-  void MoveVolumeThumb(int x) {
+  void MoveVolumeThumb(HWND slider, int x) {
     RECT channel{};
-    SendMessageW(volume_slider_, TBM_GETCHANNELRECT, 0, reinterpret_cast<LPARAM>(&channel));
+    SendMessageW(slider, TBM_GETCHANNELRECT, 0, reinterpret_cast<LPARAM>(&channel));
     if (channel.right <= channel.left) return;
     const int offset = std::clamp<int>(x - volume_drag_offset_ - channel.left, 0,
                                        channel.right - channel.left);
     const auto percent = MulDiv(offset, 100, channel.right - channel.left);
-    if (VolumePosition() != static_cast<std::uint32_t>(percent)) {
-      SendMessageW(volume_slider_, TBM_SETPOS, TRUE, percent);
+    SetVolumePosition(percent);
+    UpdateVolumeLabels();
+  }
+
+  void SetVolumePosition(std::uint32_t percent) {
+    for (HWND slider : {volume_slider_, tray_volume_slider_}) {
+      if (slider && VolumePosition(slider) != percent) SendMessageW(slider, TBM_SETPOS, TRUE, percent);
     }
-    UpdateVolumeLabel();
   }
 
-  void UpdateVolumeLabel() {
+  void UpdateVolumeLabels() {
     const auto label = Tr(L"iPad volume", L"iPad 音量") +
-        (IsWindowEnabled(volume_slider_) ? L"  " + std::to_wstring(VolumePosition()) + L"%" : L"");
+        (IsWindowEnabled(volume_slider_) ? L"  " + std::to_wstring(VolumePosition(volume_slider_)) + L"%" : L"");
     SetTextIfChanged(volume_label_, label.c_str());
+    if (tray_volume_label_) SetTextIfChanged(tray_volume_label_, label.c_str());
   }
 
-  void CommitVolume(bool changed) {
+  void CommitVolume(HWND slider, bool changed) {
     volume_editing_ = false;
-    if (changed && host_ && connected_ && IsWindowEnabled(volume_slider_)) {
-      host_->RequestSystemVolume(VolumePosition());
+    if (changed && host_ && connected_ && IsWindowEnabled(slider)) {
+      const auto percent = VolumePosition(slider);
+      SetVolumePosition(percent);
+      host_->RequestSystemVolume(percent);
     }
     UpdateVolume();
   }
@@ -950,16 +1077,20 @@ class Application {
                                             : hearport::windows::SystemVolumeState{};
     if (!volume.percent) {
       volume_editing_ = false;
-      if (GetCapture() == volume_slider_) ReleaseCapture();
+      const auto captured = GetCapture();
+      if (captured && (captured == volume_slider_ || captured == tray_volume_slider_)) ReleaseCapture();
     }
-    if (!!IsWindowEnabled(volume_slider_) != volume.percent.has_value()) {
-      EnableWindow(volume_slider_, volume.percent.has_value());
+    for (HWND slider : {volume_slider_, tray_volume_slider_}) {
+      if (slider && !!IsWindowEnabled(slider) != volume.percent.has_value()) {
+        EnableWindow(slider, volume.percent.has_value());
+      }
     }
-    if (volume.percent && !volume_editing_ && !volume.adjusting &&
-        VolumePosition() != *volume.percent) {
-      SendMessageW(volume_slider_, TBM_SETPOS, TRUE, *volume.percent);
+    if (volume.percent && !volume_editing_ && !volume.adjusting) {
+      SetVolumePosition(*volume.percent);
+    } else if (tray_volume_slider_) {
+      SetVolumePosition(VolumePosition(volume_slider_));
     }
-    UpdateVolumeLabel();
+    UpdateVolumeLabels();
   }
 
   void UpdateStatus() {
@@ -1820,12 +1951,7 @@ class Application {
         if (!volume_slider_ || reinterpret_cast<HWND>(lparam) != volume_slider_) {
           return DefWindowProcW(hwnd_, message, wparam, lparam);
         }
-        if (LOWORD(wparam) == TB_ENDTRACK) {
-          CommitVolume(volume_editing_);
-        } else {
-          volume_editing_ = true;
-          UpdateVolumeLabel();
-        }
+        if (!volume_editing_) CommitVolume(volume_slider_, true);
         return 0;
       case WM_SIZE:
         if (wparam == SIZE_MINIMIZED) {
@@ -1915,9 +2041,8 @@ class Application {
         }
         return 0;
       case kTrayMessage:
-        if (LOWORD(lparam) == WM_LBUTTONDBLCLK ||
-            LOWORD(lparam) == NIN_SELECT) {
-          ShowWindowFromTray();
+        if (LOWORD(lparam) == NIN_SELECT || LOWORD(lparam) == NIN_KEYSELECT) {
+          ToggleTrayPopup({GET_X_LPARAM(wparam), GET_Y_LPARAM(wparam)});
         } else if (LOWORD(lparam) == WM_RBUTTONUP ||
                    LOWORD(lparam) == WM_CONTEXTMENU) {
           ShowTrayMenu();
@@ -1957,9 +2082,12 @@ class Application {
       }
       case WM_DESTROY:
         KillTimer(hwnd_, kTimer);
+        if (tray_popup_) DestroyWindow(tray_popup_);
+        tray_popup_ = tray_volume_slider_ = tray_volume_label_ = tray_open_ = nullptr;
         RemoveTrayIcon();
         StopService();
         if (font_) DeleteObject(font_);
+        if (tray_font_) DeleteObject(tray_font_);
         DeleteObject(dark_brush_);
         DeleteObject(page_brush_);
         DeleteObject(edit_brush_);
@@ -1993,6 +2121,11 @@ class Application {
   HWND status_ = nullptr;
   HWND volume_label_ = nullptr;
   HWND volume_slider_ = nullptr;
+  HWND tray_popup_ = nullptr;
+  HWND tray_volume_label_ = nullptr;
+  HWND tray_volume_slider_ = nullptr;
+  HWND tray_open_ = nullptr;
+  HFONT tray_font_ = nullptr;
   bool volume_editing_ = false;
   std::uint32_t volume_drag_start_ = 0;
   int volume_drag_offset_ = 0;

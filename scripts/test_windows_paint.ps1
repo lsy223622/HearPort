@@ -19,6 +19,8 @@ public static class HearPortPaintCheck {
     [DllImport("gdi32.dll")] static extern IntPtr CreateRectRgn(int l, int t, int r, int b);
     [DllImport("user32.dll")] static extern IntPtr GetParent(IntPtr window);
     [DllImport("user32.dll")] static extern IntPtr GetWindow(IntPtr window, uint command);
+    [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr window);
+    [DllImport("user32.dll")] static extern bool IsWindowEnabled(IntPtr window);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern IntPtr SendMessage(IntPtr window, uint message, IntPtr wp, IntPtr lp);
     [DllImport("gdi32.dll")] static extern bool DeleteObject(IntPtr obj);
     [StructLayout(LayoutKind.Sequential)] struct Rect { public int Left, Top, Right, Bottom; }
@@ -62,6 +64,29 @@ public static class HearPortPaintCheck {
             finally { DeleteObject(region); }
         }
         if(groups!=7) errors.Add("Expected seven page groups");
+        const uint trayMessage = 0x8001;
+        var traySelect = new IntPtr(0x0400);
+        SendMessage(root, trayMessage, IntPtr.Zero, traySelect);
+        IntPtr popup = IntPtr.Zero;
+        EnumWindows((w,d) => {
+            var name = new StringBuilder(64);
+            GetClassName(w,name,64);
+            if (GetWindow(w,4)==root && name.ToString()=="Static" && IsWindowVisible(w)) popup=w;
+            return true;
+        },IntPtr.Zero);
+        if(popup==IntPtr.Zero) errors.Add("Tray activation did not show the volume popup");
+        else {
+            bool slider = false;
+            EnumChildWindows(popup,(w,d) => {
+                var name = new StringBuilder(64);
+                GetClassName(w,name,64);
+                if(name.ToString()=="msctls_trackbar32") slider = !IsWindowEnabled(w);
+                return true;
+            },IntPtr.Zero);
+            if(!slider) errors.Add("Tray popup must show a disabled volume slider before an iPad connects");
+            SendMessage(root, trayMessage, IntPtr.Zero, traySelect);
+            if(IsWindowVisible(popup)) errors.Add("Repeated tray activation did not dismiss the popup");
+        }
         if(errors.Count>0) throw new Exception(String.Join("; ",errors));
     }
 }
