@@ -40,7 +40,7 @@ permissions:
 
 jobs:
   windows-release:
-    runs-on: windows-2022
+    runs-on: windows-2025
     timeout-minutes: 30
     env:
       VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/out/vcpkg-cache
@@ -53,6 +53,18 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+      - name: Prepare WinUI 3
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          New-Item -ItemType Directory -Force out/winui | Out-Null
+          $setup = Join-Path $PWD 'out/winui/WindowsAppRuntimeInstall-x64.exe'
+          Invoke-WebRequest 'https://aka.ms/windowsappsdk/2.6/2.6.5/windowsappruntimeinstall-x64.exe' -OutFile $setup
+          $installation = Start-Process $setup -ArgumentList '--quiet' -WindowStyle Hidden -Wait -PassThru
+          if ($installation.ExitCode -ne 0) { throw "Windows App Runtime setup failed ($($installation.ExitCode))" }
+          nuget install Microsoft.Web.WebView2 -Version 1.0.3719.77 -OutputDirectory out/winui -NonInteractive
+          $metadata = Get-ChildItem out/winui -Recurse -Filter Microsoft.Web.WebView2.Core.winmd | Select-Object -First 1
+          ./scripts/generate_winui_projection.ps1 -OutputDir "$PWD/out/winui/projection" -WebViewMetadata $metadata.FullName
       - name: Verify SPAKE2 provider MSRV and vectors
         run: |
           $ErrorActionPreference = 'Stop'
@@ -83,6 +95,7 @@ jobs:
           python scripts/fetch_opus.py
           $vcpkg = (Resolve-Path out/vcpkg).Path
           cmake -S . -B out/build/windows-release -G 'Visual Studio 17 2022' -A x64 `
+            "-DHEARPORT_WINUI_PROJECTION_DIR=$PWD/out/winui/projection" `
             "-DCMAKE_TOOLCHAIN_FILE=$vcpkg/scripts/buildsystems/vcpkg.cmake" `
             "-DHEARPORT_MSQUIC_LIBRARY=$vcpkg/installed/x64-windows/lib/msquic.lib" `
             "-DHEARPORT_MSQUIC_DLL=$vcpkg/installed/x64-windows/bin/msquic.dll"

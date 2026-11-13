@@ -4,6 +4,17 @@ HearPort for Windows is distributed as a portable Release ZIP. Unpack it and
 start `HearPort.exe`; first-use and iPad distribution steps are in the root
 [`README.md`](../../README.md).
 
+The WinUI 3 tray flyout requires Windows 11 and
+[Windows App Runtime 2.6.5 (x64)](https://aka.ms/windowsappsdk/2.6/2.6.5/windowsappruntimeinstall-x64.exe)
+or later. Right-click the tray icon to open the main window.
+
+To build the flyout, use the Windows SDK C++/WinRT tools and the WebView2
+`Microsoft.Web.WebView2.Core.winmd` from the Microsoft.Web.WebView2
+NuGet package (version 1.0.3719.77). Run
+`scripts/generate_winui_projection.ps1 -OutputDir <build-dir>/winui -WebViewMetadata <path-to-winmd>`
+after installing the runtime. Pass the generated directory to CMake as
+`HEARPORT_WINUI_PROJECTION_DIR`.
+
 HearPort advertises its network endpoint through Windows DNS-SD; iPad browses
 `_hearport._udp`. Select the discovered PC in the iPad app. If discovery or
 Local Network access is unavailable, enter the PC hostname or IP address
