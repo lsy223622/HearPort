@@ -1,5 +1,6 @@
 param([Parameter(Mandatory = $true)][int]$ProcessId)
 $ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName UIAutomationClient,UIAutomationTypes
 Add-Type -TypeDefinition @"
 using System;
 using System.Collections.Generic;
@@ -20,8 +21,8 @@ public static class HearPortPaintCheck {
     [DllImport("user32.dll")] static extern IntPtr GetParent(IntPtr window);
     [DllImport("user32.dll")] static extern IntPtr GetWindow(IntPtr window, uint command);
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr window);
-    [DllImport("user32.dll")] static extern bool IsWindowEnabled(IntPtr window);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern IntPtr SendMessage(IntPtr window, uint message, IntPtr wp, IntPtr lp);
+    [DllImport("user32.dll")] static extern bool PostMessage(IntPtr window, uint message, IntPtr wp, IntPtr lp);
     [DllImport("gdi32.dll")] static extern bool DeleteObject(IntPtr obj);
     [StructLayout(LayoutKind.Sequential)] struct Rect { public int Left, Top, Right, Bottom; }
     public static void Verify(int processId) {
@@ -64,32 +65,65 @@ public static class HearPortPaintCheck {
             finally { DeleteObject(region); }
         }
         if(groups!=7) errors.Add("Expected seven page groups");
-        const uint trayMessage = 0x8001;
-        var traySelect = new IntPtr(0x0400);
-        SendMessage(root, trayMessage, IntPtr.Zero, traySelect);
+        if(errors.Count>0) throw new Exception(String.Join("; ",errors));
+    }
+    public static void ToggleTrayPopup(int processId) {
+        IntPtr root = IntPtr.Zero;
+        EnumWindows((w,d) => {
+            uint pid; GetWindowThreadProcessId(w,out pid);
+            if(pid!=processId) return true;
+            var name=new StringBuilder(128);
+            GetClassName(w,name,128);
+            if(name.ToString()=="HearPortSenderGui") root=w;
+            return true;
+        }, IntPtr.Zero);
+        if (!PostMessage(root, 0x8001, IntPtr.Zero, new IntPtr(0x0400))) {
+            throw new Exception("Could not send tray activation");
+        }
+    }
+    public static IntPtr TrayPopup(int processId) {
         IntPtr popup = IntPtr.Zero;
         EnumWindows((w,d) => {
-            var name = new StringBuilder(64);
-            GetClassName(w,name,64);
-            if (GetWindow(w,4)==root && name.ToString()=="Static" && IsWindowVisible(w)) popup=w;
+            uint pid; GetWindowThreadProcessId(w,out pid);
+            if(pid!=processId || !IsWindowVisible(w)) return true;
+            var title=new StringBuilder(128);
+            GetWindowText(w,title,128);
+            if(title.ToString()=="HearPort Tray") popup=w;
             return true;
-        },IntPtr.Zero);
-        if(popup==IntPtr.Zero) errors.Add("Tray activation did not show the volume popup");
-        else {
-            bool slider = false;
-            EnumChildWindows(popup,(w,d) => {
-                var name = new StringBuilder(64);
-                GetClassName(w,name,64);
-                if(name.ToString()=="msctls_trackbar32") slider = !IsWindowEnabled(w);
-                return true;
-            },IntPtr.Zero);
-            if(!slider) errors.Add("Tray popup must show a disabled volume slider before an iPad connects");
-            SendMessage(root, trayMessage, IntPtr.Zero, traySelect);
-            if(IsWindowVisible(popup)) errors.Add("Repeated tray activation did not dismiss the popup");
-        }
-        if(errors.Count>0) throw new Exception(String.Join("; ",errors));
+        }, IntPtr.Zero);
+        return popup;
     }
 }
 "@
 [HearPortPaintCheck]::Verify($ProcessId)
 Write-Output 'HearPort clipping, background order and unchanged-status invalidation checks passed'
+[HearPortPaintCheck]::ToggleTrayPopup($ProcessId)
+$popup = [IntPtr]::Zero
+for ($attempt = 0; $attempt -lt 60 -and $popup -eq [IntPtr]::Zero; ++$attempt) {
+    Start-Sleep -Milliseconds 100
+    $popup = [HearPortPaintCheck]::TrayPopup($ProcessId)
+}
+if ($popup -eq [IntPtr]::Zero) { throw 'WinUI tray popup did not open' }
+$window = [System.Windows.Automation.AutomationElement]::FromHandle($popup)
+$tree = [System.Windows.Automation.TreeScope]::Descendants
+$types = [System.Windows.Automation.AutomationElement]::ControlTypeProperty
+$slider = [System.Windows.Automation.PropertyCondition]::new($types, [System.Windows.Automation.ControlType]::Slider)
+$button = [System.Windows.Automation.PropertyCondition]::new($types, [System.Windows.Automation.ControlType]::Button)
+$label = $null
+for ($attempt = 0; $attempt -lt 20 -and !$label; ++$attempt) {
+    foreach ($text in @('iPad not connected', 'iPad 未连接')) {
+        $name = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::NameProperty, $text)
+        $label = $window.FindFirst($tree, $name)
+        if ($label) { break }
+    }
+    if (!$label) { Start-Sleep -Milliseconds 100 }
+}
+if (!$label -or !$window.FindFirst($tree, $button)) { throw 'Missing disconnected state or open button' }
+if ($window.FindFirst($tree, $slider)) { throw 'The disconnected flyout exposes a volume slider' }
+[HearPortPaintCheck]::ToggleTrayPopup($ProcessId)
+for ($attempt = 0; $attempt -lt 20 -and $popup -ne [IntPtr]::Zero; ++$attempt) {
+    Start-Sleep -Milliseconds 100
+    $popup = [HearPortPaintCheck]::TrayPopup($ProcessId)
+}
+if ($popup -ne [IntPtr]::Zero) { throw 'Repeated tray activation did not dismiss the popup' }
+Write-Output 'WinUI tray popup opened with a disconnected state and no slider, then dismissed'

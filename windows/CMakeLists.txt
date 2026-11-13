@@ -63,14 +63,20 @@ target_link_libraries(hearport_sender PRIVATE hearport_windows_platform)
 enable_language(RC)
 add_executable(hearport_sender_gui WIN32
   src/gui_main.cpp
+  src/tray_popup.cpp
   src/sender_certificate.cpp
   src/gui_resources.rc
 )
-target_include_directories(hearport_sender_gui PRIVATE src)
+set(HEARPORT_WINUI_PROJECTION_DIR "" CACHE PATH "C++/WinRT projection for Windows App SDK 2.6.5")
+if(NOT EXISTS "${HEARPORT_WINUI_PROJECTION_DIR}/winrt/Microsoft.UI.Xaml.Controls.h")
+  message(FATAL_ERROR "Set HEARPORT_WINUI_PROJECTION_DIR to the generated WinUI projection. See windows/installer/README.md.")
+endif()
+target_include_directories(hearport_sender_gui PRIVATE src "${HEARPORT_WINUI_PROJECTION_DIR}")
 target_compile_definitions(hearport_sender_gui PRIVATE UNICODE _UNICODE)
 target_link_libraries(hearport_sender_gui PRIVATE
   hearport_windows_platform ncrypt crypt32 advapi32
   comctl32 comdlg32 shell32 ole32 user32 gdi32 iphlpapi dwmapi uxtheme
+  windowsapp shcore
 )
 if(MSVC)
   target_compile_options(hearport_sender_gui PRIVATE /utf-8)
