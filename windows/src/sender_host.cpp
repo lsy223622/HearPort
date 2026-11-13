@@ -98,9 +98,9 @@ SenderAuthentication* SenderHost::ActiveAuthentication() {
   const auto active = selection_.active();
   return active && !stopping_ ? authentications_[*active - 1].get() : nullptr;
 }
-std::optional<std::uint32_t> SenderHost::SystemVolume() {
+SystemVolumeState SenderHost::SystemVolume() {
   auto* authentication = ActiveAuthentication();
-  return authentication ? authentication->SystemVolume() : std::nullopt;
+  return authentication ? authentication->SystemVolume() : SystemVolumeState{};
 }
 bool SenderHost::RequestSystemVolume(std::optional<std::uint32_t> percent) {
   auto* authentication = ActiveAuthentication();

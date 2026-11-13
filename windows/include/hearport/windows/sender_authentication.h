@@ -20,6 +20,11 @@
 
 namespace hearport::windows {
 
+struct SystemVolumeState {
+  std::optional<std::uint32_t> percent;
+  bool adjusting = false;
+};
+
 struct SenderPairingState {
   mutable std::mutex mutex;
   security::PairingWindow window;
@@ -47,7 +52,7 @@ class SenderAuthentication {
   std::string pairing_pin() const;
   void SetConnectionHandler(std::function<void(bool, bool)> handler);
   void SetCalibrationRequestHandler(std::function<void(CalibrationOptions)> handler);
-  std::optional<std::uint32_t> SystemVolume();
+  SystemVolumeState SystemVolume();
   bool RequestSystemVolume(std::optional<std::uint32_t> percent);
 
   bool HandleControlPayload(std::span<const std::byte> payload);
@@ -112,6 +117,7 @@ class SenderAuthentication {
   std::optional<std::uint32_t> system_volume_;
   std::uint32_t volume_request_id_ = 0;
   bool volume_request_pending_ = false;
+  bool volume_adjusting_ = false;
   std::chrono::steady_clock::time_point volume_requested_at_{};
   bool report_upload_active_ = false;
   std::array<std::byte, 16> report_upload_session_id_{};
