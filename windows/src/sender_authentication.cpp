@@ -113,9 +113,10 @@ bool SenderAuthentication::CanControlSystemVolume() const {
          !service_.music_test() && !service_.environment_calibration();
 }
 
-std::optional<std::uint32_t> SenderAuthentication::SystemVolume() {
+SystemVolumeState SenderAuthentication::SystemVolume() {
   std::lock_guard lock(mutex_);
-  return CanControlSystemVolume() ? system_volume_ : std::nullopt;
+  return CanControlSystemVolume() ? SystemVolumeState{system_volume_, volume_adjusting_}
+                                  : SystemVolumeState{};
 }
 
 bool SenderAuthentication::RequestSystemVolume(std::optional<std::uint32_t> percent) {
@@ -130,7 +131,7 @@ bool SenderAuthentication::RequestSystemVolume(std::optional<std::uint32_t> perc
   request.volume_percent = percent;
   volume_requested_at_ = now;
   volume_request_pending_ = Send(request);
-  if (percent && volume_request_pending_) system_volume_.reset();
+  if (percent) volume_adjusting_ = volume_request_pending_;
   return volume_request_pending_;
 }
 
@@ -475,8 +476,9 @@ bool SenderAuthentication::HandleControlPayload(
     case wire::ControlMessageType::system_volume_report:
       if (CanControlSystemVolume() && volume_request_pending_ &&
           envelope->request_id == volume_request_id_) {
-        system_volume_ = envelope->volume_percent;
+        if (envelope->volume_percent) system_volume_ = envelope->volume_percent;
         volume_request_pending_ = false;
+        volume_adjusting_ = false;
       }
       return true;
     case wire::ControlMessageType::session_end_ack:
@@ -641,6 +643,7 @@ void SenderAuthentication::Reset() noexcept {
   peer_supports_system_volume_ = false;
   system_volume_.reset();
   volume_request_pending_ = false;
+  volume_adjusting_ = false;
   volume_requested_at_ = {};
   peer_supports_adaptive_calibration_ = false;
   report_upload_active_ = false;

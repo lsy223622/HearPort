@@ -4,6 +4,7 @@
 #include <winsock2.h>
 #include <iphlpapi.h>
 #include <windows.h>
+#include <windowsx.h>
 #include <commctrl.h>
 #include <commdlg.h>
 #include <dwmapi.h>
@@ -596,6 +597,10 @@ class Application {
     volume_slider_ = Control(0, TRACKBAR_CLASSW, Tr(L"iPad volume", L"iPad 音量"),
                              WS_TABSTOP | WS_DISABLED | TBS_NOTICKS, kIPadVolume);
     SendMessageW(volume_slider_, TBM_SETRANGE, FALSE, MAKELONG(0, 100));
+    if (volume_slider_ &&
+        !SetWindowSubclass(volume_slider_, VolumeSubclassProc, 1, reinterpret_cast<DWORD_PTR>(this))) {
+      return false;
+    }
 
     Control(1, L"BUTTON", Tr(L"Live diagnostics…", L"实时诊断…"), WS_TABSTOP | BS_PUSHBUTTON, kDiagnostics);
     Control(1, L"BUTTON", Tr(L"Network test…", L"网络测试…"), WS_TABSTOP | BS_PUSHBUTTON, kNetworkProbe);
@@ -847,20 +852,93 @@ class Application {
     DestroyMenu(menu);
   }
 
+  static LRESULT CALLBACK VolumeSubclassProc(HWND hwnd, UINT message,
+                                              WPARAM wparam, LPARAM lparam,
+                                              UINT_PTR subclass_id, DWORD_PTR app_pointer) {
+    auto* app = reinterpret_cast<Application*>(app_pointer);
+    switch (message) {
+      case WM_LBUTTONDOWN:
+      case WM_LBUTTONDBLCLK: {
+        if (!IsWindowEnabled(hwnd)) break;
+        RECT thumb{};
+        SendMessageW(hwnd, TBM_GETTHUMBRECT, 0, reinterpret_cast<LPARAM>(&thumb));
+        const POINT point{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+        SetFocus(hwnd);
+        app->volume_drag_start_ = app->VolumePosition();
+        const bool on_thumb = PtInRect(&thumb, point) != FALSE;
+        app->volume_drag_offset_ = on_thumb
+            ? point.x - (thumb.left + thumb.right) / 2 : 0;
+        app->volume_editing_ = true;
+        SetCapture(hwnd);
+        if (!on_thumb) app->MoveVolumeThumb(point.x);
+        return 0;
+      }
+      case WM_MOUSEMOVE:
+        if (GetCapture() != hwnd) break;
+        app->MoveVolumeThumb(GET_X_LPARAM(lparam));
+        return 0;
+      case WM_LBUTTONUP:
+        if (GetCapture() != hwnd) break;
+        app->CommitVolume(app->VolumePosition() != app->volume_drag_start_);
+        ReleaseCapture();
+        return 0;
+      case WM_CAPTURECHANGED:
+        if (app->volume_editing_) app->CommitVolume(false);
+        break;
+      case WM_NCDESTROY:
+        RemoveWindowSubclass(hwnd, VolumeSubclassProc, subclass_id);
+        break;
+    }
+    return DefSubclassProc(hwnd, message, wparam, lparam);
+  }
+
+  std::uint32_t VolumePosition() const {
+    return static_cast<std::uint32_t>(SendMessageW(volume_slider_, TBM_GETPOS, 0, 0));
+  }
+
+  void MoveVolumeThumb(int x) {
+    RECT channel{};
+    SendMessageW(volume_slider_, TBM_GETCHANNELRECT, 0, reinterpret_cast<LPARAM>(&channel));
+    if (channel.right <= channel.left) return;
+    const int offset = std::clamp<int>(x - volume_drag_offset_ - channel.left, 0,
+                                       channel.right - channel.left);
+    const auto percent = MulDiv(offset, 100, channel.right - channel.left);
+    if (VolumePosition() != static_cast<std::uint32_t>(percent)) {
+      SendMessageW(volume_slider_, TBM_SETPOS, TRUE, percent);
+    }
+    UpdateVolumeLabel();
+  }
+
+  void UpdateVolumeLabel() {
+    const auto label = Tr(L"iPad volume", L"iPad 音量") +
+        (IsWindowEnabled(volume_slider_) ? L"  " + std::to_wstring(VolumePosition()) + L"%" : L"");
+    SetTextIfChanged(volume_label_, label.c_str());
+  }
+
+  void CommitVolume(bool changed) {
+    volume_editing_ = false;
+    if (changed && host_ && connected_ && IsWindowEnabled(volume_slider_)) {
+      host_->RequestSystemVolume(VolumePosition());
+    }
+    UpdateVolume();
+  }
+
   void UpdateVolume() {
     if (!volume_slider_) return;
-    const auto volume = host_ && connected_ ? host_->SystemVolume() : std::nullopt;
-    if (!volume) volume_editing_ = false;
-    if (IsWindowEnabled(volume_slider_) != volume.has_value()) {
-      EnableWindow(volume_slider_, volume.has_value());
+    const auto volume = host_ && connected_ ? host_->SystemVolume()
+                                            : hearport::windows::SystemVolumeState{};
+    if (!volume.percent) {
+      volume_editing_ = false;
+      if (GetCapture() == volume_slider_) ReleaseCapture();
     }
-    if (volume && !volume_editing_ &&
-        SendMessageW(volume_slider_, TBM_GETPOS, 0, 0) != *volume) {
-      SendMessageW(volume_slider_, TBM_SETPOS, TRUE, *volume);
+    if (!!IsWindowEnabled(volume_slider_) != volume.percent.has_value()) {
+      EnableWindow(volume_slider_, volume.percent.has_value());
     }
-    const auto label = Tr(L"iPad volume", L"iPad 音量") +
-        (volume ? L"  " + std::to_wstring(*volume) + L"%" : L"");
-    SetTextIfChanged(volume_label_, label.c_str());
+    if (volume.percent && !volume_editing_ && !volume.adjusting &&
+        VolumePosition() != *volume.percent) {
+      SendMessageW(volume_slider_, TBM_SETPOS, TRUE, *volume.percent);
+    }
+    UpdateVolumeLabel();
   }
 
   void UpdateStatus() {
@@ -1695,11 +1773,11 @@ class Application {
         if (!volume_slider_ || reinterpret_cast<HWND>(lparam) != volume_slider_) {
           return DefWindowProcW(hwnd_, message, wparam, lparam);
         }
-        volume_editing_ = LOWORD(wparam) != TB_ENDTRACK;
-        if (!volume_editing_ && host_ && connected_ && IsWindowEnabled(volume_slider_)) {
-          const auto percent = static_cast<std::uint32_t>(SendMessageW(volume_slider_, TBM_GETPOS, 0, 0));
-          if (host_->SystemVolume() != percent) host_->RequestSystemVolume(percent);
-          UpdateVolume();
+        if (LOWORD(wparam) == TB_ENDTRACK) {
+          CommitVolume(volume_editing_);
+        } else {
+          volume_editing_ = true;
+          UpdateVolumeLabel();
         }
         return 0;
       case WM_SIZE:
@@ -1866,6 +1944,8 @@ class Application {
   HWND volume_label_ = nullptr;
   HWND volume_slider_ = nullptr;
   bool volume_editing_ = false;
+  std::uint32_t volume_drag_start_ = 0;
+  int volume_drag_offset_ = 0;
   HWND status_detail_ = nullptr;
   HWND computer_ = nullptr;
   HWND audio_ = nullptr;
