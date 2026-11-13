@@ -106,8 +106,12 @@ jobs:
             tests.test_release_package tests.test_compression_analysis tests.reference.test_validation_matrix -v
           python scripts/collect_notices.py --output-dir out/release-notices `
             --msquic-copyright "$vcpkg/installed/x64-windows/share/msquic/copyright"
+          $crt = Get-ChildItem "$env:VCToolsRedistDir/x64" -Directory -Filter 'Microsoft.VC*.CRT' |
+            Where-Object { Test-Path (Join-Path $_.FullName 'msvcp140.dll') } |
+            Sort-Object Name -Descending | Select-Object -First 1
+          if (!$crt) { throw 'The selected Visual Studio toolchain has no x64 VC runtime directory.' }
           python scripts/package_release.py --build-dir out/build/windows-release --output-dir out/release `
-            --notices-dir out/release-notices --runtime-dir "$env:VCToolsRedistDir/x64/Microsoft.VC143.CRT"
+            --notices-dir out/release-notices --runtime-dir $crt.FullName
       - name: Verify packaged GUI startup
         run: |
           $ErrorActionPreference = 'Stop'
