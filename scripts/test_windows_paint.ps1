@@ -67,7 +67,7 @@ public static class HearPortPaintCheck {
         if(groups!=7) errors.Add("Expected seven page groups");
         if(errors.Count>0) throw new Exception(String.Join("; ",errors));
     }
-    public static void ToggleTrayPopup(int processId) {
+    static IntPtr MainWindow(int processId) {
         IntPtr root = IntPtr.Zero;
         EnumWindows((w,d) => {
             uint pid; GetWindowThreadProcessId(w,out pid);
@@ -77,7 +77,15 @@ public static class HearPortPaintCheck {
             if(name.ToString()=="HearPortSenderGui") root=w;
             return true;
         }, IntPtr.Zero);
-        if (!PostMessage(root, 0x8001, IntPtr.Zero, new IntPtr(0x0400))) {
+        return root;
+    }
+    public static void DeactivateTrayPopup(IntPtr popup, int processId) {
+        if (!PostMessage(popup, 0x0006, IntPtr.Zero, MainWindow(processId))) {
+            throw new Exception("Could not send the tray popup deactivation");
+        }
+    }
+    public static void ToggleTrayPopup(int processId) {
+        if (!PostMessage(MainWindow(processId), 0x8001, IntPtr.Zero, new IntPtr(0x0400))) {
             throw new Exception("Could not send tray activation");
         }
     }
@@ -120,10 +128,10 @@ for ($attempt = 0; $attempt -lt 20 -and !$label; ++$attempt) {
 }
 if (!$label -or !$window.FindFirst($tree, $button)) { throw 'Missing disconnected state or open button' }
 if ($window.FindFirst($tree, $slider)) { throw 'The disconnected flyout exposes a volume slider' }
-[HearPortPaintCheck]::ToggleTrayPopup($ProcessId)
+[HearPortPaintCheck]::DeactivateTrayPopup($popup, $ProcessId)
 for ($attempt = 0; $attempt -lt 20 -and $popup -ne [IntPtr]::Zero; ++$attempt) {
     Start-Sleep -Milliseconds 100
     $popup = [HearPortPaintCheck]::TrayPopup($ProcessId)
 }
-if ($popup -ne [IntPtr]::Zero) { throw 'Repeated tray activation did not dismiss the popup' }
-Write-Output 'WinUI tray popup opened with a disconnected state and no slider, then dismissed'
+if ($popup -ne [IntPtr]::Zero) { throw 'Changing focus did not dismiss the popup' }
+Write-Output 'WinUI tray popup opened without a slider and dismissed when focus changed'
