@@ -94,7 +94,7 @@ jobs:
           & ./out/vcpkg/vcpkg.exe install msquic:x64-windows
           python scripts/fetch_opus.py
           $vcpkg = (Resolve-Path out/vcpkg).Path
-          cmake -S . -B out/build/windows-release -G 'Visual Studio 17 2022' -A x64 `
+          cmake -S . -B out/build/windows-release -G 'Ninja Multi-Config' `
             "-DHEARPORT_WINUI_PROJECTION_DIR=$PWD/out/winui/projection" `
             "-DCMAKE_TOOLCHAIN_FILE=$vcpkg/scripts/buildsystems/vcpkg.cmake" `
             "-DHEARPORT_MSQUIC_LIBRARY=$vcpkg/installed/x64-windows/lib/msquic.lib" `
