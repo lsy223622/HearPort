@@ -1,7 +1,7 @@
 param([Parameter(Mandatory = $true)][string]$Executable)
 $ErrorActionPreference = 'Stop'
 $program = (Resolve-Path -LiteralPath $Executable).Path
-$process = Start-Process -FilePath $program -WorkingDirectory (Split-Path $program) -WindowStyle Hidden -PassThru
+$process = Start-Process -FilePath $program -WorkingDirectory (Split-Path $program) -PassThru
 try {
     if ($process.WaitForExit(4000)) {
         throw "HearPort exited during startup with code $($process.ExitCode)"

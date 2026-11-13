@@ -2,7 +2,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include "tray_popup.h"
 
-#include <appmodel.h>
+#include "winui_runtime.h"
 #include <commctrl.h>
 #include <dwmapi.h>
 #include <shellscalingapi.h>
@@ -47,44 +47,6 @@ const wchar_t* Translate(const wchar_t* english, const wchar_t* chinese) {
   return PRIMARYLANGID(GetUserDefaultUILanguage()) == LANG_CHINESE ? chinese : english;
 }
 
-// Windows 11's package graph makes the installed, serviced WinUI runtime
-// available to the portable executable without registering HearPort itself.
-struct Runtime {
-  PACKAGEDEPENDENCY_CONTEXT context{};
-  PWSTR dependency = nullptr;
-
-  void Load() {
-    const auto kernel = GetModuleHandleW(L"kernelbase.dll");
-    const auto create = reinterpret_cast<decltype(&TryCreatePackageDependency)>(
-        GetProcAddress(kernel, "TryCreatePackageDependency"));
-    const auto add = reinterpret_cast<decltype(&AddPackageDependency)>(
-        GetProcAddress(kernel, "AddPackageDependency"));
-    if (!create || !add) winrt::throw_hresult(E_NOTIMPL);
-    PACKAGE_VERSION minimum{};
-    minimum.Major = 2;
-    minimum.Minor = 6;
-    minimum.Build = 5;
-    winrt::check_hresult(create(nullptr, L"Microsoft.WindowsAppRuntime.2_8wekyb3d8bbwe",
-        minimum, PackageDependencyProcessorArchitectures_None, PackageDependencyLifetimeKind_Process,
-        nullptr, CreatePackageDependencyOptions_None, &dependency));
-    winrt::check_hresult(add(dependency, 0, AddPackageDependencyOptions_None, &context, nullptr));
-  }
-
-  ~Runtime() {
-    const auto kernel = GetModuleHandleW(L"kernelbase.dll");
-    if (context) {
-      const auto remove = reinterpret_cast<decltype(&RemovePackageDependency)>(
-          GetProcAddress(kernel, "RemovePackageDependency"));
-      if (remove) remove(context);
-    }
-    if (dependency) {
-      const auto erase = reinterpret_cast<decltype(&DeletePackageDependency)>(
-          GetProcAddress(kernel, "DeletePackageDependency"));
-      if (erase) erase(dependency);
-      HeapFree(GetProcessHeap(), 0, dependency);
-    }
-  }
-};
 }  // namespace
 
 struct TrayPopup::Impl {
@@ -92,8 +54,9 @@ struct TrayPopup::Impl {
   std::function<void(std::uint32_t)> preview;
   std::function<void(std::uint32_t)> commit;
   std::function<void()> cancel;
-  Runtime runtime;
-  Dispatching::DispatcherQueueController dispatcher{nullptr};
+  WinUiRuntime runtime;
+  Dispatching::DispatcherQueue dispatcher{nullptr};
+  Dispatching::DispatcherQueueController dispatcher_owner{nullptr};
   Hosting::WindowsXamlManager xaml{nullptr};
   Window window{nullptr};
   Windowing::AppWindow app_window{nullptr};
@@ -214,7 +177,7 @@ struct TrayPopup::Impl {
   }
 
   void AdvanceEntrance() {
-    constexpr auto duration = std::chrono::milliseconds(350);
+    constexpr auto duration = std::chrono::milliseconds(500);
     const auto now = std::chrono::steady_clock::now();
     // WinUI can spend several frames creating its first surface.
     if (entrance_start == std::chrono::steady_clock::time_point{}) entrance_start = now;
@@ -251,7 +214,11 @@ struct TrayPopup::Impl {
 
   void Create() {
     runtime.Load();
-    dispatcher = Dispatching::DispatcherQueueController::CreateOnCurrentThread();
+    dispatcher = Dispatching::DispatcherQueue::GetForCurrentThread();
+    if (!dispatcher) {
+      dispatcher_owner = Dispatching::DispatcherQueueController::CreateOnCurrentThread();
+      dispatcher = dispatcher_owner.DispatcherQueue();
+    }
     xaml = Hosting::WindowsXamlManager::InitializeForCurrentThread();
     window = Window();
     window.Title(L"HearPort Tray");
@@ -280,10 +247,10 @@ struct TrayPopup::Impl {
     SetWindowSubclass(hwnd, WindowProc, 1, reinterpret_cast<DWORD_PTR>(this));
     SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
-    dismiss_timer = dispatcher.DispatcherQueue().CreateTimer();
+    dismiss_timer = dispatcher.CreateTimer();
     dismiss_timer.Interval(std::chrono::milliseconds(25));
     dismiss_timer.Tick([this](auto&&, auto&&) { CheckDismiss(); });
-    entrance_timer = dispatcher.DispatcherQueue().CreateTimer();
+    entrance_timer = dispatcher.CreateTimer();
     entrance_timer.Interval(std::chrono::milliseconds(16));
     entrance_timer.Tick([this](auto&&, auto&&) { AdvanceEntrance(); });
 
@@ -392,7 +359,7 @@ struct TrayPopup::Impl {
       const bool queued = pending_value.has_value();
       pending_value = Position();
       if (!queued) {
-        dispatcher.DispatcherQueue().TryEnqueue([this, alive = alive] {
+        dispatcher.TryEnqueue([this, alive = alive] {
           if (!*alive) return;
           if (const auto value = std::exchange(pending_value, std::nullopt)) commit(*value);
         });

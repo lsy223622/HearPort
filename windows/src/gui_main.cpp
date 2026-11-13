@@ -13,7 +13,6 @@
 #include <uxtheme.h>
 
 #include <algorithm>
-#include <array>
 #include <chrono>
 #include <cstdint>
 #include <cwchar>
@@ -32,6 +31,7 @@
 
 #include "gui_resources.h"
 #include "tray_popup.h"
+#include "main_window.h"
 #include "hearport/windows/diagnostic_logger.h"
 #include "hearport/windows/sender_authentication.h"
 #include "hearport/windows/sender_certificate.h"
@@ -49,7 +49,6 @@ using hearport::windows::SenderDiagnosticLogger;
 using hearport::windows::SenderService;
 using Clock = std::chrono::steady_clock;
 
-constexpr wchar_t kWindowClass[] = L"HearPortSenderGui";
 constexpr UINT kTrayMessage = WM_APP + 1;
 constexpr UINT kStartMessage = WM_APP + 2;
 constexpr UINT kConnectionMessage = WM_APP + 3;
@@ -57,42 +56,18 @@ constexpr UINT kCalibrationRequestMessage = WM_APP + 4;
 constexpr UINT kUnpairCompletedMessage = WM_APP + 5;
 constexpr UINT kTimer = 1;
 constexpr UINT kTrayIcon = 1;
-constexpr int kTab = 100;
-constexpr int kPair = 101;
-constexpr int kToggle = 102;
-constexpr int kLog = 103;
-constexpr int kReports = 104;
 constexpr int kDiagnostics = 105;
-constexpr int kPort = 107;
-constexpr int kSavePort = 108;
-constexpr int kAutoStart = 109;
 constexpr int kNetworkProbe = 110;
-constexpr int kCloseWindow = 112;
-constexpr int kExitApplication = 113;
 constexpr int kMusicFile = 114;
 constexpr int kMusicTest = 115;
-constexpr int kCalibrationResults = 116;
-constexpr int kDetailedLogging = 117;
-constexpr int kIPadVolume = 118;
-constexpr int kCaptureSource = 119;
 constexpr int kTrayOpen = 201;
 constexpr int kTrayExit = 202;
+constexpr int kPortSettings = 203;
 
 std::wstring Tr(const wchar_t* english, const wchar_t* chinese) {
   return PRIMARYLANGID(GetUserDefaultUILanguage()) == LANG_CHINESE
              ? chinese
              : english;
-}
-
-void SetTextIfChanged(HWND control, const wchar_t* text) {
-  const int length = GetWindowTextLengthW(control);
-  if (length == static_cast<int>(wcslen(text))) {
-    std::wstring current(static_cast<std::size_t>(length) + 1, L'\0');
-    GetWindowTextW(control, current.data(), length + 1);
-    current.resize(static_cast<std::size_t>(length));
-    if (current == text) return;
-  }
-  SetWindowTextW(control, text);
 }
 
 std::wstring ExecutablePath() {
@@ -271,64 +246,63 @@ class Application {
     INITCOMMONCONTROLSEX common_controls{sizeof(common_controls), ICC_TAB_CLASSES | ICC_BAR_CLASSES};
     InitCommonControlsEx(&common_controls);
 
-    WNDCLASSEXW window_class{};
-    window_class.cbSize = sizeof(window_class);
-    window_class.lpfnWndProc = WindowProc;
-    window_class.hInstance = instance;
-    window_class.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    window_class.hbrBackground = GetSysColorBrush(COLOR_BTNFACE);
-    window_class.lpszClassName = kWindowClass;
-    if (!RegisterClassExW(&window_class)) return 1;
-
-    const UINT initial_dpi = GetDpiForSystem();
-    dpi_ = initial_dpi;
-    hwnd_ = CreateWindowExW(WS_EX_DLGMODALFRAME, kWindowClass, L"HearPort",
-                            WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU |
-                                WS_MINIMIZEBOX | WS_CLIPCHILDREN,
-                            CW_USEDEFAULT, CW_USEDEFAULT,
-                            MulDiv(520, initial_dpi, 96),
-                            MulDiv(500, initial_dpi, 96), nullptr, nullptr,
-                            instance, this);
-    if (!hwnd_) return 1;
-    if (!start_hidden_ || !tray_ready_) ShowWindow(hwnd_, show_command);
-    UpdateWindow(hwnd_);
+    main_window_ = std::make_unique<MainWindow>(
+        [this](MainAction action) { HandleAction(action); },
+        [this](bool editing, bool changed, std::uint32_t value) {
+          volume_editing_ = editing;
+          volume_position_ = value;
+          if (editing) {
+            if (tray_popup_) tray_popup_->Update(connected_, value);
+          } else {
+            CommitVolume(changed);
+          }
+        });
+    const auto result = main_window_->Create(port_, capture_source_ == CaptureSource::endpoint, AutoStartEnabled());
+    if (FAILED(result)) {
+      wchar_t code[16]{};
+      swprintf_s(code, L"0x%08lX", static_cast<unsigned long>(result));
+      const auto message = Tr(L"Could not start HearPort. Install Windows App Runtime 2.6.5 or newer.",
+                              L"无法启动 HearPort。请安装 Windows App Runtime 2.6.5 或更高版本。") +
+                           L"\n" + code;
+      MessageBoxW(nullptr, message.c_str(), L"HearPort", MB_OK | MB_ICONERROR);
+      return 1;
+    }
+    hwnd_ = main_window_->handle();
+    if (!SetWindowSubclass(hwnd_, WindowProc, 1, reinterpret_cast<DWORD_PTR>(this))) return 1;
+    if (const auto icon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_HEARPORT))) {
+      SendMessageW(hwnd_, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(icon));
+      SendMessageW(hwnd_, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(icon));
+    }
+    dpi_ = GetDpiForWindow(hwnd_);
+    CreateFontForDpi();
+    ApplyTheme();
+    wchar_t name[MAX_COMPUTERNAME_LENGTH + 1]{};
+    DWORD length = ARRAYSIZE(name);
+    if (GetComputerNameW(name, &length)) {
+      auto label = Tr(L"This PC: ", L"这台电脑：") + std::wstring(name);
+      const auto address = LocalIPv4();
+      if (!address.empty()) label += L"  ·  " + address;
+      main_window_->SetComputer(label);
+    }
+    taskbar_created_ = RegisterWindowMessageW(L"TaskbarCreated");
+    AddTrayIcon();
+    SetTimer(hwnd_, kTimer, 1000, nullptr);
+    PostMessageW(hwnd_, kStartMessage, 0, 0);
+    UpdateStatus();
+    if (!start_hidden_ || !tray_ready_) {
+      main_window_->Show();
+      if (show_command == SW_SHOWMINIMIZED && tray_ready_) ShowWindow(hwnd_, SW_HIDE);
+    }
 
     MSG message{};
     while (GetMessageW(&message, nullptr, 0, 0) > 0) {
-      if (!IsDialogMessageW(hwnd_, &message)) {
-        TranslateMessage(&message);
-        DispatchMessageW(&message);
-      }
+      TranslateMessage(&message);
+      DispatchMessageW(&message);
     }
     return static_cast<int>(message.wParam);
   }
 
  private:
-  HWND Control(int page, const wchar_t* kind, const std::wstring& label,
-               DWORD style, int id = 0) {
-    HWND control = CreateWindowExW(
-        0, kind, label.c_str(), WS_CHILD | WS_CLIPSIBLINGS | style, 0, 0, 0, 0, hwnd_,
-        reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), instance_, nullptr);
-    if (control) {
-      pages_[page].push_back(control);
-      SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
-    }
-    return control;
-  }
-
-  HWND Group(int page, const std::wstring& label) {
-    HWND group = CreateWindowExW(0, L"BUTTON", label.c_str(),
-                                  WS_CHILD | WS_CLIPSIBLINGS | BS_GROUPBOX, 0, 0, 0, 0, hwnd_,
-                                  nullptr, instance_, nullptr);
-    if (group) {
-      groups_[page].push_back(group);
-      SendMessageW(group, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
-      SetWindowSubclass(group, GroupSubclassProc, 1,
-                        reinterpret_cast<DWORD_PTR>(this));
-    }
-    return group;
-  }
-
   void Place(HWND control, int x, int y, int width, int height) const {
     if (!control) return;
     MoveWindow(control, MulDiv(x, dpi_, 96), MulDiv(y, dpi_, 96),
@@ -338,162 +312,7 @@ class Application {
   void CreateFontForDpi() {
     HFONT old_font = font_;
     font_ = hearport::windows::CreateGuiFont(dpi_, GetUserDefaultUILanguage());
-    if (tabs_) SendMessageW(tabs_, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
-    for (auto& page : groups_) {
-      for (HWND group : page) {
-        SendMessageW(group, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
-      }
-    }
-    for (auto& page : pages_) {
-      for (HWND control : page) {
-        SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
-      }
-    }
-    if (footer_close_) SendMessageW(footer_close_, WM_SETFONT,
-                                    reinterpret_cast<WPARAM>(font_), TRUE);
-    if (footer_exit_) SendMessageW(footer_exit_, WM_SETFONT,
-                                   reinterpret_cast<WPARAM>(font_), TRUE);
     if (old_font) DeleteObject(old_font);
-  }
-
-  void PaintGroup(HWND group, HDC context) {
-    RECT bounds{};
-    GetClientRect(group, &bounds);
-    FillRect(context, &bounds, dark_ ? page_brush_ : GetSysColorBrush(COLOR_WINDOW));
-    wchar_t label[128]{};
-    GetWindowTextW(group, label, ARRAYSIZE(label));
-    HFONT previous_font = reinterpret_cast<HFONT>(
-        SelectObject(context, font_));
-    SIZE text_size{};
-    GetTextExtentPoint32W(context, label, lstrlenW(label), &text_size);
-    const int line_y = text_size.cy / 2;
-    HPEN pen = CreatePen(PS_SOLID, 1, dark_ ? RGB(108, 108, 108)
-                                            : GetSysColor(COLOR_3DLIGHT));
-    HPEN previous_pen = reinterpret_cast<HPEN>(SelectObject(context, pen));
-    MoveToEx(context, 0, line_y, nullptr);
-    LineTo(context, 8, line_y);
-    MoveToEx(context, 18 + text_size.cx, line_y, nullptr);
-    LineTo(context, bounds.right - 1, line_y);
-    LineTo(context, bounds.right - 1, bounds.bottom - 1);
-    LineTo(context, 0, bounds.bottom - 1);
-    LineTo(context, 0, line_y);
-    SelectObject(context, previous_pen);
-    DeleteObject(pen);
-    SetBkMode(context, TRANSPARENT);
-    SetTextColor(context, dark_ ? RGB(242, 242, 242)
-                                : GetSysColor(COLOR_WINDOWTEXT));
-    RECT text_rect{10, 0, bounds.right - 8, text_size.cy + 2};
-    DrawTextW(context, label, -1, &text_rect, DT_LEFT | DT_SINGLELINE);
-    if (group == groups_[0][0]) {
-      const int icon_size = MulDiv(44, dpi_, 96);
-      DrawIconEx(context, MulDiv(14, dpi_, 96), MulDiv(25, dpi_, 96),
-                 ThemeIcon(icon_size), icon_size, icon_size, 0, nullptr,
-                 DI_NORMAL);
-    }
-    SelectObject(context, previous_font);
-  }
-
-  void PaintTabs(HDC context) {
-    RECT bounds{};
-    GetClientRect(tabs_, &bounds);
-    HBRUSH outer = dark_ ? dark_brush_ : GetSysColorBrush(COLOR_BTNFACE);
-    HBRUSH inner = dark_ ? page_brush_ : GetSysColorBrush(COLOR_WINDOW);
-    FillRect(context, &bounds, outer);
-    RECT first_tab{};
-    if (!TabCtrl_GetItemRect(tabs_, 0, &first_tab)) return;
-    RECT page{0, first_tab.bottom - 1, bounds.right, bounds.bottom};
-    FillRect(context, &page, inner);
-    HBRUSH border = CreateSolidBrush(dark_ ? RGB(78, 78, 78)
-                                         : GetSysColor(COLOR_3DLIGHT));
-    FrameRect(context, &page, border);
-    HFONT previous_font = reinterpret_cast<HFONT>(
-        SelectObject(context, font_));
-    SetBkMode(context, TRANSPARENT);
-    SetTextColor(context, dark_ ? RGB(242, 242, 242)
-                                : GetSysColor(COLOR_WINDOWTEXT));
-    const int selected = TabCtrl_GetCurSel(tabs_);
-    for (int index = 0; index < TabCtrl_GetItemCount(tabs_); ++index) {
-      if (index == selected) continue;
-      RECT tab{};
-      TabCtrl_GetItemRect(tabs_, index, &tab);
-      FillRect(context, &tab, outer);
-      FrameRect(context, &tab, border);
-      wchar_t label[64]{};
-      TCITEMW item{};
-      item.mask = TCIF_TEXT;
-      item.pszText = label;
-      item.cchTextMax = ARRAYSIZE(label);
-      TabCtrl_GetItem(tabs_, index, &item);
-      DrawTextW(context, label, -1, &tab,
-                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-    }
-    if (selected >= 0) {
-      RECT tab{};
-      TabCtrl_GetItemRect(tabs_, selected, &tab);
-      const int extension = MulDiv(2, dpi_, 96);
-      tab.left = selected == 0 ? 0 : tab.left - extension;
-      tab.top = tab.top > extension ? tab.top - extension : 0;
-      tab.right += extension;
-      tab.bottom = page.top + 1;
-      FillRect(context, &tab, inner);
-      FrameRect(context, &tab, border);
-      RECT join{tab.left + 1, page.top, tab.right - 1, page.top + 1};
-      FillRect(context, &join, inner);
-      wchar_t label[64]{};
-      TCITEMW item{};
-      item.mask = TCIF_TEXT;
-      item.pszText = label;
-      item.cchTextMax = ARRAYSIZE(label);
-      TabCtrl_GetItem(tabs_, selected, &item);
-      DrawTextW(context, label, -1, &tab,
-                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-    }
-    SelectObject(context, previous_font);
-    DeleteObject(border);
-  }
-
-  static LRESULT CALLBACK GroupSubclassProc(HWND hwnd, UINT message,
-                                             WPARAM wparam, LPARAM lparam,
-                                             UINT_PTR subclass_id,
-                                             DWORD_PTR app_pointer) {
-    auto* app = reinterpret_cast<Application*>(app_pointer);
-    if (message == WM_NCDESTROY) {
-      RemoveWindowSubclass(hwnd, GroupSubclassProc, subclass_id);
-    } else if (message == WM_ERASEBKGND) {
-      return 1;
-    } else if (message == WM_PAINT) {
-      PAINTSTRUCT paint{};
-      HDC context = BeginPaint(hwnd, &paint);
-      app->PaintGroup(hwnd, context);
-      EndPaint(hwnd, &paint);
-      return 0;
-    } else if (message == WM_PRINTCLIENT) {
-      app->PaintGroup(hwnd, reinterpret_cast<HDC>(wparam));
-      return 0;
-    }
-    return DefSubclassProc(hwnd, message, wparam, lparam);
-  }
-
-  static LRESULT CALLBACK TabSubclassProc(HWND hwnd, UINT message,
-                                           WPARAM wparam, LPARAM lparam,
-                                           UINT_PTR subclass_id,
-                                           DWORD_PTR app_pointer) {
-    auto* app = reinterpret_cast<Application*>(app_pointer);
-    if (message == WM_NCDESTROY) {
-      RemoveWindowSubclass(hwnd, TabSubclassProc, subclass_id);
-    } else if (message == WM_ERASEBKGND) {
-      return 1;
-    } else if (message == WM_PAINT) {
-      PAINTSTRUCT paint{};
-      HDC context = BeginPaint(hwnd, &paint);
-      app->PaintTabs(context);
-      EndPaint(hwnd, &paint);
-      return 0;
-    } else if (message == WM_PRINTCLIENT) {
-      app->PaintTabs(reinterpret_cast<HDC>(wparam));
-      return 0;
-    }
-    return DefSubclassProc(hwnd, message, wparam, lparam);
   }
 
   void PaintPortFrame(HWND frame, HDC context) {
@@ -553,261 +372,11 @@ class Application {
     return DefSubclassProc(hwnd, message, wparam, lparam);
   }
 
-  bool CreateControls() {
-    dpi_ = GetDpiForWindow(hwnd_);
-    CreateFontForDpi();
-    tabs_ = CreateWindowExW(0, WC_TABCONTROLW, L"",
-                            WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS |
-                                WS_TABSTOP | TCS_TABS,
-                            0, 0, 0, 0, hwnd_,
-                            reinterpret_cast<HMENU>(static_cast<INT_PTR>(kTab)),
-                            instance_, nullptr);
-    if (!tabs_) return false;
-    SendMessageW(tabs_, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
-    SetWindowSubclass(tabs_, TabSubclassProc, 1,
-                      reinterpret_cast<DWORD_PTR>(this));
-    const std::array<std::wstring, 3> names = {
-        Tr(L"Overview", L"概览"), Tr(L"Diagnostics", L"诊断"),
-        Tr(L"Settings", L"设置")};
-    for (int index = 0; index < 3; ++index) {
-      TCITEMW item{};
-      item.mask = TCIF_TEXT;
-      item.pszText = const_cast<wchar_t*>(names[index].c_str());
-      if (TabCtrl_InsertItem(tabs_, index, &item) < 0) return false;
-    }
-
-    Group(0, Tr(L"Connection status", L"连接状态"));
-    Group(0, Tr(L"Connection information", L"连接信息"));
-    Group(0, Tr(L"Pairing", L"设备配对"));
-    Group(1, Tr(L"Tests", L"测试方式"));
-    Group(1, Tr(L"Logs and reports", L"日志与报告"));
-    Group(2, Tr(L"Connection", L"连接"));
-    Group(2, Tr(L"Windows startup", L"Windows 启动"));
-
-    status_ = Control(0, L"STATIC", L"", SS_LEFT, 0);
-    status_detail_ = Control(0, L"STATIC", L"",
-                             SS_LEFT, 0);
-    computer_ = Control(0, L"STATIC", L"", SS_LEFT, 0);
-    wchar_t computer_name[MAX_COMPUTERNAME_LENGTH + 1]{};
-    DWORD computer_name_length = ARRAYSIZE(computer_name);
-    if (GetComputerNameW(computer_name, &computer_name_length)) {
-      std::wstring label = Tr(L"This PC: ", L"这台电脑：") +
-                           std::wstring(computer_name);
-      const std::wstring address = LocalIPv4();
-      if (!address.empty()) label += L"  ·  " + address;
-      SetWindowTextW(computer_, label.c_str());
-    }
-    audio_ = Control(0, L"STATIC", Tr(L"Audio source: Windows default output",
-                                            L"音频来源：Windows 默认输出设备"),
-                     SS_LEFT, 0);
-    listen_port_ = Control(0, L"STATIC", L"", SS_LEFT, 0);
-    pin_ = Control(0, L"STATIC", L"", SS_LEFT, 0);
-    pairing_action_ = Control(0, L"BUTTON", Tr(L"Pair new iPad", L"配对新 iPad"),
-            WS_TABSTOP | BS_PUSHBUTTON, kPair);
-    toggle_ = Control(0, L"BUTTON", L"", WS_TABSTOP | BS_PUSHBUTTON, kToggle);
-    volume_label_ = Control(0, L"STATIC", L"", SS_LEFT, 0);
-    volume_slider_ = Control(0, TRACKBAR_CLASSW, Tr(L"iPad volume", L"iPad 音量"),
-                             WS_TABSTOP | WS_DISABLED | TBS_NOTICKS, kIPadVolume);
-    SendMessageW(volume_slider_, TBM_SETRANGE, FALSE, MAKELONG(0, 100));
-    if (volume_slider_ &&
-        !SetWindowSubclass(volume_slider_, VolumeSubclassProc, 1, reinterpret_cast<DWORD_PTR>(this))) {
-      return false;
-    }
-
-    Control(1, L"BUTTON", Tr(L"Live diagnostics…", L"实时诊断…"), WS_TABSTOP | BS_PUSHBUTTON, kDiagnostics);
-    Control(1, L"BUTTON", Tr(L"Network test…", L"网络测试…"), WS_TABSTOP | BS_PUSHBUTTON, kNetworkProbe);
-    Control(1, L"BUTTON", Tr(L"Music compression test…", L"音乐压缩对比测试…"), WS_TABSTOP | BS_PUSHBUTTON, kMusicTest);
-    Control(1, L"STATIC", Tr(L"Capture the PC audio output and diagnose the current connection.", L"采集电脑当前声音，诊断实际播放链路。"), SS_LEFT, 0);
-    Control(1, L"STATIC", Tr(L"Compare transport with random data; no audio playback.", L"随机数据对比传输组合，不播放音频。"), SS_LEFT, 0);
-    Control(1, L"STATIC", Tr(L"Compare PCM and Opus using one excerpt, both transports and repeated rounds.", L"同一片段比较 PCM／Opus，两种传输自动交叉重复。"), SS_LEFT, 0);
-    diagnostic_status_ = Control(1, L"STATIC", L"", SS_LEFT, 0);
-    Control(1, L"BUTTON", Tr(L"Open sender log", L"打开运行日志"), WS_TABSTOP | BS_PUSHBUTTON, kLog);
-    Control(1, L"BUTTON", Tr(L"Open report folder", L"打开报告文件夹"), WS_TABSTOP | BS_PUSHBUTTON, kReports);
-    Control(1, L"BUTTON", Tr(L"Recommendation results", L"推荐结果"), WS_TABSTOP | BS_PUSHBUTTON, kCalibrationResults);
-    detailed_logging_ = Control(1, L"BUTTON", Tr(L"Detailed logging (up to 128 MiB)", L"详细日志（最多 128 MiB）"),
-                                WS_TABSTOP | BS_AUTOCHECKBOX, kDetailedLogging);
-
-    Control(2, L"STATIC", Tr(L"Connection settings", L"连接设置"), SS_LEFT, 0);
-    certificate_ = Control(2, L"STATIC", L"", SS_LEFT, 0);
-    Control(2, L"STATIC", Tr(L"Listening UDP port", L"监听 UDP 端口"),
-            SS_LEFT | SS_CENTERIMAGE, 0);
-    port_frame_ = CreateWindowExW(WS_EX_CONTROLPARENT, L"STATIC", L"",
-                                  WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS | SS_NOTIFY,
-                                  0, 0, 0, 0,
-                                  hwnd_, nullptr, instance_, nullptr);
-    if (port_frame_) {
-      SetWindowSubclass(port_frame_, PortFrameSubclassProc, 1,
-                        reinterpret_cast<DWORD_PTR>(this));
-      port_edit_ = CreateWindowExW(
-          0, L"EDIT", std::to_wstring(port_).c_str(),
-          WS_CHILD | WS_TABSTOP | ES_NUMBER | ES_AUTOHSCROLL,
-          0, 0, 0, 0, port_frame_,
-          reinterpret_cast<HMENU>(static_cast<INT_PTR>(kPort)), instance_,
-          nullptr);
-      if (port_edit_) {
-        pages_[2].push_back(port_edit_);
-        SendMessageW(port_edit_, WM_SETFONT,
-                     reinterpret_cast<WPARAM>(font_), TRUE);
-      }
-    }
-    Control(2, L"BUTTON", Tr(L"Apply", L"应用"),
-            WS_TABSTOP | BS_PUSHBUTTON, kSavePort);
-    auto_start_ = Control(2, L"BUTTON",
-                          Tr(L"Run when I sign in to Windows",
-                             L"登录 Windows 后自动运行"),
-                          WS_TABSTOP | BS_AUTOCHECKBOX, kAutoStart);
-    SendMessageW(auto_start_, BM_SETCHECK,
-                 AutoStartEnabled() ? BST_CHECKED : BST_UNCHECKED, 0);
-    Control(2, L"STATIC",
-            Tr(L"The TLS certificate is created locally and reused. Replacing it requires pairing again.",
-               L"连接证书由程序在本机创建并复用；更换证书后需要重新配对。"),
-            SS_LEFT, 0);
-    Control(2, L"STATIC", Tr(L"Audio capture", L"音频采集"), SS_LEFT | SS_CENTERIMAGE, 0);
-    capture_source_control_ = Control(2, WC_COMBOBOXW, L"",
-                                     WS_TABSTOP | CBS_DROPDOWNLIST, kCaptureSource);
-    for (const auto& label : {Tr(L"Process loopback", L"进程回环"),
-                              Tr(L"Default output device", L"默认输出设备")}) {
-      SendMessageW(capture_source_control_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label.c_str()));
-    }
-    SendMessageW(capture_source_control_, CB_SETCURSEL, capture_source_ == CaptureSource::endpoint, 0);
-
-    footer_close_ = CreateWindowExW(
-        0, L"BUTTON", Tr(L"Minimize to tray", L"最小化到托盘").c_str(),
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
-        0, 0, 0, 0, hwnd_,
-        reinterpret_cast<HMENU>(static_cast<INT_PTR>(kCloseWindow)),
-        instance_, nullptr);
-    footer_exit_ = CreateWindowExW(
-        0, L"BUTTON", Tr(L"Exit", L"退出程序").c_str(),
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
-        0, 0, 0, 0, hwnd_,
-        reinterpret_cast<HMENU>(static_cast<INT_PTR>(kExitApplication)),
-        instance_, nullptr);
-    SendMessageW(footer_close_, WM_SETFONT,
-                 reinterpret_cast<WPARAM>(font_), TRUE);
-    SendMessageW(footer_exit_, WM_SETFONT,
-                 reinterpret_cast<WPARAM>(font_), TRUE);
-    if (groups_[0].size() != 3 || groups_[1].size() != 2 ||
-        groups_[2].size() != 2 || pages_[0].size() != 10 ||
-        pages_[1].size() != 11 || pages_[2].size() != 9 ||
-        !port_frame_ || !port_edit_ || !footer_close_ || !footer_exit_) {
-      return false;
-    }
-
-    // Background painters must stay behind content; each owns its own pixels.
-    for (auto& page : groups_) for (HWND group : page)
-      SetWindowPos(group, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-    SetWindowPos(tabs_, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-    SelectPage(0);
-    Layout();
-    UpdateStatus();
-    SetWindowTextW(diagnostic_status_, Tr(L"No diagnostic session is running.",
-                                           L"当前没有进行中的诊断。")
-                                               .c_str());
-    return true;
-  }
-
-  void Layout() {
-    if (!tabs_) return;
-    RECT client{};
-    GetClientRect(hwnd_, &client);
-    const int width = MulDiv(client.right - client.left, 96, dpi_);
-    const int group_width = width - 64;
-    Place(tabs_, 16, 12, width - 32, 405);
-    Place(groups_[0][0], 32, 55, group_width, 96);
-    Place(groups_[0][1], 32, 163, group_width, 112);
-    Place(groups_[0][2], 32, 287, group_width, 114);
-    Place(groups_[1][0], 32, 55, group_width, 170);
-    Place(groups_[1][1], 32, 237, group_width, 164);
-    Place(groups_[2][0], 32, 55, group_width, 220);
-    Place(groups_[2][1], 32, 287, group_width, 114);
-
-    auto& overview = pages_[0];
-    Place(overview[0], 100, 78, group_width - 80, 24);
-    Place(overview[1], 100, 105, std::max(100, width - 282), 42);
-    Place(overview[2], 44, 181, group_width - 24, 22);
-    Place(overview[3], 44, 203, group_width - 24, 22);
-    Place(overview[4], 44, 225, group_width - 24, 22);
-    Place(overview[5], 44, 312, group_width - 24, 45);
-    Place(overview[6], width - 162, 359, 118, 29);
-    Place(overview[7], width - 162, 108, 118, 29);
-    Place(volume_label_, 44, 249, 155, 22);
-    Place(volume_slider_, 199, 246, group_width - 179, 27);
-
-    auto& diagnostics = pages_[1];
-    const int column = (group_width - 40) / 3;
-    for (int i = 0; i < 3; ++i) {
-      Place(diagnostics[i], 44 + i * (column + 8), 83, column, 32);
-      Place(diagnostics[i + 3], 44 + i * (column + 8), 130, column, 68);
-    }
-    Place(diagnostics[6], 44, 263, group_width - 24, 64);
-    Place(diagnostics[7], width - 288, 359, 118, 29);
-    Place(diagnostics[8], width - 162, 359, 118, 29);
-    Place(diagnostics[9],44,359,118,29);
-    Place(diagnostics[10],44,326,group_width - 24,26);
-
-    auto& settings = pages_[2];
-    Place(settings[0], 44, 82, group_width - 24, 28);
-    Place(settings[1], 44, 120, group_width - 24, 32);
-    Place(settings[2], 44, 160, 180, 29);
-    Place(port_frame_, 246, 160, 88, 29);
-    Place(settings[3], 5, 5, 78, 20);
-    Place(settings[4], width - 162, 160, 118, 29);
-    Place(settings[5], 44, 312, group_width - 24, 29);
-    Place(settings[6], 44, 228, group_width - 24, 41);
-    Place(settings[7], 44, 196, 146, 28);
-    Place(settings[8], 196, 196, group_width - 176, 100);
-
-    Place(footer_close_, width - 250, 428, 132, 29);
-    Place(footer_exit_, width - 110, 428, 100, 29);
-  }
-
-  void SelectPage(int page) {
-    if (page == current_page_) return;
-    current_page_ = page;
-    for (int index = 0; index < 3; ++index) {
-      for (HWND group : groups_[index]) {
-        ShowWindow(group, index == page ? SW_SHOW : SW_HIDE);
-      }
-      if (index == 2) {
-        ShowWindow(port_frame_, index == page ? SW_SHOW : SW_HIDE);
-      }
-      for (HWND control : pages_[index]) {
-        ShowWindow(control, index == page ? SW_SHOW : SW_HIDE);
-      }
-    }
-    TabCtrl_SetCurSel(tabs_, page);
-    InvalidateRect(tabs_, nullptr, TRUE);
-  }
+  void SelectPage(int page) { main_window_->SelectPage(page); }
 
   void ApplyTheme() {
-    if (!tabs_) return;
     const bool was_dark = dark_;
     dark_ = SystemDarkMode();
-    const BOOL dark_frame = dark_ ? TRUE : FALSE;
-    DwmSetWindowAttribute(hwnd_, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark_frame,
-                          sizeof(dark_frame));
-    SetWindowTheme(tabs_, dark_ ? L"DarkMode_Explorer" : nullptr, nullptr);
-    InvalidateRect(tabs_, nullptr, TRUE);
-    for (auto& page : groups_) {
-      for (HWND group : page) {
-        SetWindowTheme(group, dark_ ? L"DarkMode_Explorer" : nullptr, nullptr);
-        InvalidateRect(group, nullptr, TRUE);
-      }
-    }
-    for (auto& page : pages_) {
-      for (HWND control : page) {
-        SetWindowTheme(control, dark_ ? L"DarkMode_Explorer" : nullptr,
-                       nullptr);
-        InvalidateRect(control, nullptr, TRUE);
-      }
-    }
-    InvalidateRect(port_frame_, nullptr, TRUE);
-    for (HWND button : {footer_close_, footer_exit_}) {
-      SetWindowTheme(button, dark_ ? L"DarkMode_Explorer" : nullptr, nullptr);
-      InvalidateRect(button, nullptr, TRUE);
-    }
-    InvalidateRect(hwnd_, nullptr, TRUE);
     if (tray_ready_ && dark_ != was_dark) {
       NOTIFYICONDATAW icon{};
       icon.cbSize = sizeof(icon);
@@ -836,7 +405,7 @@ class Application {
     icon.hIcon = ThemeIcon(GetSystemMetrics(SM_CXSMICON));
     lstrcpynW(icon.szTip, L"HearPort", ARRAYSIZE(icon.szTip));
     tray_ready_ = Shell_NotifyIconW(NIM_ADD, &icon) != FALSE;
-    EnableWindow(footer_close_, tray_ready_);
+    main_window_->EnableHide(tray_ready_);
     if (tray_ready_) {
       icon.uVersion = NOTIFYICON_VERSION_4;
       Shell_NotifyIconW(NIM_SETVERSION, &icon);
@@ -856,6 +425,7 @@ class Application {
   void ShowWindowFromTray() {
     if (tray_popup_) tray_popup_->Hide();
     ShowWindow(hwnd_, SW_RESTORE);
+    main_window_->Show();
     SetForegroundWindow(hwnd_);
   }
 
@@ -869,14 +439,14 @@ class Application {
           [this] { ShowWindowFromTray(); },
           [this](std::uint32_t percent) {
             volume_editing_ = true;
-            SetVolumePosition(percent);
-            UpdateVolumeLabels();
+            volume_position_ = percent;
+            main_window_->SetVolume(percent);
           },
           [this](std::uint32_t percent) {
-            SetVolumePosition(percent);
-            CommitVolume(volume_slider_, true);
+            volume_position_ = percent;
+            CommitVolume(true);
           },
-          [this] { CommitVolume(volume_slider_, false); });
+          [this] { CommitVolume(false); });
     }
     UpdateVolume();
     NOTIFYICONIDENTIFIER icon{sizeof(icon), hwnd_, kTrayIcon};
@@ -913,102 +483,23 @@ class Application {
     DestroyMenu(menu);
   }
 
-  static LRESULT CALLBACK VolumeSubclassProc(HWND hwnd, UINT message,
-                                              WPARAM wparam, LPARAM lparam,
-                                              UINT_PTR subclass_id, DWORD_PTR app_pointer) {
-    auto* app = reinterpret_cast<Application*>(app_pointer);
-    switch (message) {
-      case WM_LBUTTONDOWN:
-      case WM_LBUTTONDBLCLK: {
-        if (!IsWindowEnabled(hwnd)) break;
-        RECT thumb{};
-        SendMessageW(hwnd, TBM_GETTHUMBRECT, 0, reinterpret_cast<LPARAM>(&thumb));
-        const POINT point{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
-        SetFocus(hwnd);
-        app->volume_drag_start_ = app->VolumePosition(hwnd);
-        const bool on_thumb = PtInRect(&thumb, point) != FALSE;
-        app->volume_drag_offset_ = on_thumb
-            ? point.x - (thumb.left + thumb.right) / 2 : 0;
-        app->volume_editing_ = true;
-        SetCapture(hwnd);
-        if (!on_thumb) app->MoveVolumeThumb(hwnd, point.x);
-        return 0;
-      }
-      case WM_MOUSEMOVE:
-        if (GetCapture() != hwnd) break;
-        app->MoveVolumeThumb(hwnd, GET_X_LPARAM(lparam));
-        return 0;
-      case WM_LBUTTONUP:
-        if (GetCapture() != hwnd) break;
-        app->CommitVolume(hwnd, app->VolumePosition(hwnd) != app->volume_drag_start_);
-        ReleaseCapture();
-        return 0;
-      case WM_CAPTURECHANGED:
-        if (app->volume_editing_) app->CommitVolume(hwnd, false);
-        break;
-      case WM_NCDESTROY:
-        RemoveWindowSubclass(hwnd, VolumeSubclassProc, subclass_id);
-        break;
-    }
-    return DefSubclassProc(hwnd, message, wparam, lparam);
-  }
-
-  static std::uint32_t VolumePosition(HWND slider) {
-    return static_cast<std::uint32_t>(SendMessageW(slider, TBM_GETPOS, 0, 0));
-  }
-
-  void MoveVolumeThumb(HWND slider, int x) {
-    RECT channel{};
-    SendMessageW(slider, TBM_GETCHANNELRECT, 0, reinterpret_cast<LPARAM>(&channel));
-    if (channel.right <= channel.left) return;
-    const int offset = std::clamp<int>(x - volume_drag_offset_ - channel.left, 0,
-                                       channel.right - channel.left);
-    const auto percent = MulDiv(offset, 100, channel.right - channel.left);
-    SetVolumePosition(percent);
-    UpdateVolumeLabels();
-  }
-
-  void SetVolumePosition(std::uint32_t percent) {
-    if (VolumePosition(volume_slider_) != percent) {
-      SendMessageW(volume_slider_, TBM_SETPOS, TRUE, percent);
-    }
-  }
-
-  void UpdateVolumeLabels() {
-    const auto label = Tr(L"iPad volume", L"iPad 音量") +
-        (IsWindowEnabled(volume_slider_) ? L"  " + std::to_wstring(VolumePosition(volume_slider_)) + L"%" : L"");
-    SetTextIfChanged(volume_label_, label.c_str());
-  }
-
-  void CommitVolume(HWND slider, bool changed) {
+  void CommitVolume(bool changed) {
     volume_editing_ = false;
-    if (changed && host_ && connected_ && IsWindowEnabled(slider)) {
-      const auto percent = VolumePosition(slider);
-      SetVolumePosition(percent);
-      host_->RequestSystemVolume(percent);
+    if (changed && host_ && connected_ && volume_available_) {
+      host_->RequestSystemVolume(volume_position_);
     }
     UpdateVolume();
   }
 
   void UpdateVolume() {
-    if (!volume_slider_) return;
     const auto volume = host_ && connected_ ? host_->SystemVolume()
                                             : hearport::windows::SystemVolumeState{};
-    if (!volume.percent) {
-      volume_editing_ = false;
-      if (GetCapture() == volume_slider_) ReleaseCapture();
-    }
-    if (!!IsWindowEnabled(volume_slider_) != volume.percent.has_value()) {
-      EnableWindow(volume_slider_, volume.percent.has_value());
-    }
-    if (volume.percent && !volume_editing_ && !volume.adjusting) {
-      SetVolumePosition(*volume.percent);
-    }
-    UpdateVolumeLabels();
-    if (tray_popup_) {
-      tray_popup_->Update(connected_, volume.percent
-          ? std::optional{VolumePosition(volume_slider_)} : std::nullopt);
-    }
+    volume_available_ = volume.percent.has_value();
+    if (!volume_available_) volume_editing_ = false;
+    if (volume.percent && !volume_editing_ && !volume.adjusting) volume_position_ = *volume.percent;
+    const auto value = volume_available_ ? std::optional{volume_position_} : std::nullopt;
+    main_window_->SetVolume(value);
+    if (tray_popup_) tray_popup_->Update(connected_, value);
   }
 
   void UpdateStatus() {
@@ -1020,9 +511,7 @@ class Application {
         ? Tr(L"Audio source: Process loopback", L"音频来源：进程回环")
         : Tr(L"Audio source: Windows default output", L"音频来源：Windows 默认输出设备");
     const bool capture_enabled = !diagnostic_duration_ && !music_test_active_ && !unpair_pending_;
-    if (!!IsWindowEnabled(capture_source_control_) != capture_enabled) {
-      EnableWindow(capture_source_control_, capture_enabled);
-    }
+    main_window_->EnableCapture(capture_enabled);
     if (running_ && music_test_active_) {
       audio_label = Tr(L"Audio source: selected file excerpt", L"音频来源：所选文件的固定片段");
       const auto seconds = service_->music_test_frames_processed() / 48'000;
@@ -1189,25 +678,13 @@ class Application {
                         L"启动后，这台电脑即可供 iPad 连接。")
                    : error_;
     }
-    SetTextIfChanged(status_, heading.c_str());
-    SetTextIfChanged(status_detail_, detail.c_str());
-    SetTextIfChanged(audio_, audio_label.c_str());
-    std::wstring toggle = running_ ? Tr(L"Stop sender", L"停止发送服务")
-                                   : Tr(L"Start sender", L"启动发送服务");
-    SetTextIfChanged(toggle_, toggle.c_str());
-    EnableWindow(toggle_, !unpair_pending_);
-    SetTextIfChanged(pairing_action_, paired_ ? Tr(L"Unpair iPad", L"取消配对").c_str()
-                                           : Tr(L"Pair new iPad", L"配对新 iPad").c_str());
-    EnableWindow(pairing_action_, !unpair_pending_ && (paired_ || (running_ && !connected_)));
-    SetTextIfChanged(certificate_,
-                   certificate_ready_
-                       ? Tr(L"Secure connection: certificate ready",
-                            L"安全连接：证书已自动配置").c_str()
-                       : Tr(L"Secure connection: preparing certificate",
-                            L"安全连接：正在准备证书").c_str());
-    const std::wstring port_text = Tr(L"Listening port: UDP ", L"监听端口：UDP ") +
-                                   std::to_wstring(port_);
-    SetTextIfChanged(listen_port_, port_text.c_str());
+    main_window_->SetActions(running_, !unpair_pending_, paired_,
+        !unpair_pending_ && (paired_ || (running_ && !connected_)));
+    main_window_->SetCertificate(certificate_ready_
+        ? Tr(L"Secure connection: certificate ready", L"安全连接：证书已就绪")
+        : Tr(L"Secure connection: preparing certificate", L"安全连接：正在准备证书"));
+    const auto port_text = Tr(L"Listening port: UDP ", L"监听端口：UDP ") + std::to_wstring(port_);
+    main_window_->SetStatus(heading, detail, audio_label, port_text);
     if (pin_expires_ && Clock::now() >= *pin_expires_) pin_expires_.reset();
     if (pin_expires_) {
       const auto seconds = std::chrono::ceil<std::chrono::seconds>(
@@ -1220,7 +697,7 @@ class Application {
       const std::wstring label = Tr(L"Pairing PIN: ", L"配对码：") +
                                  digits.substr(0, 3) + L" " + digits.substr(3) +
                                  Tr(L"  ·  Time left ", L"  ·  剩余 ") + countdown;
-      SetTextIfChanged(pin_, label.c_str());
+      main_window_->SetPairing(label);
     }
     if (!pin_expires_) {
       const std::wstring pairing_hint =
@@ -1231,7 +708,7 @@ class Application {
                     : paired_ ? Tr(L"The paired iPad can reconnect.", L"已配对的 iPad 可以重新连接。")
                                  : Tr(L"Choose Pair new iPad to show a code.",
                                       L"点击“配对新 iPad”显示配对码。");
-      SetTextIfChanged(pin_, pairing_hint.c_str());
+      main_window_->SetPairing(pairing_hint);
     }
   }
 
@@ -1290,10 +767,9 @@ class Application {
     identity->port = port_;
     const bool logging_ready = logger_.Start(data_dir_ / L"HearPort-sender.log");
     if (!logging_ready) {
-      SetWindowTextW(diagnostic_status_,
-                     Tr(L"The sender log could not be opened.",
+      main_window_->SetDiagnostic(Tr(L"The sender log could not be opened.",
                         L"无法打开运行日志。")
-                         .c_str());
+                         );
     }
     identity->diagnostic_log = [this](std::string_view line) {
       logger_.TryLog(line);
@@ -1339,7 +815,7 @@ class Application {
                L"请连接 iPad，开始自动网络测试。")
           : Tr(L"Waiting for iPad and its diagnostic report…",
                L"正在等待 iPad 连接并传回诊断报告……");
-      SetWindowTextW(diagnostic_status_, message.c_str());
+      main_window_->SetDiagnostic(message);
     }
     UpdateStatus();
   }
@@ -1411,10 +887,9 @@ class Application {
     StartService(std::chrono::seconds(
                      hearport::windows::kCoordinatedProbeDurationSeconds), true, std::nullopt, calibration_selected_);
     if (!running_) {
-      SetWindowTextW(diagnostic_status_,
-                     Tr(L"Could not start the network test. Check the overview and log.",
+      main_window_->SetDiagnostic(Tr(L"Could not start the network test. Check the overview and log.",
                         L"无法启动网络测试，请查看概览和运行日志。")
-                         .c_str());
+                         );
     }
     SelectPage(0);
   }
@@ -1439,7 +914,9 @@ class Application {
           const auto value = wcstoull(text.c_str(), &end, 10);
           return !text.empty() && *end == L'\0' && value <= ceiling;
         };
-        if (app->settings_kind_ == kNetworkProbe) {
+        if (app->settings_kind_ == kPortSettings) {
+          if (!app->SavePort(read(app->settings_duration_))) return 0;
+        } else if (app->settings_kind_ == kNetworkProbe) {
           app->calibration_goal_ = 0;
           app->calibration_selected_ = SendMessageW(app->settings_purpose_, CB_GETCURSEL,0,0) == 0;
           const auto maximum = read(app->settings_maximum_);
@@ -1496,9 +973,10 @@ class Application {
     type.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     type.lpszClassName = L"HearPortTestSettings";
     RegisterClassExW(&type);
-    const auto title = kind == kMusicTest ? Tr(L"Music test", L"音乐测试") :
+    const auto title = kind == kPortSettings ? Tr(L"Listening UDP port", L"监听 UDP 端口") :
+        kind == kMusicTest ? Tr(L"Music test", L"音乐测试") :
         kind == kNetworkProbe ? Tr(L"Network test", L"网络测试") : Tr(L"Live diagnostics", L"实时诊断");
-    const int height = kind == kMusicTest ? 352 : kind == kNetworkProbe ? 370 : 225;
+    const int height = kind == kPortSettings ? 165 : kind == kMusicTest ? 352 : kind == kNetworkProbe ? 370 : 225;
     RECT owner{}; GetWindowRect(hwnd_, &owner);
     settings_window_ = CreateWindowExW(WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT,
         type.lpszClassName, title.c_str(), WS_POPUP | WS_CAPTION | WS_SYSMENU,
@@ -1533,8 +1011,11 @@ class Application {
            L"自动测试并推荐参数会采样两种传输，以同一轨迹比较预算，再对推荐参数复核两次。也可选择原传输对比测试。全程不播放音频。") :
         Tr(L"Capture the PC's current audio output. The iPad report is returned automatically when the chosen duration ends.",
            L"采集电脑当前输出声音，指定时长结束后自动回传 iPad 诊断报告。");
-    control(L"STATIC",explanation,SS_LEFT,0,20,18,430,64);
-    if (kind == kMusicTest) {
+    if (kind != kPortSettings) control(L"STATIC",explanation,SS_LEFT,0,20,18,430,64);
+    if (kind == kPortSettings) {
+      control(L"STATIC", Tr(L"UDP port", L"UDP 端口"), SS_LEFT | SS_CENTERIMAGE, 0, 20, 24, 145, 29);
+      settings_duration_ = edit(std::to_wstring(port_), ES_NUMBER, 180, 24, 100);
+    } else if (kind == kMusicTest) {
       settings_file_ = edit(music_path_,ES_READONLY,20,94,310);
       control(L"BUTTON",Tr(L"Select file…",L"选择文件…"),WS_TABSTOP | BS_PUSHBUTTON,kMusicFile,338,94,112,29);
       control(L"STATIC",Tr(L"Start (seconds)",L"起点（秒）"),SS_LEFT | SS_CENTERIMAGE,0,20,143,150,29);
@@ -1561,7 +1042,8 @@ class Application {
       control(L"STATIC",Tr(L"Duration (seconds)",L"时长（秒）"),SS_LEFT | SS_CENTERIMAGE,0,20,94,150,29);
       settings_duration_ = edit(live_seconds_,ES_NUMBER,180,94,100);
     }
-    control(L"BUTTON",Tr(L"Start",L"开始测试"),WS_TABSTOP | BS_DEFPUSHBUTTON,IDOK,230,height-73,104,29);
+    control(L"BUTTON",kind == kPortSettings ? Tr(L"Apply",L"应用") : Tr(L"Start",L"开始测试"),
+        WS_TABSTOP | BS_DEFPUSHBUTTON,IDOK,230,height-73,104,29);
     control(L"BUTTON",Tr(L"Cancel",L"取消"),WS_TABSTOP | BS_PUSHBUTTON,IDCANCEL,346,height-73,104,29);
     EnableWindow(hwnd_,FALSE);
     ShowWindow(settings_window_,SW_SHOW);
@@ -1575,7 +1057,7 @@ class Application {
     settings_file_ = settings_start_ = settings_duration_ = settings_maximum_ = settings_purpose_ = nullptr;
     EnableWindow(hwnd_,TRUE); SetForegroundWindow(hwnd_);
     if (quit) { PostQuitMessage(static_cast<int>(message.wParam)); return; }
-    if (!settings_start_requested_) return;
+    if (!settings_start_requested_ || kind == kPortSettings) return;
     if (kind == kMusicTest) StartMusicTest();
     else if (kind == kNetworkProbe) StartNetworkProbe();
     else StartDiagnostics();
@@ -1714,12 +1196,12 @@ class Application {
   }
 
   void SaveCaptureSourceFromControl() {
-    const auto selection = SendMessageW(capture_source_control_, CB_GETCURSEL, 0, 0);
+    const auto selection = main_window_->capture();
     if (selection != 0 && selection != 1) return;
     const auto source = selection == 1 ? CaptureSource::endpoint : CaptureSource::process;
     if (source == capture_source_) return;
     if (!SaveSetting(L"CaptureSource", static_cast<DWORD>(selection))) {
-      SendMessageW(capture_source_control_, CB_SETCURSEL, capture_source_ == CaptureSource::endpoint, 0);
+      main_window_->SetCapture(capture_source_ == CaptureSource::endpoint ? 1 : 0);
       MessageBoxW(hwnd_, Tr(L"Could not save audio capture settings.",
                              L"无法保存音频采集设置。").c_str(), L"HearPort", MB_OK | MB_ICONERROR);
       return;
@@ -1732,24 +1214,23 @@ class Application {
     UpdateStatus();
   }
 
-  void SavePortFromControl() {
-    wchar_t text[16]{};
-    GetWindowTextW(port_edit_, text, ARRAYSIZE(text));
+  bool SavePort(const std::wstring& text) {
     wchar_t* end = nullptr;
-    const unsigned long value = wcstoul(text, &end, 10);
-    if (text[0] == L'\0' || *end != L'\0' || value == 0 || value > 65535) {
-      MessageBoxW(hwnd_, Tr(L"Enter a UDP port from 1 to 65535.",
+    const unsigned long value = wcstoul(text.c_str(), &end, 10);
+    if (text.empty() || *end != L'\0' || value == 0 || value > 65535) {
+      MessageBoxW(settings_window_, Tr(L"Enter a UDP port from 1 to 65535.",
                              L"请输入 1 至 65535 之间的 UDP 端口。")
                              .c_str(), L"HearPort", MB_OK | MB_ICONWARNING);
-      return;
+      return false;
     }
     if (!SaveSetting(L"Port", static_cast<DWORD>(value))) {
-      MessageBoxW(hwnd_, Tr(L"Could not save the port.", L"无法保存端口。")
+      MessageBoxW(settings_window_, Tr(L"Could not save the port.", L"无法保存端口。")
                              .c_str(), L"HearPort", MB_OK | MB_ICONERROR);
-      return;
+      return false;
     }
     const bool restart = running_ && value != port_;
     port_ = static_cast<std::uint16_t>(value);
+    main_window_->SetPort(port_);
     if (restart) {
       const auto diagnostics = diagnostic_duration_;
       const bool network_probe = network_probe_active_;
@@ -1757,18 +1238,20 @@ class Application {
       StopService();
       if (music) StartMusicTest(); else StartService(diagnostics, network_probe);
       if (diagnostics && !running_) {
-        SetWindowTextW(diagnostic_status_,
-                       Tr(L"Diagnostics stopped because the sender could not restart on the new port.",
+        main_window_->SetDiagnostic(Tr(L"Diagnostics stopped because the sender could not restart on the new port.",
                           L"诊断已中断：无法使用新端口重启发送服务。")
-                           .c_str());
+                           );
       }
     } else {
       UpdateStatus();
     }
+    return true;
   }
 
   void OnTimer() {
-    if (host_ && connected_ && current_page_ == 0 && IsWindowVisible(hwnd_) && !volume_editing_) {
+    const bool volume_visible = (main_window_->page() == 0 && IsWindowVisible(hwnd_)) ||
+                                (tray_popup_ && tray_popup_->visible());
+    if (host_ && connected_ && volume_visible && !volume_editing_) {
       host_->RequestSystemVolume(std::nullopt);
     }
     if (running_ || pin_expires_) UpdateStatus();
@@ -1784,25 +1267,22 @@ class Application {
       network_probe_active_ = false;
       connected_ = false;
       UpdateStatus();
-      SetWindowTextW(diagnostic_status_,
-                     (local_calibration ? Tr(L"Automatic test completed; results are available on iPad.",L"自动测试已完成；结果在 iPad 上查看和应用。") : Tr(L"Diagnostic report saved in the report folder.",
+      main_window_->SetDiagnostic((local_calibration ? Tr(L"Automatic test completed; results are available on iPad.",L"自动测试已完成；结果在 iPad 上查看和应用。") : Tr(L"Diagnostic report saved in the report folder.",
                         L"诊断报告已保存到报告文件夹。"))
-                         .c_str());
+                         );
       StopService();
       StartService();
       completed_test_ = running_ && succeeded && !local_calibration ? completed_test : 0;
       UpdateStatus();
-      if (!succeeded) SetWindowTextW(diagnostic_status_,
-          Tr(L"Test interrupted; the available report was saved. It is not a complete comparison.",
-             L"测试已中断，现有报告已保存；本次不是完整对照。").c_str());
+      if (!succeeded) main_window_->SetDiagnostic(Tr(L"Test interrupted; the available report was saved. It is not a complete comparison.",
+             L"测试已中断，现有报告已保存；本次不是完整对照。"));
     } else if (Clock::now() - diagnostic_started_ >
                *diagnostic_duration_ + std::chrono::minutes(7)) {
       StopService();
       StartService();
-      SetWindowTextW(diagnostic_status_,
-                     Tr(L"Diagnostic session ended without a completed report. Check the log.",
+      main_window_->SetDiagnostic(Tr(L"Diagnostic session ended without a completed report. Check the log.",
                         L"诊断未收到完整报告，请查看运行日志。")
-                         .c_str());
+                         );
     }
   }
 
@@ -1816,20 +1296,45 @@ class Application {
     }
   }
 
+  void HandleAction(MainAction action) {
+    switch (action) {
+      case MainAction::pair: if (paired_) ForgetPairing(); else OpenPairing(); break;
+      case MainAction::sender:
+        if (!running_) { StartService(); break; }
+        if (MessageBoxW(hwnd_, Tr(L"Stop sending audio to the iPad?", L"停止向 iPad 发送声音吗？").c_str(),
+                        L"HearPort", MB_YESNO | MB_ICONQUESTION) == IDYES) {
+          const bool diagnostic_active = diagnostic_duration_.has_value();
+          StopService();
+          if (diagnostic_active) main_window_->SetDiagnostic(Tr(L"Diagnostic session stopped.", L"诊断已停止。"));
+        }
+        break;
+      case MainAction::live_test: ShowTestSettings(kDiagnostics); break;
+      case MainAction::network_test: ShowTestSettings(kNetworkProbe); break;
+      case MainAction::music_test: ShowTestSettings(kMusicTest); break;
+      case MainAction::log: OpenPath(data_dir_ / L"HearPort-sender.log"); break;
+      case MainAction::reports: OpenPath(data_dir_ / L"diagnostics"); break;
+      case MainAction::results: ShowCalibrationResults(); break;
+      case MainAction::detailed_logging: logger_.SetDetailedLogging(main_window_->detailed_logging()); break;
+      case MainAction::port: ShowTestSettings(kPortSettings); break;
+      case MainAction::capture: SaveCaptureSourceFromControl(); break;
+      case MainAction::auto_start:
+        if (!SetAutoStart(main_window_->auto_start())) {
+          main_window_->SetAutoStart(AutoStartEnabled());
+          MessageBoxW(hwnd_, Tr(L"Could not change startup settings.", L"无法修改开机启动设置。").c_str(),
+                      L"HearPort", MB_OK | MB_ICONERROR);
+        }
+        break;
+      case MainAction::hide: SendMessageW(hwnd_, WM_CLOSE, 0, 0); break;
+      case MainAction::exit: ConfirmExit(); break;
+    }
+  }
+
   LRESULT Handle(UINT message, WPARAM wparam, LPARAM lparam) {
     if (taskbar_created_ != 0 && message == taskbar_created_) {
       AddTrayIcon();
       return 0;
     }
     switch (message) {
-      case WM_CREATE:
-        if (!CreateControls()) return -1;
-        ApplyTheme();
-        taskbar_created_ = RegisterWindowMessageW(L"TaskbarCreated");
-        AddTrayIcon();
-        SetTimer(hwnd_, kTimer, 1000, nullptr);
-        PostMessageW(hwnd_, kStartMessage, 0, 0);
-        return 0;
       case kStartMessage:
         StartService();
         return 0;
@@ -1865,99 +1370,21 @@ class Application {
       case WM_TIMER:
         if (wparam == kTimer) OnTimer();
         return 0;
-      case WM_HSCROLL:
-        if (!volume_slider_ || reinterpret_cast<HWND>(lparam) != volume_slider_) {
-          return DefWindowProcW(hwnd_, message, wparam, lparam);
-        }
-        if (!volume_editing_) CommitVolume(volume_slider_, true);
-        return 0;
       case WM_SIZE:
-        if (wparam == SIZE_MINIMIZED) {
-          if (tray_ready_) ShowWindow(hwnd_, SW_HIDE);
-        } else {
-          Layout();
-        }
-        return 0;
-      case WM_DPICHANGED: {
+        if (wparam == SIZE_MINIMIZED && tray_ready_) ShowWindow(hwnd_, SW_HIDE);
+        break;
+      case WM_DPICHANGED:
         dpi_ = HIWORD(wparam);
-        const RECT* suggested = reinterpret_cast<const RECT*>(lparam);
-        SetWindowPos(hwnd_, nullptr, suggested->left, suggested->top,
-                     suggested->right - suggested->left,
-                     suggested->bottom - suggested->top,
-                     SWP_NOZORDER | SWP_NOACTIVATE);
         CreateFontForDpi();
-        Layout();
-        return 0;
-      }
+        break;
       case WM_SETTINGCHANGE:
       case WM_THEMECHANGED:
         ApplyTheme();
-        return 0;
-      case WM_ERASEBKGND: {
-        RECT client{};
-        GetClientRect(hwnd_, &client);
-        FillRect(reinterpret_cast<HDC>(wparam), &client,
-                 dark_ ? dark_brush_ : GetSysColorBrush(COLOR_BTNFACE));
-        return 1;
-      }
-      case WM_NOTIFY:
-        if (reinterpret_cast<NMHDR*>(lparam)->idFrom == kTab &&
-            reinterpret_cast<NMHDR*>(lparam)->code == TCN_SELCHANGE) {
-          SelectPage(TabCtrl_GetCurSel(tabs_));
-        }
-        return 0;
+        break;
       case WM_COMMAND:
-        switch (LOWORD(wparam)) {
-          case kPair: if (paired_) ForgetPairing(); else OpenPairing(); break;
-          case kToggle:
-            if (running_) {
-              if (MessageBoxW(hwnd_,
-                              Tr(L"Stop sending audio to the iPad?",
-                                 L"停止向 iPad 发送声音吗？")
-                                  .c_str(),
-                              L"HearPort", MB_YESNO | MB_ICONQUESTION) == IDYES) {
-                const bool diagnostic_active = diagnostic_duration_.has_value();
-                StopService();
-                if (diagnostic_active) {
-                  SetWindowTextW(diagnostic_status_,
-                                 Tr(L"Diagnostic session stopped.",
-                                    L"诊断已停止。")
-                                     .c_str());
-                }
-              }
-            } else {
-              StartService();
-            }
-            break;
-          case kDiagnostics: ShowTestSettings(kDiagnostics); break;
-          case kNetworkProbe: ShowTestSettings(kNetworkProbe); break;
-          case kMusicTest: ShowTestSettings(kMusicTest); break;
-          case kLog: OpenPath(data_dir_ / L"HearPort-sender.log"); break;
-          case kReports: OpenPath(data_dir_ / L"diagnostics"); break;
-          case kCalibrationResults: ShowCalibrationResults(); break;
-          case kDetailedLogging:
-            logger_.SetDetailedLogging(SendMessageW(detailed_logging_, BM_GETCHECK, 0, 0) == BST_CHECKED);
-            break;
-          case kSavePort: SavePortFromControl(); break;
-          case kCaptureSource:
-            if (HIWORD(wparam) == CBN_SELCHANGE) SaveCaptureSourceFromControl();
-            break;
-          case kAutoStart:
-            if (!SetAutoStart(SendMessageW(auto_start_, BM_GETCHECK, 0, 0) ==
-                              BST_CHECKED)) {
-              SendMessageW(auto_start_, BM_SETCHECK,
-                           AutoStartEnabled() ? BST_CHECKED : BST_UNCHECKED, 0);
-              MessageBoxW(hwnd_, Tr(L"Could not change startup settings.",
-                                     L"无法修改开机启动设置。")
-                                     .c_str(), L"HearPort", MB_OK | MB_ICONERROR);
-            }
-            break;
-          case kTrayOpen: ShowWindowFromTray(); break;
-          case kTrayExit: ConfirmExit(); break;
-          case kCloseWindow: SendMessageW(hwnd_, WM_CLOSE, 0, 0); break;
-          case kExitApplication: ConfirmExit(); break;
-        }
-        return 0;
+        if (LOWORD(wparam) == kTrayOpen) ShowWindowFromTray();
+        if (LOWORD(wparam) == kTrayExit) ConfirmExit();
+        break;
       case kTrayMessage:
         if (LOWORD(lparam) == NIN_SELECT || LOWORD(lparam) == NIN_KEYSELECT) {
           ToggleTrayPopup({GET_X_LPARAM(wparam), GET_Y_LPARAM(wparam)});
@@ -1973,93 +1400,38 @@ class Application {
           ConfirmExit();
         }
         return 0;
-      case WM_CTLCOLORBTN:
-      case WM_CTLCOLORSTATIC: {
-        HDC context = reinterpret_cast<HDC>(wparam);
-        HWND control = reinterpret_cast<HWND>(lparam);
-        SetBkMode(context, TRANSPARENT);
-        SetTextColor(context, dark_ ? RGB(242, 242, 242)
-                                    : GetSysColor(COLOR_WINDOWTEXT));
-        if (control == status_ && running_) {
-          SetTextColor(context, dark_ ? RGB(105, 202, 138)
-                                      : RGB(32, 128, 72));
-        }
-        const bool footer = control == footer_close_ || control == footer_exit_;
-        HBRUSH background = dark_
-            ? (footer ? dark_brush_ : page_brush_)
-            : GetSysColorBrush(footer ? COLOR_BTNFACE : COLOR_WINDOW);
-        return reinterpret_cast<LRESULT>(background);
-      }
-      case WM_CTLCOLOREDIT:
-      case WM_CTLCOLORLISTBOX: {
-        if (!dark_) return DefWindowProcW(hwnd_, message, wparam, lparam);
-        HDC context = reinterpret_cast<HDC>(wparam);
-        SetTextColor(context, RGB(242, 242, 242));
-        SetBkColor(context, RGB(45, 45, 45));
-        return reinterpret_cast<LRESULT>(edit_brush_);
-      }
       case WM_DESTROY:
         KillTimer(hwnd_, kTimer);
         tray_popup_.reset();
         RemoveTrayIcon();
         StopService();
         if (font_) DeleteObject(font_);
-        DeleteObject(dark_brush_);
         DeleteObject(page_brush_);
         DeleteObject(edit_brush_);
         PostQuitMessage(0);
         return 0;
-      default:
-        return DefWindowProcW(hwnd_, message, wparam, lparam);
     }
+    return DefSubclassProc(hwnd_, message, wparam, lparam);
   }
 
   static LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wparam,
-                                     LPARAM lparam) {
-    if (message == WM_NCCREATE) {
-      auto* app = static_cast<Application*>(
-          reinterpret_cast<CREATESTRUCTW*>(lparam)->lpCreateParams);
-      app->hwnd_ = hwnd;
-      SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(app));
-    }
-    auto* app = reinterpret_cast<Application*>(
-        GetWindowLongPtrW(hwnd, GWLP_USERDATA));
-    return app ? app->Handle(message, wparam, lparam)
-               : DefWindowProcW(hwnd, message, wparam, lparam);
+                                     LPARAM lparam, UINT_PTR id, DWORD_PTR data) {
+    auto* app = reinterpret_cast<Application*>(data);
+    if (message == WM_NCDESTROY) RemoveWindowSubclass(hwnd, WindowProc, id);
+    return app->Handle(message, wparam, lparam);
   }
 
   HINSTANCE instance_ = nullptr;
   HWND hwnd_ = nullptr;
-  HWND tabs_ = nullptr;
-  std::array<std::vector<HWND>, 3> groups_;
-  HWND footer_close_ = nullptr;
-  HWND footer_exit_ = nullptr;
-  HWND status_ = nullptr;
-  HWND volume_label_ = nullptr;
-  HWND volume_slider_ = nullptr;
+  std::unique_ptr<MainWindow> main_window_;
   std::unique_ptr<TrayPopup> tray_popup_;
   bool volume_editing_ = false;
-  std::uint32_t volume_drag_start_ = 0;
-  int volume_drag_offset_ = 0;
-  HWND status_detail_ = nullptr;
-  HWND computer_ = nullptr;
-  HWND audio_ = nullptr;
-  HWND listen_port_ = nullptr;
-  HWND pin_ = nullptr;
-  HWND toggle_ = nullptr;
-  int current_page_ = -1;
+  bool volume_available_ = false;
+  std::uint32_t volume_position_ = 0;
   bool paired_ = false;
-  HWND pairing_action_ = nullptr;
-  HWND diagnostic_status_ = nullptr;
-  HWND detailed_logging_ = nullptr;
-  HWND certificate_ = nullptr;
-  HWND port_frame_ = nullptr;
-  HWND port_edit_ = nullptr;
-  HWND auto_start_ = nullptr;
   HFONT font_ = nullptr;
   UINT dpi_ = 96;
   UINT taskbar_created_ = 0;
-  std::array<std::vector<HWND>, 3> pages_;
   HWND settings_window_ = nullptr, settings_file_ = nullptr, settings_start_ = nullptr, settings_duration_ = nullptr;
   HWND calibration_window_ = nullptr;
   HWND settings_maximum_ = nullptr, settings_purpose_ = nullptr;
@@ -2081,7 +1453,6 @@ class Application {
   bool dark_ = false;
   std::uint16_t port_ = 52137;
   CaptureSource capture_source_ = LoadCaptureSource();
-  HWND capture_source_control_ = nullptr;
   std::wstring error_;
   std::filesystem::path data_dir_;
   std::optional<Clock::time_point> pin_expires_;
@@ -2090,9 +1461,8 @@ class Application {
   int completed_test_ = 0;
   Clock::time_point diagnostic_started_{};
   SenderDiagnosticLogger logger_;
-  HBRUSH dark_brush_ = CreateSolidBrush(RGB(32, 32, 32));
-  HBRUSH page_brush_ = CreateSolidBrush(RGB(42, 42, 42));
   HBRUSH edit_brush_ = CreateSolidBrush(RGB(45, 45, 45));
+  HBRUSH page_brush_ = CreateSolidBrush(RGB(42, 42, 42));
   std::unique_ptr<hearport::windows::SenderHost> host_;
   std::thread unpair_worker_;
   bool unpair_pending_ = false;
@@ -2106,7 +1476,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line,
                     int show_command) {
   HANDLE singleton = CreateMutexW(nullptr, TRUE, L"Local\\HearPortSenderGui");
   if (singleton && GetLastError() == ERROR_ALREADY_EXISTS) {
-    if (HWND existing = FindWindowW(kWindowClass, nullptr)) {
+    if (HWND existing = FindWindowW(nullptr, L"HearPort")) {
       ShowWindow(existing, SW_RESTORE);
       SetForegroundWindow(existing);
     }

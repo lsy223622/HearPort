@@ -63,6 +63,7 @@ target_link_libraries(hearport_sender PRIVATE hearport_windows_platform)
 enable_language(RC)
 add_executable(hearport_sender_gui WIN32
   src/gui_main.cpp
+  src/main_window.cpp
   src/tray_popup.cpp
   src/sender_certificate.cpp
   src/gui_resources.rc
