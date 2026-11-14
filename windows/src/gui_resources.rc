@@ -3,5 +3,3 @@
 
 1 RT_MANIFEST "gui.manifest"
 IDI_HEARPORT ICON "HearPort.ico"
-IDI_HEARPORT_TRAY_LIGHT ICON "HearPortTrayLight.ico"
-IDI_HEARPORT_TRAY_DARK ICON "HearPortTrayDark.ico"

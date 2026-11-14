@@ -26,6 +26,8 @@ struct ConnectionLogo {
                 StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
                 Data="M369,570 V405 Q369,333 441,333 H927 Q999,333 999,405 V565 M999,914 Q999,984 929,984 H819
                       M318,646 H686 Q751,646 751,711 V921 Q751,986 686,986 H318 Q253,986 253,921 V711 Q253,646 318,646 Z"/>
+          <Path Stroke="{ThemeResource TextFillColorPrimaryBrush}" StrokeThickness="48"
+                StrokeStartLineCap="Round" StrokeEndLineCap="Round" Data="M999,565 V914"/>
           <Path StrokeThickness="48" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
                 Data="M823,703 C839,730 839,764 823,791"/>
           <Path StrokeThickness="48" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
@@ -37,13 +39,15 @@ struct ConnectionLogo {
         </Canvas>
       </Viewbox>)").as<Viewbox>();
     const auto children = view.Child().as<Canvas>().Children();
+    closed_edge_ = children.GetAt(1).as<Shapes::Path>();
     for (std::uint32_t i = 0; i < marks_.size(); ++i)
-      marks_[i] = children.GetAt(i + 1).as<Shapes::Path>();
+      marks_[i] = children.GetAt(i + 2).as<Shapes::Path>();
   }
 
-  void Update(bool connected, bool usb, LinkStability stability,
+  void Update(bool running, bool connected, bool usb, LinkStability stability,
               const winrt::Microsoft::UI::Xaml::Media::Brush& ink) {
     using namespace winrt::Microsoft::UI::Xaml;
+    closed_edge_.Visibility(running ? Visibility::Collapsed : Visibility::Visible);
     const int bars = LinkBars(stability);
     for (int i = 0; i < 4; ++i) {
       const bool cable = i == 3;
@@ -56,5 +60,6 @@ struct ConnectionLogo {
   }
 
  private:
+  winrt::Microsoft::UI::Xaml::Shapes::Path closed_edge_{nullptr};
   std::array<winrt::Microsoft::UI::Xaml::Shapes::Path, 4> marks_{nullptr, nullptr, nullptr, nullptr};
 };

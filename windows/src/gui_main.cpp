@@ -66,7 +66,8 @@ std::wstring Tr(const wchar_t* english, const wchar_t* chinese) {
              : english;
 }
 
-HICON DrawConnectedTrayIcon(int size, bool usb, LinkStability stability, bool dark) {
+HICON DrawTrayIcon(int size, bool running, bool connected, bool usb,
+                  LinkStability stability, bool dark) {
   BITMAPINFO info{};
   info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
   info.bmiHeader.biWidth = size;
@@ -91,6 +92,7 @@ HICON DrawConnectedTrayIcon(int size, bool usb, LinkStability stability, bool da
       {1.5,9.3,2.2,8.6},{2.2,8.6,7.8,8.6},{7.8,8.6,8.5,9.3},
       {8.5,9.3,8.5,12.6},{8.5,12.6,7.8,13.3},{7.8,13.3,2.2,13.3},
       {2.2,13.3,1.5,12.6},{1.5,12.6,1.5,9.3}};
+  constexpr Stroke closed_edge{13.1,6,13.1,12.1};
   constexpr Stroke cable[]{{8.5,10.8,11.3,10.8},{11.3,10.8,13.4,9.9},
       {13.4,9.9,14.1,8.6},{14.1,8.6,13.9,7.2},{13.9,7.2,13.1,6}};
   constexpr Stroke signal[][2]{
@@ -117,12 +119,13 @@ HICON DrawConnectedTrayIcon(int size, bool usb, LinkStability stability, bool da
       const auto px = (x + (sx + .5) / 4) * 16 / size;
       const auto py = (y + (sy + .5) / 4) * 16 / size;
       const auto hit = [&](const Stroke& stroke) { return covers(stroke, px, py); };
-      bool signal_hit = usb && std::ranges::any_of(cable, hit);
-      if (!usb) {
+      bool signal_hit = connected && usb && std::ranges::any_of(cable, hit);
+      if (connected && !usb) {
         for (int bar = 0; bar < LinkBars(stability); ++bar)
           signal_hit = signal_hit || std::ranges::any_of(signal[bar], hit);
       }
-      if (!signal_hit && !std::ranges::any_of(outline, hit)) continue;
+      const bool outline_hit = std::ranges::any_of(outline, hit) || (!running && hit(closed_edge));
+      if (!signal_hit && !outline_hit) continue;
       const auto color = signal_hit ? link : ink;
       a += 255; r += GetRValue(color); g += GetGValue(color); b += GetBValue(color);
     }
@@ -370,16 +373,12 @@ class Application {
 
   void FillTrayIcon(NOTIFYICONDATAW& icon) {
     const int size = GetSystemMetrics(SM_CXSMICON);
-    if (connected_) {
+    if (auto replacement = DrawTrayIcon(size, running_, connected_, usb_connected_,
+                                       link_stability_, dark_)) {
       if (tray_connection_icon_) DestroyIcon(tray_connection_icon_);
-      tray_connection_icon_ = DrawConnectedTrayIcon(size, usb_connected_, link_stability_, dark_);
+      tray_connection_icon_ = replacement;
     }
-    icon.hIcon = connected_ ? tray_connection_icon_ : nullptr;
-    if (!icon.hIcon) {
-      icon.hIcon = reinterpret_cast<HICON>(LoadImageW(
-          instance_, MAKEINTRESOURCEW(dark_ ? IDI_HEARPORT_TRAY_DARK : IDI_HEARPORT_TRAY_LIGHT),
-          IMAGE_ICON, size, size, LR_SHARED));
-    }
+    icon.hIcon = tray_connection_icon_;
     std::wstring tip = Tr(L"HearPort not connected", L"HearPort 未连接");
     if (connected_) {
       tip = usb_connected_ ? L"HearPort · USB" : Tr(L"HearPort · Network", L"HearPort · 网络");
@@ -402,8 +401,8 @@ class Application {
   }
 
   void UpdateLinkPresentation() {
-    main_window_->SetLinkStability(connected_, connected_ && usb_connected_, link_stability_);
-    const TrayLink current{connected_, connected_ && usb_connected_, link_stability_};
+    main_window_->SetLinkStability(running_, connected_, connected_ && usb_connected_, link_stability_);
+    const TrayLink current{running_, connected_, connected_ && usb_connected_, link_stability_};
     if (current == tray_link_) return;
     tray_link_ = current;
     RefreshTrayIcon();
@@ -1341,6 +1340,7 @@ class Application {
   bool certificate_ready_ = false;
   bool tray_ready_ = false;
   struct TrayLink {
+    bool running = false;
     bool connected = false;
     bool usb = false;
     LinkStability stability = LinkStability::unknown;

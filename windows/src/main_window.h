@@ -45,7 +45,7 @@ class MainWindow {
   int page() const;
   void SetStatus(const std::wstring& heading, const std::wstring& detail,
                  const std::wstring& audio, const std::wstring& port);
-  void SetLinkStability(bool connected, bool usb, LinkStability stability);
+  void SetLinkStability(bool running, bool connected, bool usb, LinkStability stability);
   void SetComputer(const std::wstring& text);
   void SetActions(bool running, bool sender_enabled, bool paired, bool pair_enabled);
   void SetPairing(const std::wstring& text);
