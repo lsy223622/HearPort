@@ -117,6 +117,7 @@ struct MainWindow::Impl {
   Grid volume_row{nullptr};
   Border volume_card{nullptr};
   ConnectionLogo connection_logo;
+  bool logo_running = false;
   Media::GradientStop hero_color{nullptr};
   bool logo_connected = false, logo_usb = false;
   LinkStability logo_stability = LinkStability::unknown;
@@ -316,7 +317,7 @@ struct MainWindow::Impl {
     }
     hero_color.Color(logo_connected && !high_contrast ? color : Color{});
     const Media::Brush ink = high_contrast ? theme_ink : Media::SolidColorBrush(color);
-    connection_logo.Update(logo_connected, logo_usb, logo_stability, ink);
+    connection_logo.Update(logo_running, logo_connected, logo_usb, logo_stability, ink);
     const auto description = logo_connected ? title : Tr(L"iPad not connected", L"iPad 未连接");
     ToolTipService::SetToolTip(connection_logo.view, winrt::box_value(description));
     Automation::AutomationProperties::SetName(connection_logo.view, description);
@@ -515,9 +516,6 @@ struct MainWindow::Impl {
 
     auto title = Controls::TitleBar();
     title.Title(L"HearPort");
-    SymbolIconSource icon;
-    icon.Symbol(Symbol::Audio);
-    title.IconSource(icon);
     title.IsPaneToggleButtonVisible(true);
     title.PaneToggleRequested([this](auto&&, auto&&) {
       navigation.IsPaneOpen(!navigation.IsPaneOpen());
@@ -637,8 +635,9 @@ void MainWindow::SetStatus(const std::wstring& heading, const std::wstring& deta
   SetText(impl_->audio, audio);
   SetText(impl_->port_status, port);
 }
-void MainWindow::SetLinkStability(bool connected, bool usb, LinkStability stability) {
-  if (impl_->logo_connected == connected && impl_->logo_usb == usb && impl_->logo_stability == stability) return;
+void MainWindow::SetLinkStability(bool running, bool connected, bool usb, LinkStability stability) {
+  if (impl_->logo_running == running && impl_->logo_connected == connected && impl_->logo_usb == usb && impl_->logo_stability == stability) return;
+  impl_->logo_running = running;
   impl_->logo_connected = connected;
   impl_->logo_usb = usb;
   impl_->logo_stability = stability;

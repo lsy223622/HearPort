@@ -1,5 +1,3 @@
 #pragma once
 
 #define IDI_HEARPORT 101
-#define IDI_HEARPORT_TRAY_LIGHT 102
-#define IDI_HEARPORT_TRAY_DARK 103

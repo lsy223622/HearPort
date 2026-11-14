@@ -246,7 +246,7 @@ struct TrayPopup::Impl {
     const Media::Brush ink = high_contrast ? state.Foreground() :
         Media::SolidColorBrush(Color{255, GetRValue(rgb), GetGValue(rgb), GetBValue(rgb)});
     connection_method.Foreground(ink);
-    connection_logo.Update(connected, usb, stability, ink);
+    connection_logo.Update(running, connected, usb, stability, ink);
   }
 
   void UpdateChrome(ElementTheme theme) const {
@@ -605,7 +605,7 @@ void TrayPopup::Hide() { impl_->Hide(); }
 bool TrayPopup::visible() const { return impl_->preparing || (impl_->app_window && impl_->app_window.IsVisible()); }
 
 void TrayPopup::Update(bool connected, bool usb, LinkStability stability, bool running, std::optional<std::uint32_t> volume) {
-  const bool link_changed = impl_->connected != connected || impl_->usb != usb || impl_->stability != stability;
+  const bool link_changed = impl_->running != running || impl_->connected != connected || impl_->usb != usb || impl_->stability != stability;
   impl_->connected = connected;
   impl_->usb = usb;
   impl_->stability = stability;
