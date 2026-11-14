@@ -26,6 +26,8 @@
 #include <winrt/Microsoft.UI.Xaml.Input.h>
 #include <winrt/Microsoft.UI.Xaml.Media.h>
 
+#include "connection_logo.h"
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -42,7 +44,8 @@ using namespace winrt::Microsoft::UI::Composition::SystemBackdrops;
 constexpr int kPopupWidth = 352;
 constexpr int kPopupHeight = 132;
 constexpr int kPopupHeightWithVolume = 174;
-constexpr double kSliderWidth = 236;
+constexpr double kIconWidth = 24;
+constexpr double kSliderWidth = 230;
 constexpr double kThumbDiameter = 18;
 constexpr double kTrackTravel = kSliderWidth - kThumbDiameter;
 
@@ -53,7 +56,8 @@ const wchar_t* Translate(const wchar_t* english, const wchar_t* chinese) {
 }  // namespace
 
 struct TrayPopup::Impl {
-  std::function<void()> open;
+  std::function<void()> open_home;
+  std::function<void()> open_settings;
   std::function<void()> toggle_sender;
   std::function<void(std::uint32_t)> preview;
   std::function<void(std::uint32_t)> commit;
@@ -80,7 +84,7 @@ struct TrayPopup::Impl {
   StackPanel volume_row{nullptr};
   TextBlock state{nullptr};
   TextBlock connection_method{nullptr};
-  FontIcon connection_icon{nullptr};
+  ConnectionLogo connection_logo;
   Border footer{nullptr};
   TextBlock percent{nullptr};
   Button open_button{nullptr};
@@ -94,6 +98,7 @@ struct TrayPopup::Impl {
   bool dragging = false;
   bool connected = false;
   bool usb = false;
+  LinkStability stability = LinkStability::unknown;
   bool running = false;
   std::optional<std::uint32_t> volume;
   std::optional<std::uint32_t> pending_value;
@@ -201,6 +206,17 @@ struct TrayPopup::Impl {
     if (!offset) entrance_timer.Stop();
   }
 
+  void UpdateLink() {
+    using winrt::Windows::UI::Color;
+    const bool dark = frame.ActualTheme() == ElementTheme::Dark;
+    const bool high_contrast = winrt::Windows::UI::ViewManagement::AccessibilitySettings().HighContrast();
+    const auto rgb = LinkColor(usb, stability, dark);
+    const Media::Brush ink = high_contrast ? state.Foreground() :
+        Media::SolidColorBrush(Color{255, GetRValue(rgb), GetGValue(rgb), GetBValue(rgb)});
+    connection_method.Foreground(ink);
+    connection_logo.Update(connected, usb, stability, ink);
+  }
+
   void UpdateChrome(ElementTheme theme) const {
     using winrt::Windows::UI::Color;
     using Media::SolidColorBrush;
@@ -277,29 +293,24 @@ struct TrayPopup::Impl {
     header.Orientation(Orientation::Horizontal);
     header.Spacing(12);
     header.Height(49);
-    header.Translation({0, -3, 0});
-    SymbolIcon device(Symbol::CellPhone);
-    device.VerticalAlignment(VerticalAlignment::Center);
-    header.Children().Append(device);
+    connection_logo.Create();
+    connection_logo.view.Width(kIconWidth);
+    connection_logo.view.Height(24);
+    connection_logo.view.VerticalAlignment(VerticalAlignment::Top);
+    connection_logo.view.Margin({0, 5, 0, 0});
+    connection_logo.view.IsHitTestVisible(false);
+    header.Children().Append(connection_logo.view);
     StackPanel labels;
-    labels.VerticalAlignment(VerticalAlignment::Center);
+    labels.VerticalAlignment(VerticalAlignment::Top);
+    labels.Margin({0, 5, 0, 0});
     labels.Spacing(3);
     state = TextBlock();
     state.FontSize(15);
     state.FontWeight({600});
     labels.Children().Append(state);
-    StackPanel method;
-    method.Orientation(Orientation::Horizontal);
-    method.Spacing(6);
-    connection_icon = FontIcon();
-    connection_icon.FontSize(12);
-    connection_icon.VerticalAlignment(VerticalAlignment::Center);
-    method.Children().Append(connection_icon);
     connection_method = TextBlock();
     connection_method.FontSize(12);
-    connection_method.Opacity(.76);
-    method.Children().Append(connection_method);
-    labels.Children().Append(method);
+    labels.Children().Append(connection_method);
     header.Children().Append(labels);
     header_row.Children().Append(header);
     power_button = Button();
@@ -332,6 +343,7 @@ struct TrayPopup::Impl {
     FontIcon speaker;
     speaker.Glyph(L"\uE767");
     speaker.FontSize(17);
+    speaker.Width(kIconWidth);
     speaker.VerticalAlignment(VerticalAlignment::Center);
     percent = TextBlock();
     percent.Width(46);
@@ -387,19 +399,28 @@ struct TrayPopup::Impl {
     caption.Text(Translate(L"Adjust iPad volume", L"调节 iPad 音量"));
     caption.VerticalAlignment(VerticalAlignment::Center);
     footer_row.Children().Append(caption);
-    open_button = Button();
-    open_button.Content(SymbolIcon(Symbol::Setting));
-    open_button.HorizontalAlignment(HorizontalAlignment::Right);
-    open_button.Width(36);
-    open_button.Height(36);
-    open_button.Padding({0, 0, 0, 0});
-    open_button.BorderThickness({0, 0, 0, 0});
-    open_button.Background(Media::SolidColorBrush(winrt::Windows::UI::Color{}));
-    const auto settings = Translate(L"Settings", L"设置");
-    Automation::AutomationProperties::SetName(open_button, settings);
-    ToolTipService::SetToolTip(open_button, winrt::box_value(settings));
-    open_button.Click([this](auto&&, auto&&) { Hide(); open(); });
-    footer_row.Children().Append(open_button);
+    StackPanel navigation;
+    navigation.Orientation(Orientation::Horizontal);
+    navigation.HorizontalAlignment(HorizontalAlignment::Right);
+    navigation.Spacing(2);
+    const auto nav_button = [this](Symbol symbol, const wchar_t* label,
+                                   const std::function<void()>& action) {
+      Button button;
+      button.Content(SymbolIcon(symbol));
+      button.Width(36);
+      button.Height(36);
+      button.Padding({0, 0, 0, 0});
+      button.BorderThickness({0, 0, 0, 0});
+      button.Background(Media::SolidColorBrush(winrt::Windows::UI::Color{}));
+      Automation::AutomationProperties::SetName(button, label);
+      ToolTipService::SetToolTip(button, winrt::box_value(label));
+      button.Click([this, action](auto&&, auto&&) { Hide(); action(); });
+      return button;
+    };
+    navigation.Children().Append(nav_button(Symbol::Home, Translate(L"Overview", L"概览"), open_home));
+    open_button = nav_button(Symbol::Setting, Translate(L"Settings", L"设置"), open_settings);
+    navigation.Children().Append(open_button);
+    footer_row.Children().Append(navigation);
     footer.Child(footer_row);
     content.Children().Append(footer);
 
@@ -454,15 +475,17 @@ struct TrayPopup::Impl {
     UpdateChrome(frame.ActualTheme());
     frame.ActualThemeChanged([this](FrameworkElement const& root, auto&&) {
       UpdateChrome(root.ActualTheme());
+      UpdateLink();
     });
     ApplyBackdrop(content);
   }
 };
 
-TrayPopup::TrayPopup(std::function<void()> open, std::function<void()> toggle_sender,
+TrayPopup::TrayPopup(std::function<void()> open_home, std::function<void()> open_settings,
+                     std::function<void()> toggle_sender,
                      std::function<void(std::uint32_t)> preview,
                      std::function<void(std::uint32_t)> commit, std::function<void()> cancel)
-    : impl_(new Impl{std::move(open), std::move(toggle_sender), std::move(preview), std::move(commit), std::move(cancel)}) {}
+    : impl_(new Impl{std::move(open_home), std::move(open_settings), std::move(toggle_sender), std::move(preview), std::move(commit), std::move(cancel)}) {}
 
 TrayPopup::~TrayPopup() {
   *impl_->alive = false;
@@ -480,7 +503,8 @@ HRESULT TrayPopup::Show(const RECT& anchor) {
   if (!impl_->window) {
     try {
       impl_->Create();
-      Update(impl_->connected, impl_->usb, impl_->running, impl_->volume);
+      Update(impl_->connected, impl_->usb, impl_->stability, impl_->running, impl_->volume);
+      impl_->UpdateLink();
     } catch (const winrt::hresult_error& error) {
       OutputDebugStringW(error.message().c_str());
       return error.code();
@@ -522,9 +546,11 @@ void TrayPopup::Hide() { impl_->Hide(); }
 
 bool TrayPopup::visible() const { return impl_->app_window && impl_->app_window.IsVisible(); }
 
-void TrayPopup::Update(bool connected, bool usb, bool running, std::optional<std::uint32_t> volume) {
+void TrayPopup::Update(bool connected, bool usb, LinkStability stability, bool running, std::optional<std::uint32_t> volume) {
+  const bool link_changed = impl_->connected != connected || impl_->usb != usb || impl_->stability != stability;
   impl_->connected = connected;
   impl_->usb = usb;
+  impl_->stability = stability;
   impl_->running = running;
   impl_->volume = volume;
   if (!impl_->window) return;
@@ -540,12 +566,9 @@ void TrayPopup::Update(bool connected, bool usb, bool running, std::optional<std
   const auto title = connected ? Translate(L"HearPort connected", L"HearPort 已连接")
                                : Translate(L"HearPort not connected", L"HearPort 未连接");
   if (impl_->state.Text() != title) impl_->state.Text(title);
-  const auto method = usb ? L"USB" : Translate(L"Network", L"网络");
+  const auto method = !connected ? L"" : usb ? L"USB" : Translate(L"Network", L"网络");
   if (impl_->connection_method.Text() != method) impl_->connection_method.Text(method);
-  const auto glyph = usb ? L"\uE88E" : L"\uE701";
-  if (impl_->connection_icon.Glyph() != glyph) impl_->connection_icon.Glyph(glyph);
-  impl_->connection_icon.Visibility(connected ? Visibility::Visible : Visibility::Collapsed);
-  impl_->connection_method.Visibility(connected ? Visibility::Visible : Visibility::Collapsed);
+  if (link_changed) impl_->UpdateLink();
   const auto visibility = volume ? Visibility::Visible : Visibility::Collapsed;
   if (impl_->volume_row.Visibility() != visibility) {
     impl_->volume_row.Visibility(visibility);

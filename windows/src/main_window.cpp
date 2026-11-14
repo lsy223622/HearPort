@@ -22,6 +22,8 @@
 #include <winrt/Microsoft.UI.Xaml.Input.h>
 #include <winrt/Microsoft.UI.Xaml.Media.h>
 
+#include "connection_logo.h"
+
 #include <array>
 #include <algorithm>
 #include <cmath>
@@ -114,9 +116,8 @@ struct MainWindow::Impl {
   Button sender{nullptr}, pair{nullptr}, hide{nullptr};
   Grid volume_row{nullptr};
   Border volume_card{nullptr};
-  Viewbox connection_logo{nullptr};
+  ConnectionLogo connection_logo;
   Media::GradientStop hero_color{nullptr};
-  std::array<Shapes::Path, 4> connection_marks{nullptr, nullptr, nullptr, nullptr};
   bool logo_connected = false, logo_usb = false;
   LinkStability logo_stability = LinkStability::unknown;
   Slider volume{nullptr};
@@ -302,7 +303,7 @@ struct MainWindow::Impl {
   void UpdateLogo() {
     using winrt::Windows::UI::Color;
     const auto high_contrast = winrt::Windows::UI::ViewManagement::AccessibilitySettings().HighContrast();
-    const bool dark = connection_logo.ActualTheme() == ElementTheme::Dark;
+    const bool dark = connection_logo.view.ActualTheme() == ElementTheme::Dark;
     const auto theme_ink = Label().Foreground();
     const auto rgb = LinkColor(logo_usb, logo_stability, dark);
     const Color color{255, GetRValue(rgb), GetGValue(rgb), GetBValue(rgb)};
@@ -314,19 +315,11 @@ struct MainWindow::Impl {
       default: break;
     }
     hero_color.Color(logo_connected && !high_contrast ? color : Color{});
-    const int bars = LinkBars(logo_stability);
     const Media::Brush ink = high_contrast ? theme_ink : Media::SolidColorBrush(color);
-    for (int i = 0; i < 4; ++i) {
-      const bool cable = i == 3;
-      auto& mark = connection_marks[i];
-      mark.Stroke(ink);
-      mark.Visibility(logo_connected && cable == logo_usb ? Visibility::Visible : Visibility::Collapsed);
-      mark.Opacity(!cable && logo_stability == LinkStability::unknown ? .65 :
-                   !cable && i >= bars ? .18 : 1);
-    }
+    connection_logo.Update(logo_connected, logo_usb, logo_stability, ink);
     const auto description = logo_connected ? title : Tr(L"iPad not connected", L"iPad 未连接");
-    ToolTipService::SetToolTip(connection_logo, winrt::box_value(description));
-    Automation::AutomationProperties::SetName(connection_logo, description);
+    ToolTipService::SetToolTip(connection_logo.view, winrt::box_value(description));
+    Automation::AutomationProperties::SetName(connection_logo.view, description);
   }
 
   void Overview() {
@@ -359,34 +352,15 @@ struct MainWindow::Impl {
     hero_layout.Children().Append(connection);
 
     // Device outline and connection strokes match the iPad's HearPort symbol.
-    connection_logo = Markup::XamlReader::Load(LR"(
-      <Viewbox xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-               Width="154" Height="108" Margin="12,0,8,0"
-               >
-        <Canvas Width="950" Height="760" RenderTransformOrigin="0,0">
-          <Canvas.RenderTransform><TranslateTransform X="-220" Y="-278"/></Canvas.RenderTransform>
-          <Path Stroke="{ThemeResource TextFillColorPrimaryBrush}" StrokeThickness="48"
-                StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
-                Data="M369,570 V405 Q369,333 441,333 H927 Q999,333 999,405 V565 M999,914 Q999,984 929,984 H819
-                      M318,646 H686 Q751,646 751,711 V921 Q751,986 686,986 H318 Q253,986 253,921 V711 Q253,646 318,646 Z"/>
-          <Path StrokeThickness="48" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
-                Data="M823,703 C839,730 839,764 823,791"/>
-          <Path StrokeThickness="48" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
-                Data="M885,666 C915,716 915,778 885,828"/>
-          <Path StrokeThickness="48" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
-                Data="M950,627 C995,701 995,793 950,867"/>
-          <Path StrokeThickness="48" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
-                Data="M751,816 C1020,816 1100,650 999,565"/>
-        </Canvas>
-      </Viewbox>)").as<Viewbox>();
-    const auto marks = connection_logo.Child().as<Canvas>().Children();
-    for (std::uint32_t i = 0; i < connection_marks.size(); ++i)
-      connection_marks[i] = marks.GetAt(i + 1).as<Shapes::Path>();
-    connection_logo.ActualThemeChanged([this](auto&&, auto&&) { UpdateLogo(); });
+    connection_logo.Create();
+    connection_logo.view.Width(154);
+    connection_logo.view.Height(108);
+    connection_logo.view.Margin({12, 0, 8, 0});
+    connection_logo.view.ActualThemeChanged([this](auto&&, auto&&) { UpdateLogo(); });
     UpdateLogo();
-    Grid::SetColumn(connection_logo, 1);
-    hero_layout.Children().Append(connection_logo);
-    hero_layout.SizeChanged([logo = connection_logo](auto&&, const SizeChangedEventArgs& args) {
+    Grid::SetColumn(connection_logo.view, 1);
+    hero_layout.Children().Append(connection_logo.view);
+    hero_layout.SizeChanged([logo = connection_logo.view](auto&&, const SizeChangedEventArgs& args) {
       logo.Visibility(args.NewSize().Width >= 480 ? Visibility::Visible : Visibility::Collapsed);
     });
     Grid layer;
