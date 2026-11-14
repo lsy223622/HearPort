@@ -6,11 +6,8 @@
 #include <windows.h>
 #include <windowsx.h>
 #include <commctrl.h>
-#include <commdlg.h>
-#include <dwmapi.h>
 #include <shellapi.h>
 #include <shlobj.h>
-#include <uxtheme.h>
 
 #include <algorithm>
 #include <chrono>
@@ -39,7 +36,6 @@
 #include "hearport/windows/sender_host.h"
 #include "hearport/windows/network_probe.h"
 #include "hearport/windows/auto_start.h"
-#include "hearport/windows/gui_font.h"
 
 namespace {
 
@@ -58,11 +54,9 @@ constexpr UINT kTimer = 1;
 constexpr UINT kTrayIcon = 1;
 constexpr int kDiagnostics = 105;
 constexpr int kNetworkProbe = 110;
-constexpr int kMusicFile = 114;
 constexpr int kMusicTest = 115;
 constexpr int kTrayOpen = 201;
 constexpr int kTrayExit = 202;
-constexpr int kPortSettings = 203;
 
 std::wstring Tr(const wchar_t* english, const wchar_t* chinese) {
   return PRIMARYLANGID(GetUserDefaultUILanguage()) == LANG_CHINESE
@@ -237,7 +231,7 @@ class Application {
   explicit Application(bool start_hidden)
       : start_hidden_(start_hidden), port_(LoadPort()), data_dir_(DataDirectory()) {}
 
-  int Run(HINSTANCE instance, int show_command) {
+  int Launch(HINSTANCE instance, int show_command) {
     instance_ = instance;
     if (hearport::windows::ShouldRepairAutoStart(AutoStartValue(), ExecutablePath())) {
       SetAutoStart(true);
@@ -273,8 +267,6 @@ class Application {
       SendMessageW(hwnd_, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(icon));
       SendMessageW(hwnd_, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(icon));
     }
-    dpi_ = GetDpiForWindow(hwnd_);
-    CreateFontForDpi();
     ApplyTheme();
     wchar_t name[MAX_COMPUTERNAME_LENGTH + 1]{};
     DWORD length = ARRAYSIZE(name);
@@ -294,84 +286,10 @@ class Application {
       if (show_command == SW_SHOWMINIMIZED && tray_ready_) ShowWindow(hwnd_, SW_HIDE);
     }
 
-    MSG message{};
-    while (GetMessageW(&message, nullptr, 0, 0) > 0) {
-      TranslateMessage(&message);
-      DispatchMessageW(&message);
-    }
-    return static_cast<int>(message.wParam);
+    return 0;
   }
 
  private:
-  void Place(HWND control, int x, int y, int width, int height) const {
-    if (!control) return;
-    MoveWindow(control, MulDiv(x, dpi_, 96), MulDiv(y, dpi_, 96),
-               MulDiv(width, dpi_, 96), MulDiv(height, dpi_, 96), TRUE);
-  }
-
-  void CreateFontForDpi() {
-    HFONT old_font = font_;
-    font_ = hearport::windows::CreateGuiFont(dpi_, GetUserDefaultUILanguage());
-    if (old_font) DeleteObject(old_font);
-  }
-
-  void PaintPortFrame(HWND frame, HDC context) {
-    RECT bounds{};
-    GetClientRect(frame, &bounds);
-    FillRect(context, &bounds,
-             dark_ ? page_brush_ : GetSysColorBrush(COLOR_WINDOW));
-    HPEN border = CreatePen(PS_SOLID, 1,
-                           IsChild(frame, GetFocus())
-                               ? GetSysColor(COLOR_HIGHLIGHT)
-                               : dark_ ? RGB(108, 108, 108)
-                                       : GetSysColor(COLOR_3DSHADOW));
-    HPEN previous_pen = reinterpret_cast<HPEN>(SelectObject(context, border));
-    HBRUSH previous_brush = reinterpret_cast<HBRUSH>(SelectObject(
-        context, dark_ ? edit_brush_ : GetSysColorBrush(COLOR_WINDOW)));
-    const int diameter = MulDiv(8, dpi_, 96);
-    RoundRect(context, 0, 0, bounds.right, bounds.bottom, diameter, diameter);
-    SelectObject(context, previous_brush);
-    SelectObject(context, previous_pen);
-    DeleteObject(border);
-  }
-
-  static LRESULT CALLBACK PortFrameSubclassProc(HWND hwnd, UINT message,
-                                                 WPARAM wparam, LPARAM lparam,
-                                                 UINT_PTR subclass_id,
-                                                 DWORD_PTR app_pointer) {
-    auto* app = reinterpret_cast<Application*>(app_pointer);
-    if (message == WM_NCDESTROY) {
-      RemoveWindowSubclass(hwnd, PortFrameSubclassProc, subclass_id);
-    } else if (message == WM_ERASEBKGND) {
-      return 1;
-    } else if (message == WM_PAINT) {
-      PAINTSTRUCT paint{};
-      HDC context = BeginPaint(hwnd, &paint);
-      app->PaintPortFrame(hwnd, context);
-      EndPaint(hwnd, &paint);
-      return 0;
-    } else if (message == WM_PRINTCLIENT) {
-      app->PaintPortFrame(hwnd, reinterpret_cast<HDC>(wparam));
-      return 0;
-    } else if (message == WM_LBUTTONDOWN) {
-      SetFocus(GetWindow(hwnd, GW_CHILD));
-      return 0;
-    } else if (message == WM_COMMAND &&
-               (HIWORD(wparam) == EN_SETFOCUS ||
-                HIWORD(wparam) == EN_KILLFOCUS)) {
-      InvalidateRect(hwnd, nullptr, FALSE);
-    } else if (message == WM_CTLCOLOREDIT || message == WM_CTLCOLORSTATIC) {
-      HDC context = reinterpret_cast<HDC>(wparam);
-      SetTextColor(context, app->dark_ ? RGB(242, 242, 242)
-                                       : GetSysColor(COLOR_WINDOWTEXT));
-      SetBkColor(context, app->dark_ ? RGB(45, 45, 45)
-                                     : GetSysColor(COLOR_WINDOW));
-      return reinterpret_cast<LRESULT>(
-          app->dark_ ? app->edit_brush_ : GetSysColorBrush(COLOR_WINDOW));
-    }
-    return DefSubclassProc(hwnd, message, wparam, lparam);
-  }
-
   void SelectPage(int page) { main_window_->SelectPage(page); }
 
   void ApplyTheme() {
@@ -461,8 +379,7 @@ class Application {
       const auto message = Tr(L"Could not open the tray popup. It requires Windows 11 and Windows App Runtime 2.6.5 or newer.",
           L"无法打开托盘弹窗。需要 Windows 11 和 Windows App Runtime 2.6.5 或更高版本。") +
           L"\n" + code;
-      MessageBoxW(hwnd_, message.c_str(),
-          L"HearPort", MB_OK | MB_ICONINFORMATION);
+      main_window_->Notify(message);
     }
   }
 
@@ -714,11 +631,15 @@ class Application {
 
   void ForgetPairing() {
     if (unpair_pending_) return;
-    if (MessageBoxW(hwnd_, Tr(L"Unpair this iPad and end the current connection?", L"取消与 iPad 的配对并结束当前连接？").c_str(),
-                    L"HearPort", MB_YESNO | MB_ICONQUESTION) != IDYES) return;
+    main_window_->Confirm(Tr(L"Unpair this iPad and end the current connection?", L"取消与 iPad 的配对并结束当前连接？"),
+                         Tr(L"Unpair", L"取消配对").c_str(), [this] { RemovePairing(); });
+  }
+
+  void RemovePairing() {
+    if (unpair_pending_) return;
     const bool restart = running_;
     if (!(host_ ? host_->RemovePairing() : hearport::windows::ProtectedCredentialStore{}.Remove())) {
-      MessageBoxW(hwnd_, Tr(L"Could not remove the saved pairing.", L"无法删除保存的配对。").c_str(), L"HearPort", MB_OK | MB_ICONERROR);
+      main_window_->Notify(Tr(L"Could not remove the saved pairing.", L"无法删除保存的配对。"));
       return;
     }
     paired_ = false;
@@ -856,9 +777,8 @@ class Application {
   void OpenPairing() {
     if (!running_ || !host_) return;
     if (!host_->OpenPairingWindow()) {
-      MessageBoxW(hwnd_, Tr(L"Could not open pairing. Check the security provider.",
-                             L"无法开启配对，请检查安全组件。")
-                             .c_str(), L"HearPort", MB_OK | MB_ICONERROR);
+      main_window_->Notify(Tr(L"Could not open pairing. Check the security provider.",
+                             L"无法开启配对，请检查安全组件。"));
       return;
     }
     pin_expires_ = Clock::now() + std::chrono::minutes(2);
@@ -866,14 +786,20 @@ class Application {
   }
 
   void ConfirmExit() {
-    if (MessageBoxW(hwnd_,
-                    Tr(L"Exit HearPort and stop sending audio?",
-                       L"确定退出 HearPort 并停止发送声音吗？")
-                        .c_str(),
-                    L"HearPort", MB_YESNO | MB_ICONQUESTION |
-                                     MB_DEFBUTTON2) == IDYES) {
-      DestroyWindow(hwnd_);
-    }
+    ShowWindowFromTray();
+    main_window_->Confirm(Tr(L"Exit HearPort and stop sending audio?", L"确定退出 HearPort 并停止发送声音吗？"),
+                         Tr(L"Exit", L"退出").c_str(), [this] {
+      Shutdown();
+      MainWindow::ExitApp();
+    });
+  }
+
+  void Shutdown() {
+    if (std::exchange(shutting_down_, true)) return;
+    KillTimer(hwnd_, kTimer);
+    tray_popup_.reset();
+    RemoveTrayIcon();
+    StopService();
   }
 
   void StartDiagnostics() {
@@ -894,222 +820,34 @@ class Application {
     SelectPage(0);
   }
 
-  static LRESULT CALLBACK TestSettingsProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
-    auto* app = reinterpret_cast<Application*>(GetWindowLongPtrW(window, GWLP_USERDATA));
-    if (message == WM_NCCREATE) {
-      app = static_cast<Application*>(reinterpret_cast<CREATESTRUCTW*>(lparam)->lpCreateParams);
-      SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(app));
-    }
-    if (!app) return DefWindowProcW(window, message, wparam, lparam);
-    if (message == WM_COMMAND) {
-      if (LOWORD(wparam) == kMusicFile) app->ChooseMusicFile();
-      else if (LOWORD(wparam) == IDOK) {
-        const auto read = [](HWND control) {
-          std::wstring text(GetWindowTextLengthW(control) + 1, L'\0');
-          text.resize(GetWindowTextW(control, text.data(), static_cast<int>(text.size())));
-          return text;
-        };
-        const auto number = [](const std::wstring& text, unsigned long ceiling) {
-          wchar_t* end = nullptr;
-          const auto value = wcstoull(text.c_str(), &end, 10);
-          return !text.empty() && *end == L'\0' && value <= ceiling;
-        };
-        if (app->settings_kind_ == kPortSettings) {
-          if (!app->SavePort(read(app->settings_duration_))) return 0;
-        } else if (app->settings_kind_ == kNetworkProbe) {
-          app->calibration_goal_ = 0;
-          app->calibration_selected_ = SendMessageW(app->settings_purpose_, CB_GETCURSEL,0,0) == 0;
-          const auto maximum = read(app->settings_maximum_);
-          const auto seconds = SendMessageW(app->settings_duration_,CB_GETCURSEL,0,0);
-          if (!number(maximum,2000) || std::stoul(maximum) < 20 || seconds < 0 || seconds > 2) {
-            MessageBoxW(window,Tr(L"Enter a maximum from 20 to 2000 ms.",L"请输入 20 至 2000 毫秒的上限。").c_str(),L"HearPort",MB_OK | MB_ICONWARNING); return 0;
-          }
-          app->calibration_maximum_ = std::stoul(maximum);
-          app->calibration_seconds_ = seconds == 0 ? 30 : seconds == 1 ? 60 : 120;
-        } else {
-          const auto seconds = read(app->settings_duration_);
-          const unsigned limit = app->settings_kind_ == kMusicTest ? 300 : 3600;
-          if (!number(seconds, limit) || std::stoul(seconds) < 60) {
-            MessageBoxW(window, (Tr(L"Enter a duration from 60 to ", L"请输入 60 至 ") +
-                std::to_wstring(limit) + Tr(L" seconds.", L" 秒的时长。 ")).c_str(), L"HearPort", MB_OK | MB_ICONWARNING);
-            return 0;
-          }
-          if (app->settings_kind_ == kMusicTest) {
-            const auto start = read(app->settings_start_);
-            if (read(app->settings_file_).empty() || !number(start, UINT32_MAX)) {
-              MessageBoxW(window, Tr(L"Select an audio file and a valid start time.", L"请选择音频文件并填写有效起点。").c_str(), L"HearPort", MB_OK | MB_ICONWARNING);
-              return 0;
-            }
-            app->music_path_ = read(app->settings_file_);
-            app->music_start_seconds_ = start;
-            app->music_seconds_ = seconds;
-          } else app->live_seconds_ = seconds;
-        }
-        app->settings_start_requested_ = true;
-        DestroyWindow(window);
-      } else if (LOWORD(wparam) == IDCANCEL) DestroyWindow(window);
-      return 0;
-    }
-    if (message == WM_CLOSE) { DestroyWindow(window); return 0; }
-    if (message == WM_ERASEBKGND) {
-      RECT rect{}; GetClientRect(window, &rect);
-      FillRect(reinterpret_cast<HDC>(wparam), &rect, app->dark_ ? app->page_brush_ : GetSysColorBrush(COLOR_WINDOW));
-      return 1;
-    }
-    if (message == WM_CTLCOLORSTATIC || message == WM_CTLCOLORBTN) {
-      SetBkMode(reinterpret_cast<HDC>(wparam), TRANSPARENT);
-      SetTextColor(reinterpret_cast<HDC>(wparam), app->dark_ ? RGB(242,242,242) : GetSysColor(COLOR_WINDOWTEXT));
-      return reinterpret_cast<LRESULT>(app->dark_ ? app->page_brush_ : GetSysColorBrush(COLOR_WINDOW));
-    }
-    if (message == WM_DESTROY) { app->settings_window_ = nullptr; return 0; }
-    return DefWindowProcW(window, message, wparam, lparam);
-  }
-
-  void ShowTestSettings(int kind) {
-    if (settings_window_) return;
-    settings_kind_ = kind; settings_start_requested_ = false;
-    WNDCLASSEXW type{sizeof(type)};
-    type.lpfnWndProc = TestSettingsProc; type.hInstance = instance_;
-    type.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    type.lpszClassName = L"HearPortTestSettings";
-    RegisterClassExW(&type);
-    const auto title = kind == kPortSettings ? Tr(L"Listening UDP port", L"监听 UDP 端口") :
-        kind == kMusicTest ? Tr(L"Music test", L"音乐测试") :
-        kind == kNetworkProbe ? Tr(L"Network test", L"网络测试") : Tr(L"Live diagnostics", L"实时诊断");
-    const int height = kind == kPortSettings ? 165 : kind == kMusicTest ? 352 : kind == kNetworkProbe ? 370 : 225;
-    RECT owner{}; GetWindowRect(hwnd_, &owner);
-    settings_window_ = CreateWindowExW(WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT,
-        type.lpszClassName, title.c_str(), WS_POPUP | WS_CAPTION | WS_SYSMENU,
-        owner.left + MulDiv(20, dpi_, 96), owner.top + MulDiv(40, dpi_, 96),
-        MulDiv(480, dpi_, 96), MulDiv(height, dpi_, 96), hwnd_, nullptr, instance_, this);
-    if (!settings_window_) return;
-    const BOOL dark = dark_;
-    DwmSetWindowAttribute(settings_window_, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
-    const auto control = [&](const wchar_t* type, const std::wstring& label, DWORD style,
-                             int id, int x, int y, int width, int height) {
-      const auto result = CreateWindowExW(0, type, label.c_str(), WS_CHILD | WS_VISIBLE | style,
-          0,0,0,0,settings_window_,reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),instance_,nullptr);
-      SendMessageW(result, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
-      SetWindowTheme(result, dark_ ? L"DarkMode_Explorer" : nullptr, nullptr);
-      Place(result, x,y,width,height);
-      return result;
-    };
-    const auto edit = [&](const std::wstring& text, DWORD style, int x, int y, int width) {
-      const auto frame = control(L"STATIC", L"", WS_CLIPCHILDREN | SS_NOTIFY, 0, x,y,width,29);
-      SetWindowLongPtrW(frame, GWL_EXSTYLE, WS_EX_CONTROLPARENT);
-      SetWindowSubclass(frame, PortFrameSubclassProc, 1, reinterpret_cast<DWORD_PTR>(this));
-      const auto input = CreateWindowExW(0,L"EDIT",text.c_str(),WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL | style,
-          0,0,0,0,frame,nullptr,instance_,nullptr);
-      SendMessageW(input, WM_SETFONT,reinterpret_cast<WPARAM>(font_),TRUE);
-      Place(input,8,5,width-16,20);
-      return input;
-    };
-    const auto explanation = kind == kMusicTest ?
-        Tr(L"32 rounds: Float32, PCM16 and Opus 192/256 kbps at 2.5/5/10 ms; both transports, twice. Default: 66 min 45 s plus setup/upload. Same excerpt each round.",
-           L"32 组：Float32、PCM16、Opus 192／256 kbps（2.5／5／10 ms），两种传输各两次。同一片段；默认约 66 分 45 秒，另加协商与回传。") :
-        kind == kNetworkProbe ? Tr(L"Automatic recommendation samples both transports, replays identical input, then validates recommendations twice. Existing transport comparisons remain available. No audio playback.",
-           L"自动测试并推荐参数会采样两种传输，以同一轨迹比较预算，再对推荐参数复核两次。也可选择原传输对比测试。全程不播放音频。") :
-        Tr(L"Capture the PC's current audio output. The iPad report is returned automatically when the chosen duration ends.",
-           L"采集电脑当前输出声音，指定时长结束后自动回传 iPad 诊断报告。");
-    if (kind != kPortSettings) control(L"STATIC",explanation,SS_LEFT,0,20,18,430,64);
-    if (kind == kPortSettings) {
-      control(L"STATIC", Tr(L"UDP port", L"UDP 端口"), SS_LEFT | SS_CENTERIMAGE, 0, 20, 24, 145, 29);
-      settings_duration_ = edit(std::to_wstring(port_), ES_NUMBER, 180, 24, 100);
-    } else if (kind == kMusicTest) {
-      settings_file_ = edit(music_path_,ES_READONLY,20,94,310);
-      control(L"BUTTON",Tr(L"Select file…",L"选择文件…"),WS_TABSTOP | BS_PUSHBUTTON,kMusicFile,338,94,112,29);
-      control(L"STATIC",Tr(L"Start (seconds)",L"起点（秒）"),SS_LEFT | SS_CENTERIMAGE,0,20,143,150,29);
-      settings_start_ = edit(music_start_seconds_,ES_NUMBER,180,143,100);
-      control(L"STATIC",Tr(L"Round (seconds)",L"每组时长（秒）"),SS_LEFT | SS_CENTERIMAGE,0,20,186,150,29);
-      settings_duration_ = edit(music_seconds_,ES_NUMBER,180,186,100);
-      control(L"STATIC",Tr(L"Connect once. Transport switches automatically. Reports include round boundaries.",
-          L"只需连接一次；总传输时间约 32 × 每组秒数 + 165 秒。"),SS_LEFT,0,20,233,430,40);
-    } else if (kind == kNetworkProbe) {
-      control(L"STATIC",Tr(L"Purpose",L"测试用途"),SS_LEFT | SS_CENTERIMAGE,0,20,94,150,29);
-      settings_purpose_ = control(WC_COMBOBOX,L"",CBS_DROPDOWNLIST | WS_TABSTOP,0,180,94,260,100);
-      SendMessageW(settings_purpose_,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(Tr(L"Automatic test and parameter recommendations",L"自动测试并推荐参数").c_str()));
-      SendMessageW(settings_purpose_,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(Tr(L"Compression traffic comparison (40 rounds)",L"压缩传输负载对比（40 组）").c_str()));
-      SendMessageW(settings_purpose_,CB_SETCURSEL,calibration_selected_ ? 0 : 1,0);
-      control(L"STATIC",Tr(L"Recommendation maximum (ms)",L"自动推荐：延迟上限（毫秒）"),SS_LEFT | SS_CENTERIMAGE,0,20,137,205,29);
-      settings_maximum_ = edit(std::to_wstring(calibration_maximum_),ES_NUMBER,240,137,100);
-      control(L"STATIC",Tr(L"Recommendation round (seconds)",L"自动推荐：每组时长（秒）"),SS_LEFT | SS_CENTERIMAGE,0,20,180,205,29);
-      settings_duration_ = control(WC_COMBOBOX,L"",CBS_DROPDOWNLIST | WS_TABSTOP,0,240,180,100,120);
-      for (const auto* seconds : {L"30",L"60",L"120"}) SendMessageW(settings_duration_,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(seconds));
-      SendMessageW(settings_duration_,CB_SETCURSEL,calibration_seconds_ == 30 ? 0 : calibration_seconds_ == 60 ? 1 : 2,0);
-      control(L"STATIC",Tr(L"Recommendations: 4 sampling + up to 6 validation rounds. Compression traffic: 10 payload/rate profiles × 2 transports × 2 repeats, 30 s each, total 23 min 25 s. No audio or codec runs in traffic tests.",
-          L"自动推荐：4 组采样，最多 6 组复核。压缩负载：10 种大小／频率 × 两种传输 × 两次重复，固定每组 30 秒，共 23 分 25 秒；不播放音频、不运行编码器。"),SS_LEFT,0,20,223,430,62);
-    } else if (kind == kDiagnostics) {
-      control(L"STATIC",Tr(L"Duration (seconds)",L"时长（秒）"),SS_LEFT | SS_CENTERIMAGE,0,20,94,150,29);
-      settings_duration_ = edit(live_seconds_,ES_NUMBER,180,94,100);
-    }
-    control(L"BUTTON",kind == kPortSettings ? Tr(L"Apply",L"应用") : Tr(L"Start",L"开始测试"),
-        WS_TABSTOP | BS_DEFPUSHBUTTON,IDOK,230,height-73,104,29);
-    control(L"BUTTON",Tr(L"Cancel",L"取消"),WS_TABSTOP | BS_PUSHBUTTON,IDCANCEL,346,height-73,104,29);
-    EnableWindow(hwnd_,FALSE);
-    ShowWindow(settings_window_,SW_SHOW);
-    MSG message{}; bool quit = false;
-    while (settings_window_) {
-      const auto result = GetMessageW(&message,nullptr,0,0);
-      if (result <= 0) { quit = result == 0; break; }
-      if (!IsDialogMessageW(settings_window_,&message)) { TranslateMessage(&message); DispatchMessageW(&message); }
-    }
-    if (settings_window_) DestroyWindow(settings_window_);
-    settings_file_ = settings_start_ = settings_duration_ = settings_maximum_ = settings_purpose_ = nullptr;
-    EnableWindow(hwnd_,TRUE); SetForegroundWindow(hwnd_);
-    if (quit) { PostQuitMessage(static_cast<int>(message.wParam)); return; }
-    if (!settings_start_requested_ || kind == kPortSettings) return;
-    if (kind == kMusicTest) StartMusicTest();
-    else if (kind == kNetworkProbe) StartNetworkProbe();
-    else StartDiagnostics();
-  }
-
-  static LRESULT CALLBACK CalibrationResultsProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
-    auto* app = reinterpret_cast<Application*>(GetWindowLongPtrW(window,GWLP_USERDATA));
-    if (message == WM_NCCREATE) {
-      app = static_cast<Application*>(reinterpret_cast<CREATESTRUCTW*>(lparam)->lpCreateParams);
-      SetWindowLongPtrW(window,GWLP_USERDATA,reinterpret_cast<LONG_PTR>(app));
-    }
-    if (!app) return DefWindowProcW(window,message,wparam,lparam);
-    if (message == WM_SIZE) {
-      RECT area{}; GetClientRect(window,&area);
-      MoveWindow(GetDlgItem(window,1),16,260,std::max(1L,area.right-32),std::max(1L,area.bottom-276),TRUE);
-    }
-    if (message == WM_PAINT) {
-      PAINTSTRUCT paint{}; const auto dc = BeginPaint(window,&paint);
-      RECT area{}; GetClientRect(window,&area);
-      FillRect(dc,&area,app->dark_ ? app->page_brush_ : GetSysColorBrush(COLOR_WINDOW));
-      SelectObject(dc,app->font_); SetBkMode(dc,TRANSPARENT);
-      SetTextColor(dc,app->dark_ ? RGB(242,242,242) : RGB(30,30,30));
-      const auto label = [&](int x,int y,const std::wstring& text) { TextOutW(dc,x,y,text.c_str(),static_cast<int>(text.size())); };
-      label(20,12,Tr(L"Sampling replay: source age P95 (x, ms) / gaps (y, %)",L"采样回放：横轴为源年龄 P95（毫秒），纵轴为缺口占比（%）"));
-      const int left = 78, right = std::max(100L,area.right-35), top = 52, bottom = 213;
-      auto axes = CreatePen(PS_SOLID,1,app->dark_ ? RGB(190,190,190) : RGB(70,70,70));
-      const auto previous = SelectObject(dc,axes);
-      MoveToEx(dc,left,top,nullptr); LineTo(dc,left,bottom); LineTo(dc,right,bottom);
-      double maximum_age = 1, maximum_gap = .001;
-      if (app->calibration_report_) for (const auto& point : app->calibration_report_->curve) if (point.valid && point.age_p95_ms) {
-        maximum_age = std::max(maximum_age,*point.age_p95_ms); maximum_gap = std::max(maximum_gap,point.gap_ratio);
+  void ShowTestSettings(MainAction test) {
+    TestSettings settings;
+    settings.file = music_path_;
+    settings.start = music_start_seconds_;
+    settings.duration = test == MainAction::music_test ? music_seconds_ : live_seconds_;
+    settings.recommendations = calibration_selected_;
+    settings.maximum = calibration_maximum_;
+    settings.round_seconds = calibration_seconds_;
+    main_window_->ConfigureTest(test, std::move(settings), [this, test](TestSettings values) {
+      if (test == MainAction::music_test) {
+        music_path_ = std::move(values.file);
+        music_start_seconds_ = std::move(values.start);
+        music_seconds_ = std::move(values.duration);
+        StartMusicTest();
+      } else if (test == MainAction::network_test) {
+        calibration_goal_ = 0;
+        calibration_selected_ = values.recommendations;
+        calibration_maximum_ = values.maximum;
+        calibration_seconds_ = values.round_seconds;
+        StartNetworkProbe();
+      } else {
+        live_seconds_ = std::move(values.duration);
+        StartDiagnostics();
       }
-      wchar_t gap[64]{}; swprintf_s(gap,L"%.2f%%",maximum_gap*100);
-      label(10,top,gap); label(35,bottom-10,L"0"); label(right-65,bottom+8,std::to_wstring(static_cast<unsigned>(maximum_age))+L" ms");
-      if (app->calibration_report_) for (const auto& point : app->calibration_report_->curve) if (point.valid && point.age_p95_ms) {
-        auto brush = CreateSolidBrush(point.reliable ? RGB(225,135,50) : RGB(55,145,230));
-        const auto old_brush = SelectObject(dc,brush);
-        const int x = left + static_cast<int>((right-left) * *point.age_p95_ms / maximum_age);
-        const int y = bottom - static_cast<int>((bottom-top) * point.gap_ratio / maximum_gap);
-        Ellipse(dc,x-3,y-3,x+4,y+4); SelectObject(dc,old_brush); DeleteObject(brush);
-      }
-      SelectObject(dc,previous); DeleteObject(axes);
-      label(85,235,Tr(L"Blue: Datagram · orange: Reliable. Each point is one target/maximum budget.",L"蓝色 Datagram · 橙色 Reliable；每个点对应一组目标／最大预算。"));
-      EndPaint(window,&paint); return 0;
-    }
-    if (message == WM_CLOSE) { DestroyWindow(window); return 0; }
-    if (message == WM_DESTROY) { app->calibration_window_ = nullptr; return 0; }
-    return DefWindowProcW(window,message,wparam,lparam);
+    });
   }
 
   void ShowCalibrationResults() {
-    if (calibration_window_) { SetForegroundWindow(calibration_window_); return; }
     const auto read = [](const std::filesystem::path& path) {
       std::ifstream file(path,std::ios::binary);
       return hearport::windows::ParseCalibrationReport(std::string(std::istreambuf_iterator<char>(file),{}));
@@ -1126,8 +864,8 @@ class Application {
       }
     }
     if (!calibration_report_) {
-      MessageBoxW(hwnd_,Tr(L"No recommendation report is available. Select Automatic test and parameter recommendations in Network test settings.",
-          L"尚无推荐参数报告，请在网络测试设置中选择“自动测试并推荐参数”。").c_str(),L"HearPort",MB_OK); return;
+      main_window_->Notify(Tr(L"No recommendation report is available. Select Automatic test and parameter recommendations in Network test settings.",
+          L"尚无推荐参数报告，请在网络测试设置中选择“自动测试并推荐参数”。")); return;
     }
     const auto& report = *calibration_report_;
     std::wostringstream text; text << std::fixed << std::setprecision(3);
@@ -1157,25 +895,12 @@ class Application {
     for (const auto& point : report.curve) { measurement(point); if (!point.valid) text << Tr(L"Insufficient valid data\r\n",L"有效数据不足\r\n"); }
     text << Tr(L"\r\nApply profiles in the iPad's Settings > Automatic test and recommendations for the next connection.\r\nFinite observation only. Zero observed gaps do not guarantee future stability. Replay is conditional on sampling sender behavior; live validation uses new traffic, so differences may be network fluctuation. Source age includes estimated output reserve; audio DSP/render/acoustic latency was not measured. Source and output gaps are different axes and are not added.\r\n",
         L"\r\n请在 iPad 设置→自动测试并推荐参数中选择档位，下次连接生效。\r\n仅为有限样本观测。零缺口不是未来保证。回放依赖采样时的发送行为；实际复核使用新流量，差异可能来自网络波动。源年龄含估计输出预留，未测音频 DSP、实际输出或声学延迟。源缺失与输出中断是两条时间轴，不能相加。\r\n");
-    WNDCLASSEXW type{sizeof(type)}; type.lpfnWndProc = CalibrationResultsProc; type.hInstance = instance_;
-    type.hCursor = LoadCursorW(nullptr,IDC_ARROW); type.lpszClassName = L"HearPortCalibrationResults"; RegisterClassExW(&type);
-    calibration_window_ = CreateWindowExW(0,type.lpszClassName,Tr(L"Automatic test and parameter recommendations",L"自动测试并推荐参数结果").c_str(),
-        WS_OVERLAPPEDWINDOW, CW_USEDEFAULT,CW_USEDEFAULT,900,820,hwnd_,nullptr,instance_,this);
-    if (!calibration_window_) return;
-    const auto edit = CreateWindowExW(WS_EX_CLIENTEDGE,L"EDIT",text.str().c_str(),WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL,
-        16,260,852,500,calibration_window_,reinterpret_cast<HMENU>(1),instance_,nullptr);
-    SendMessageW(edit,WM_SETFONT,reinterpret_cast<WPARAM>(font_),TRUE);
-    ShowWindow(calibration_window_,SW_SHOW);
-  }
-
-  void ChooseMusicFile() {
-    std::wstring path(32'768,L'\0');
-    OPENFILENAMEW dialog{sizeof(dialog)};
-    dialog.hwndOwner = settings_window_;
-    dialog.lpstrFile = path.data(); dialog.nMaxFile = static_cast<DWORD>(path.size());
-    dialog.lpstrFilter = L"Audio\0*.flac;*.mp3;*.wav;*.m4a;*.aac;*.wma\0All files\0*.*\0";
-    dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
-    if (GetOpenFileNameW(&dialog)) SetWindowTextW(settings_file_,path.c_str());
+    std::vector<RecommendationPoint> points;
+    for (const auto& point : report.curve) {
+      if (point.valid && point.age_p95_ms)
+        points.push_back({*point.age_p95_ms, point.gap_ratio, point.reliable});
+    }
+    main_window_->ShowRecommendations(text.str(), points);
   }
 
   void StartMusicTest() {
@@ -1191,7 +916,7 @@ class Application {
       const std::string message = error.what();
       const auto text = Tr(L"Could not decode the complete excerpt. Check the file and selected time range.\n",L"无法解码完整片段，请检查文件及所选时间范围。\n") +
           std::wstring(message.begin(),message.end());
-      MessageBoxW(hwnd_,text.c_str(),L"HearPort",MB_OK | MB_ICONERROR);
+      main_window_->Notify(text);
     }
   }
 
@@ -1202,8 +927,8 @@ class Application {
     if (source == capture_source_) return;
     if (!SaveSetting(L"CaptureSource", static_cast<DWORD>(selection))) {
       main_window_->SetCapture(capture_source_ == CaptureSource::endpoint ? 1 : 0);
-      MessageBoxW(hwnd_, Tr(L"Could not save audio capture settings.",
-                             L"无法保存音频采集设置。").c_str(), L"HearPort", MB_OK | MB_ICONERROR);
+      main_window_->Notify(Tr(L"Could not save audio capture settings.",
+                             L"无法保存音频采集设置。"));
       return;
     }
     capture_source_ = source;
@@ -1214,19 +939,9 @@ class Application {
     UpdateStatus();
   }
 
-  bool SavePort(const std::wstring& text) {
-    wchar_t* end = nullptr;
-    const unsigned long value = wcstoul(text.c_str(), &end, 10);
-    if (text.empty() || *end != L'\0' || value == 0 || value > 65535) {
-      MessageBoxW(settings_window_, Tr(L"Enter a UDP port from 1 to 65535.",
-                             L"请输入 1 至 65535 之间的 UDP 端口。")
-                             .c_str(), L"HearPort", MB_OK | MB_ICONWARNING);
-      return false;
-    }
-    if (!SaveSetting(L"Port", static_cast<DWORD>(value))) {
-      MessageBoxW(settings_window_, Tr(L"Could not save the port.", L"无法保存端口。")
-                             .c_str(), L"HearPort", MB_OK | MB_ICONERROR);
-      return false;
+  std::wstring SavePort(std::uint16_t value) {
+    if (!SaveSetting(L"Port", value)) {
+      return Tr(L"Could not save the port.", L"无法保存端口。");
     }
     const bool restart = running_ && value != port_;
     port_ = static_cast<std::uint16_t>(value);
@@ -1245,7 +960,7 @@ class Application {
     } else {
       UpdateStatus();
     }
-    return true;
+    return {};
   }
 
   void OnTimer() {
@@ -1290,9 +1005,8 @@ class Application {
     if (reinterpret_cast<INT_PTR>(ShellExecuteW(
             hwnd_, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL)) <=
         32) {
-      MessageBoxW(hwnd_, Tr(L"Could not open this location.",
-                             L"无法打开此位置。")
-                             .c_str(), L"HearPort", MB_OK | MB_ICONERROR);
+      main_window_->Notify(Tr(L"Could not open this location.",
+                             L"无法打开此位置。"));
     }
   }
 
@@ -1301,27 +1015,26 @@ class Application {
       case MainAction::pair: if (paired_) ForgetPairing(); else OpenPairing(); break;
       case MainAction::sender:
         if (!running_) { StartService(); break; }
-        if (MessageBoxW(hwnd_, Tr(L"Stop sending audio to the iPad?", L"停止向 iPad 发送声音吗？").c_str(),
-                        L"HearPort", MB_YESNO | MB_ICONQUESTION) == IDYES) {
+        main_window_->Confirm(Tr(L"Stop sending audio to the iPad?", L"停止向 iPad 发送声音吗？"),
+                             Tr(L"Stop", L"停止").c_str(), [this] {
           const bool diagnostic_active = diagnostic_duration_.has_value();
           StopService();
           if (diagnostic_active) main_window_->SetDiagnostic(Tr(L"Diagnostic session stopped.", L"诊断已停止。"));
-        }
+        });
         break;
-      case MainAction::live_test: ShowTestSettings(kDiagnostics); break;
-      case MainAction::network_test: ShowTestSettings(kNetworkProbe); break;
-      case MainAction::music_test: ShowTestSettings(kMusicTest); break;
+      case MainAction::live_test:
+      case MainAction::network_test:
+      case MainAction::music_test: ShowTestSettings(action); break;
       case MainAction::log: OpenPath(data_dir_ / L"HearPort-sender.log"); break;
       case MainAction::reports: OpenPath(data_dir_ / L"diagnostics"); break;
       case MainAction::results: ShowCalibrationResults(); break;
       case MainAction::detailed_logging: logger_.SetDetailedLogging(main_window_->detailed_logging()); break;
-      case MainAction::port: ShowTestSettings(kPortSettings); break;
+      case MainAction::port: main_window_->EditPort([this](std::uint16_t value) { return SavePort(value); }); break;
       case MainAction::capture: SaveCaptureSourceFromControl(); break;
       case MainAction::auto_start:
         if (!SetAutoStart(main_window_->auto_start())) {
           main_window_->SetAutoStart(AutoStartEnabled());
-          MessageBoxW(hwnd_, Tr(L"Could not change startup settings.", L"无法修改开机启动设置。").c_str(),
-                      L"HearPort", MB_OK | MB_ICONERROR);
+          main_window_->Notify(Tr(L"Could not change startup settings.", L"无法修改开机启动设置。"));
         }
         break;
       case MainAction::hide: SendMessageW(hwnd_, WM_CLOSE, 0, 0); break;
@@ -1373,10 +1086,6 @@ class Application {
       case WM_SIZE:
         if (wparam == SIZE_MINIMIZED && tray_ready_) ShowWindow(hwnd_, SW_HIDE);
         break;
-      case WM_DPICHANGED:
-        dpi_ = HIWORD(wparam);
-        CreateFontForDpi();
-        break;
       case WM_SETTINGCHANGE:
       case WM_THEMECHANGED:
         ApplyTheme();
@@ -1401,15 +1110,8 @@ class Application {
         }
         return 0;
       case WM_DESTROY:
-        KillTimer(hwnd_, kTimer);
-        tray_popup_.reset();
-        RemoveTrayIcon();
-        StopService();
-        if (font_) DeleteObject(font_);
-        DeleteObject(page_brush_);
-        DeleteObject(edit_brush_);
-        PostQuitMessage(0);
-        return 0;
+        Shutdown();
+        break;
     }
     return DefSubclassProc(hwnd_, message, wparam, lparam);
   }
@@ -1429,22 +1131,16 @@ class Application {
   bool volume_available_ = false;
   std::uint32_t volume_position_ = 0;
   bool paired_ = false;
-  HFONT font_ = nullptr;
-  UINT dpi_ = 96;
   UINT taskbar_created_ = 0;
-  HWND settings_window_ = nullptr, settings_file_ = nullptr, settings_start_ = nullptr, settings_duration_ = nullptr;
-  HWND calibration_window_ = nullptr;
-  HWND settings_maximum_ = nullptr, settings_purpose_ = nullptr;
   bool calibration_selected_ = true;
   std::uint8_t calibration_goal_ = 0;
   unsigned calibration_seconds_ = 30, calibration_maximum_ = 100;
   std::filesystem::path calibration_report_path_;
   std::optional<hearport::windows::CalibrationReport> calibration_report_;
-  int settings_kind_ = 0;
-  bool settings_start_requested_ = false;
   std::wstring music_path_, music_start_seconds_ = L"0", music_seconds_ = L"120", live_seconds_ = L"60";
   bool music_test_active_ = false;
   bool start_hidden_ = false;
+  bool shutting_down_ = false;
   bool running_ = false;
   bool connected_ = false;
   bool usb_connected_ = false;
@@ -1461,8 +1157,6 @@ class Application {
   int completed_test_ = 0;
   Clock::time_point diagnostic_started_{};
   SenderDiagnosticLogger logger_;
-  HBRUSH edit_brush_ = CreateSolidBrush(RGB(45, 45, 45));
-  HBRUSH page_brush_ = CreateSolidBrush(RGB(42, 42, 42));
   std::unique_ptr<hearport::windows::SenderHost> host_;
   std::thread unpair_worker_;
   bool unpair_pending_ = false;
@@ -1486,10 +1180,19 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line,
   const HRESULT apartment = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
   int result = 1;
   {
-    Application app(command_line &&
+    auto app = std::make_unique<Application>(command_line &&
                     std::wstring_view(command_line).find(L"--background") !=
                         std::wstring_view::npos);
-    result = app.Run(instance, show_command);
+    const auto status = MainWindow::RunApp([&] {
+      result = app->Launch(instance, show_command);
+      if (result) MainWindow::ExitApp();
+    }, [&] { app.reset(); });
+    if (FAILED(status)) {
+      result = 1;
+      MessageBoxW(nullptr, Tr(L"Could not start HearPort. Install Windows App Runtime 2.6.5 or newer.",
+                             L"无法启动 HearPort。请安装 Windows App Runtime 2.6.5 或更高版本。").c_str(),
+                  L"HearPort", MB_OK | MB_ICONERROR);
+    }
   }
   if (SUCCEEDED(apartment)) CoUninitialize();
   if (singleton) CloseHandle(singleton);
