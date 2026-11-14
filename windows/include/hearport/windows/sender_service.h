@@ -85,8 +85,8 @@ class SenderService {
   CalibrationMessage calibration_setup(std::uint32_t plan_id) const;
   CalibrationProgress calibration_progress() const;
   bool HandleCalibrationMessage(const CalibrationMessage& message);
-  void ConfigureMusicTest(MusicExcerpt clip);
-  bool music_test() const noexcept { return music_clip_.has_value(); }
+  void ConfigureMusicTest(std::shared_ptr<const MusicExcerpt> clip);
+  bool music_test() const noexcept { return bool(music_clip_); }
   bool AcknowledgeMusicRound();
   std::uint32_t music_test_round() const noexcept { return music_round_.load(); }
   std::uint32_t music_test_frames_processed() const noexcept { return music_frames_processed_.load(); }
@@ -162,7 +162,7 @@ class SenderService {
   void EndDebugSession(std::uint32_t reason);
   void CompleteDebugSend(std::uint32_t stream_id) noexcept;
   void WriteDebugTrace(std::span<const std::byte> session_id,
-                       std::string_view contents);
+                       std::string_view reason);
 
   static constexpr std::size_t kAudioQueueCapacity = 256;
 
@@ -226,7 +226,7 @@ class SenderService {
   std::thread audio_thread_;
   std::thread probe_thread_;
   std::thread music_thread_;
-  std::optional<MusicExcerpt> music_clip_;
+  std::shared_ptr<const MusicExcerpt> music_clip_;
   std::atomic<std::uint32_t> music_round_ = 0;
   std::atomic<std::uint32_t> music_policy_ = 0x100;
   std::mutex music_mutex_;

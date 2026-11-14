@@ -727,7 +727,7 @@ class Application {
 
   void StartService(std::optional<std::chrono::seconds> diagnostics = std::nullopt,
                     bool network_probe = false,
-                    std::optional<hearport::windows::MusicExcerpt> music = std::nullopt,
+                    std::shared_ptr<const hearport::windows::MusicExcerpt> music = nullptr,
                     bool calibration = false) {
     if (running_ || unpair_pending_) return;
     error_.clear();
@@ -770,7 +770,7 @@ class Application {
       service.ConfigureNetworkProbe(network_probe);
       service.ConfigureDebugDuration(diagnostics);
       if (calibration) service.ConfigureCalibration({static_cast<std::uint16_t>(calibration_seconds_), static_cast<std::uint16_t>(calibration_maximum_), calibration_goal_});
-      if (music) service.ConfigureMusicTest(*music);
+      if (music) service.ConfigureMusicTest(music);
       service.SetDebugOutputDirectory(data_dir_ / L"diagnostics");
     });
     service_ = &host_->service();
@@ -797,7 +797,7 @@ class Application {
     connected_ = false;
     diagnostic_duration_ = service_->debug_duration();
     network_probe_active_ = network_probe;
-    music_test_active_ = music.has_value();
+    music_test_active_ = bool(music);
     if (diagnostics) {
       diagnostic_started_ = Clock::now();
       const auto message = network_probe
@@ -880,7 +880,7 @@ class Application {
   void StartNetworkProbe() {
     StopService();
     StartService(std::chrono::seconds(
-                     hearport::windows::kCoordinatedProbeDurationSeconds), true, std::nullopt, calibration_selected_);
+                     hearport::windows::kCoordinatedProbeDurationSeconds), true, nullptr, calibration_selected_);
     if (!running_) {
       main_window_->SetDiagnostic(Tr(L"Could not start the network test. Check the overview and log.",
                         L"无法启动网络测试，请查看概览和运行日志。")
@@ -975,7 +975,9 @@ class Application {
   void StartMusicTest() {
     try {
       SetCursor(LoadCursorW(nullptr,IDC_WAIT));
-      auto clip = hearport::windows::LoadMusicExcerpt(music_path_,std::stoul(music_start_seconds_),std::stoul(music_seconds_));
+      auto clip = std::make_shared<const hearport::windows::MusicExcerpt>(
+          hearport::windows::LoadMusicExcerpt(music_path_, std::stoul(music_start_seconds_),
+                                             std::stoul(music_seconds_)));
       StopService();
       StartService(std::nullopt,false,std::move(clip));
       SelectPage(0);
@@ -1134,7 +1136,7 @@ class Application {
           calibration_goal_ = static_cast<std::uint8_t>(HIWORD(wparam));
           calibration_maximum_ = static_cast<unsigned>(lparam);
           StopService();
-          StartService(std::nullopt, true, std::nullopt, true);
+          StartService(std::nullopt, true, nullptr, true);
           SelectPage(0);
         }
         return 0;

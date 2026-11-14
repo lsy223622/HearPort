@@ -447,12 +447,12 @@ bool SenderService::HandleCalibrationMessage(const CalibrationMessage& message) 
   calibration_condition_.notify_all(); return true;
 }
 
-void SenderService::ConfigureMusicTest(MusicExcerpt clip) {
-  if (started_ || network_probe_ || clip.duration_seconds < 60 || clip.duration_seconds > 300 ||
-      clip.samples.size() != std::size_t(clip.duration_seconds) * 48'000 * 2) {
+void SenderService::ConfigureMusicTest(std::shared_ptr<const MusicExcerpt> clip) {
+  if (started_ || network_probe_ || !clip || clip->duration_seconds < 60 || clip->duration_seconds > 300 ||
+      clip->samples.size() != std::size_t(clip->duration_seconds) * 48'000 * 2) {
     throw std::invalid_argument("Invalid music test configuration");
   }
-  ConfigureDebugDuration(std::chrono::seconds(clip.duration_seconds * kMusicTestRoundCount +
+  ConfigureDebugDuration(std::chrono::seconds(clip->duration_seconds * kMusicTestRoundCount +
       (kMusicTestRoundCount - 1) * kMusicRecoverySeconds + kMusicTestRoundCount * 5 + 30));
   music_clip_ = std::move(clip);
 }
@@ -1595,8 +1595,7 @@ void SenderService::EndDebugSession(std::uint32_t reason) {
   } else {
     end_reason = "sender_stopped";
   }
-  const auto trace = debug_trace_.Finish(end_reason);
-  WriteDebugTrace(session_id, trace);
+  WriteDebugTrace(session_id, end_reason);
 
   std::ostringstream message;
   message << "debug_session_ended session_id=" << SessionHex(session_id)
@@ -1624,25 +1623,27 @@ void SenderService::CompleteDebugSend(std::uint32_t stream_id) noexcept {
 }
 
 void SenderService::WriteDebugTrace(
-    std::span<const std::byte> session_id, std::string_view contents) {
-  if (contents.empty()) return;
+    std::span<const std::byte> session_id, std::string_view reason) {
   const auto directory = debug_output_directory_ / SessionHex(session_id);
   const auto temporary = directory / "sender-trace.jsonl.tmp";
   const auto destination = directory / "sender-trace.jsonl";
   std::error_code error;
   std::filesystem::create_directories(directory, error);
   if (error) {
+    std::ostream discard(nullptr);
+    debug_trace_.Finish(discard, reason);
     LogDiagnostic("debug_session_trace_directory_failed");
     return;
   }
   {
     std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
     if (!output.is_open()) {
+      debug_trace_.Finish(output, reason);
       LogDiagnostic("debug_session_trace_open_failed");
       return;
     }
-    output.write(contents.data(), static_cast<std::streamsize>(contents.size()));
-    output.flush();
+    debug_trace_.Finish(output, reason);
+    output.close();
     if (!output) {
       LogDiagnostic("debug_session_trace_write_failed");
       return;

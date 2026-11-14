@@ -52,7 +52,7 @@ int wmain(int argc, wchar_t** argv) {
     hearport::windows::MusicExcerpt clip;
     clip.duration_seconds = 60;
     clip.samples.resize(60 * 48'000 * 2);
-    service.ConfigureMusicTest(std::move(clip));
+    service.ConfigureMusicTest(std::make_shared<const hearport::windows::MusicExcerpt>(std::move(clip)));
     assert(service.debug_duration()->count() == 2265);
     assert(service.ObserveAudioProgress(7, 1, 0));
   }
