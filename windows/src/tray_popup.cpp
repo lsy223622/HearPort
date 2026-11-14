@@ -45,9 +45,8 @@ constexpr int kPopupWidth = 352;
 constexpr int kPopupHeight = 132;
 constexpr int kPopupHeightWithVolume = 174;
 constexpr double kIconWidth = 24;
-constexpr double kSliderWidth = 230;
 constexpr double kThumbDiameter = 18;
-constexpr double kTrackTravel = kSliderWidth - kThumbDiameter;
+
 
 const wchar_t* Translate(const wchar_t* english, const wchar_t* chinese) {
   return PRIMARYLANGID(GetUserDefaultUILanguage()) == LANG_CHINESE ? chinese : english;
@@ -81,7 +80,8 @@ struct TrayPopup::Impl {
   SystemBackdropConfiguration backdrop{nullptr};
   StackPanel content{nullptr};
   Border frame{nullptr};
-  StackPanel volume_row{nullptr};
+  Grid volume_row{nullptr};
+  Grid slider_surface{nullptr};
   TextBlock state{nullptr};
   TextBlock connection_method{nullptr};
   ConnectionLogo connection_logo;
@@ -105,6 +105,10 @@ struct TrayPopup::Impl {
   std::shared_ptr<bool> alive = std::make_shared<bool>(true);
   std::uint32_t drag_start = 0;
   winrt::event_token closing;
+  Media::CompositionTarget::Rendered_revoker rendered;
+  bool preparing = false;
+  bool frame_rendered = false;
+  int popup_width = 0;
 
   std::uint32_t Position() const {
     return static_cast<std::uint32_t>(std::lround(slider.Value()));
@@ -112,7 +116,9 @@ struct TrayPopup::Impl {
 
   void UpdateLabel() const {
     percent.Text(std::to_wstring(Position()) + L"%");
-    const double filled = kTrackTravel * slider.Value() / 100;
+    const double travel = std::max(0.0, slider_surface.ActualWidth() - kThumbDiameter);
+    slider_track.Width(travel);
+    const double filled = travel * slider.Value() / 100;
     slider_fill.Width(filled);
     Canvas::SetLeft(slider_thumb, filled);
   }
@@ -123,6 +129,8 @@ struct TrayPopup::Impl {
   }
 
   void Hide() {
+    preparing = false;
+    rendered.revoke();
     if (app_window && app_window.IsVisible()) {
       dismiss_timer.Stop();
       entrance_timer.Stop();
@@ -161,7 +169,7 @@ struct TrayPopup::Impl {
                                       UINT_PTR id, DWORD_PTR data) {
     auto* self = reinterpret_cast<Impl*>(data);
     if (message == WM_NCCALCSIZE && wp) return 0;
-    if (message == WM_ACTIVATE && LOWORD(wp) == WA_INACTIVE &&
+    if (message == WM_ACTIVATE && !self->preparing && LOWORD(wp) == WA_INACTIVE &&
         !self->HasForeground(reinterpret_cast<HWND>(lp))) {
       self->Hide();
     }
@@ -195,7 +203,6 @@ struct TrayPopup::Impl {
   void AdvanceEntrance() {
     constexpr auto duration = std::chrono::milliseconds(500);
     const auto now = std::chrono::steady_clock::now();
-    // WinUI can spend several frames creating its first surface.
     if (entrance_start == std::chrono::steady_clock::time_point{}) entrance_start = now;
     const double elapsed = std::chrono::duration<double>(now - entrance_start) / duration;
     // Quintic ease-out: the surface clears the tray quickly and settles at its anchor.
@@ -204,6 +211,24 @@ struct TrayPopup::Impl {
     SetWindowPos(hwnd, nullptr, entrance_x, entrance_y + offset, 0, 0,
                  SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
     if (!offset) entrance_timer.Stop();
+  }
+
+  void Reveal() {
+    if (!preparing) return;
+    preparing = false;
+    SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
+    SetWindowPos(hwnd, nullptr, entrance_x, entrance_y + entrance_offset, 0, 0,
+                 SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    opening_foreground = GetForegroundWindow();
+    pointer_was_down = PointerDown();
+    window.Activate();
+    SetForegroundWindow(hwnd);
+    if (entrance_offset) {
+      DwmFlush();
+      entrance_start = {};
+      entrance_timer.Start();
+    }
+    dismiss_timer.Start();
   }
 
   void UpdateLink() {
@@ -335,9 +360,15 @@ struct TrayPopup::Impl {
     body.Children().Append(header_row);
     content.Children().Append(body);
 
-    volume_row = StackPanel();
-    volume_row.Orientation(Orientation::Horizontal);
-    volume_row.Spacing(8);
+    volume_row = Grid();
+    volume_row.ColumnSpacing(8);
+    for (const GridLength width : {GridLength{kIconWidth, GridUnitType::Pixel},
+                                   GridLength{1, GridUnitType::Star},
+                                   GridLength{1, GridUnitType::Auto}}) {
+      ColumnDefinition column;
+      column.Width(width);
+      volume_row.ColumnDefinitions().Append(column);
+    }
     volume_row.Height(34);
     volume_row.Visibility(Visibility::Collapsed);
     FontIcon speaker;
@@ -346,23 +377,23 @@ struct TrayPopup::Impl {
     speaker.Width(kIconWidth);
     speaker.VerticalAlignment(VerticalAlignment::Center);
     percent = TextBlock();
-    percent.Width(46);
+    percent.MinWidth(46);
+    percent.Padding({0, 0, 2, 0});
     percent.TextAlignment(TextAlignment::Right);
     percent.VerticalAlignment(VerticalAlignment::Center);
     slider = Slider();
-    slider.Width(kSliderWidth);
+
     slider.Minimum(0);
     slider.Maximum(100);
     slider.StepFrequency(1);
     slider.IsThumbToolTipEnabled(false);
     Automation::AutomationProperties::SetName(slider, Translate(L"iPad volume", L"iPad 音量"));
-    Grid slider_surface;
-    slider_surface.Width(kSliderWidth);
+    slider_surface = Grid();
     slider_surface.Height(32);
     Canvas slider_art;
     slider_art.IsHitTestVisible(false);
     slider_track = Border();
-    slider_track.Width(kTrackTravel);
+
     slider_track.Height(4);
     slider_track.CornerRadius({2, 2, 2, 2});
     Canvas::SetLeft(slider_track, kThumbDiameter / 2);
@@ -387,6 +418,9 @@ struct TrayPopup::Impl {
     slider_surface.Children().Append(slider);
     slider_surface.Children().Append(slider_art);
     volume_row.Children().Append(speaker);
+    slider_surface.SizeChanged([this](auto&&, auto&&) { UpdateLabel(); });
+    Grid::SetColumn(slider_surface, 1);
+    Grid::SetColumn(percent, 2);
     volume_row.Children().Append(slider_surface);
     volume_row.Children().Append(percent);
     body.Children().Append(volume_row);
@@ -489,6 +523,7 @@ TrayPopup::TrayPopup(std::function<void()> open_home, std::function<void()> open
 
 TrayPopup::~TrayPopup() {
   *impl_->alive = false;
+  impl_->rendered.revoke();
   if (impl_->window) {
     if (impl_->dismiss_timer) impl_->dismiss_timer.Stop();
     if (impl_->entrance_timer) impl_->entrance_timer.Stop();
@@ -528,23 +563,38 @@ HRESULT TrayPopup::Show(const RECT& anchor) {
   impl_->entrance_y = y;
   impl_->entrance_offset = winrt::Windows::UI::ViewManagement::UISettings().AnimationsEnabled()
       ? scale(preferred_y == above ? 32 : -32) : 0;
+  // A nearly transparent host still renders on the target monitor. Reveal it
+  // only after XAML produces a frame at the visible size and DPI.
+  impl_->preparing = true;
+  impl_->frame_rendered = false;
+  impl_->popup_width = width;
+  SetWindowLongPtrW(impl_->hwnd, GWL_EXSTYLE,
+                    GetWindowLongPtrW(impl_->hwnd, GWL_EXSTYLE) | WS_EX_LAYERED);
+  SetLayeredWindowAttributes(impl_->hwnd, 0, 1, LWA_ALPHA);
   impl_->app_window.MoveAndResize({x, y + impl_->entrance_offset, width, height});
-  impl_->opening_foreground = GetForegroundWindow();
-  impl_->pointer_was_down = Impl::PointerDown();
-  impl_->window.Activate();
-  SetForegroundWindow(impl_->hwnd);
-  if (impl_->entrance_offset) {
-    impl_->entrance_start = {};
-    impl_->entrance_timer.Start();
-  }
-  impl_->dismiss_timer.Start();
-  impl_->open_button.Focus(FocusState::Programmatic);
+  impl_->rendered = Media::CompositionTarget::Rendered(winrt::auto_revoke,
+      [state = impl_.get()](auto&&, auto&&) {
+        if (!state->preparing || !state->frame.IsLoaded() ||
+            state->frame.ActualWidth() <= 0 || state->frame.ActualHeight() <= 0) return;
+        // The thread-wide event may initially report a frame from the main
+        // window. Wait another frame after the popup has completed layout.
+        if (!std::exchange(state->frame_rendered, true)) return;
+        state->rendered.revoke();
+        state->dispatcher.TryEnqueue([state, alive = state->alive] {
+          if (*alive && state->preparing) {
+            DwmFlush();
+            state->Reveal();
+          }
+        });
+      });
+  impl_->app_window.Show(false);
+  impl_->frame.UpdateLayout();
   return S_OK;
 }
 
 void TrayPopup::Hide() { impl_->Hide(); }
 
-bool TrayPopup::visible() const { return impl_->app_window && impl_->app_window.IsVisible(); }
+bool TrayPopup::visible() const { return impl_->preparing || (impl_->app_window && impl_->app_window.IsVisible()); }
 
 void TrayPopup::Update(bool connected, bool usb, LinkStability stability, bool running, std::optional<std::uint32_t> volume) {
   const bool link_changed = impl_->connected != connected || impl_->usb != usb || impl_->stability != stability;
@@ -572,7 +622,13 @@ void TrayPopup::Update(bool connected, bool usb, LinkStability stability, bool r
   const auto visibility = volume ? Visibility::Visible : Visibility::Collapsed;
   if (impl_->volume_row.Visibility() != visibility) {
     impl_->volume_row.Visibility(visibility);
-    if (visible()) {
+    if (impl_->preparing) {
+      auto position = impl_->app_window.Position();
+      auto size = impl_->app_window.Size();
+      const int height = MulDiv(volume ? kPopupHeightWithVolume : kPopupHeight, impl_->popup_width, kPopupWidth);
+      impl_->entrance_y += size.Height - height;
+      impl_->app_window.MoveAndResize({position.X, position.Y, size.Width, height});
+    } else if (visible()) {
       if (impl_->entrance_timer.IsRunning()) {
         impl_->entrance_timer.Stop();
         SetWindowPos(impl_->hwnd, nullptr, impl_->entrance_x, impl_->entrance_y, 0, 0,
