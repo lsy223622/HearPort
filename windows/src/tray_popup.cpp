@@ -42,8 +42,8 @@ using namespace winrt::Microsoft::UI::Xaml::Input;
 using namespace winrt::Microsoft::UI::Composition::SystemBackdrops;
 
 constexpr int kPopupWidth = 352;
-constexpr int kPopupHeight = 132;
-constexpr int kPopupHeightWithVolume = 174;
+constexpr int kPopupHeight = 116;
+constexpr int kPopupHeightWithVolume = 158;
 constexpr double kIconWidth = 24;
 constexpr double kThumbDiameter = 18;
 
@@ -83,7 +83,6 @@ struct TrayPopup::Impl {
   Grid volume_row{nullptr};
   Grid slider_surface{nullptr};
   TextBlock state{nullptr};
-  TextBlock connection_method{nullptr};
   ConnectionLogo connection_logo;
   Border footer{nullptr};
   TextBlock percent{nullptr};
@@ -245,7 +244,6 @@ struct TrayPopup::Impl {
     const auto rgb = LinkColor(usb, stability, dark);
     const Media::Brush ink = high_contrast ? state.Foreground() :
         Media::SolidColorBrush(Color{255, GetRValue(rgb), GetGValue(rgb), GetBValue(rgb)});
-    connection_method.Foreground(ink);
     connection_logo.Update(running, connected, usb, stability, ink);
   }
 
@@ -324,7 +322,7 @@ struct TrayPopup::Impl {
     StackPanel header;
     header.Orientation(Orientation::Horizontal);
     header.Spacing(12);
-    header.Height(49);
+    header.Height(33);
     connection_logo.Create();
     connection_logo.view.Width(kIconWidth);
     connection_logo.view.Height(24);
@@ -332,18 +330,12 @@ struct TrayPopup::Impl {
     connection_logo.view.Margin({0, 5, 0, 0});
     connection_logo.view.IsHitTestVisible(false);
     header.Children().Append(connection_logo.view);
-    StackPanel labels;
-    labels.VerticalAlignment(VerticalAlignment::Top);
-    labels.Margin({0, 3, 0, 0});
-    labels.Spacing(5);
     state = TextBlock();
     state.FontSize(15);
     state.FontWeight({600});
-    labels.Children().Append(state);
-    connection_method = TextBlock();
-    connection_method.FontSize(12);
-    labels.Children().Append(connection_method);
-    header.Children().Append(labels);
+    state.VerticalAlignment(VerticalAlignment::Top);
+    state.Margin({0, 3, 0, 0});
+    header.Children().Append(state);
     header_row.Children().Append(header);
     power_button = Button();
     power_button.Background(Media::SolidColorBrush(winrt::Windows::UI::Color{}));
@@ -624,8 +616,6 @@ void TrayPopup::Update(bool connected, bool usb, LinkStability stability, bool r
   const auto title = connected ? Translate(L"HearPort connected", L"HearPort 已连接")
                                : Translate(L"HearPort not connected", L"HearPort 未连接");
   if (impl_->state.Text() != title) impl_->state.Text(title);
-  const auto method = !connected ? L"" : usb ? L"USB" : Translate(L"Network", L"网络");
-  if (impl_->connection_method.Text() != method) impl_->connection_method.Text(method);
   if (link_changed) impl_->UpdateLink();
   const auto visibility = volume ? Visibility::Visible : Visibility::Collapsed;
   if (impl_->volume_row.Visibility() != visibility) {
