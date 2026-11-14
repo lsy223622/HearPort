@@ -344,12 +344,9 @@ class MsQuicServer final : public QuicServer {
   }
 
   std::optional<LinkTiming> ReadLinkTiming() override {
-    std::lock_guard lock(mutex_);
-    if (!started_ || !connection_ || !api_) return {};
-    QUIC_STATISTICS_V2 statistics{};
-    std::uint32_t size = sizeof(statistics);
-    if (QUIC_FAILED(api_->GetParam(connection_, QUIC_PARAM_CONN_STATISTICS_V2, &size, &statistics))) return {};
-    return LinkTiming{statistics.Rtt, statistics.RecvValidAckFrames};
+    const auto statistics = ReadStatistics();
+    if (!statistics) return {};
+    return LinkTiming{statistics->Rtt, statistics->RecvValidAckFrames};
   }
 
   ReliableAudioCapacity AudioCapacity() override {
@@ -363,12 +360,11 @@ class MsQuicServer final : public QuicServer {
       acknowledged_audio_bytes_ = 0;
       capacity_sample_at_ = now;
     }
-    QUIC_STATISTICS_V2 statistics{};
-    std::uint32_t size = sizeof(statistics);
-    if (QUIC_FAILED(api_->GetParam(connection_, QUIC_PARAM_CONN_STATISTICS_V2, &size, &statistics))) return {};
+    const auto statistics = ReadStatistics();
+    if (!statistics) return {};
     // Send buffering is disabled: only completed, uncanceled audio contributes ACK goodput.
     return {(std::min)(previous_acknowledged_bytes_per_second_, acknowledged_bytes_per_second_),
-            statistics.SendCongestionWindow, std::uint64_t(statistics.Rtt) * 1'000};
+            statistics->SendCongestionWindow, std::uint64_t(statistics->Rtt) * 1'000};
   }
 
   void ConfirmReliableReceived(std::uint32_t stream_id, std::uint32_t generation,
@@ -489,6 +485,7 @@ class MsQuicServer final : public QuicServer {
   static QUIC_STATUS QUIC_API ConnectionCallback(
       HQUIC connection, void* context, QUIC_CONNECTION_EVENT* event) {
     auto* server = static_cast<MsQuicServer*>(context);
+    server->SampleStatistics(connection);
     server->LogProbeStatistics(connection);
     switch (event->Type) {
       case QUIC_CONNECTION_EVENT_SHUTDOWN_INITIATED_BY_TRANSPORT:
@@ -509,6 +506,7 @@ class MsQuicServer final : public QuicServer {
           api = server->api_;
           if (server->started_ && !server->closing_ && server->connection_ == nullptr) {
             server->connection_ = connection;
+            server->ResetStatistics(connection);
             on_connected = server->callbacks_.on_connected;
             accepted = true;
           }
@@ -635,6 +633,7 @@ class MsQuicServer final : public QuicServer {
               tracked = true;
               server->closing_ = true;
               server->connection_ = nullptr;
+              server->ResetStatistics(nullptr);
               server->control_stream_ = nullptr;
               server->audio_stream_ = nullptr;
               server->reliable_mode_ = false;
@@ -669,6 +668,7 @@ class MsQuicServer final : public QuicServer {
   static QUIC_STATUS QUIC_API StreamCallback(
       HQUIC stream, void* context, QUIC_STREAM_EVENT* event) {
     auto* server = static_cast<MsQuicServer*>(context);
+    server->SampleStreamStatistics(stream, false);
     switch (event->Type) {
       case QUIC_STREAM_EVENT_RECEIVE:
         {
@@ -731,6 +731,7 @@ class MsQuicServer final : public QuicServer {
   static QUIC_STATUS QUIC_API AudioStreamCallback(
       HQUIC stream, void* context, QUIC_STREAM_EVENT* event) {
     auto* server = static_cast<MsQuicServer*>(context);
+    server->SampleStreamStatistics(stream, true);
     HQUIC connection = nullptr;
     if (server->options_.network_probe) {
       std::lock_guard lock(server->mutex_);
@@ -787,6 +788,46 @@ class MsQuicServer final : public QuicServer {
         break;
     }
     return QUIC_STATUS_SUCCESS;
+  }
+
+  void ResetStatistics(HQUIC connection) {
+    std::lock_guard lock(statistics_mutex_);
+    statistics_connection_ = connection;
+    last_statistics_at_ = {};
+    statistics_.reset();
+  }
+
+  std::optional<QUIC_STATISTICS_V2> ReadStatistics() {
+    std::lock_guard lock(statistics_mutex_);
+    return statistics_;
+  }
+
+  void SampleStreamStatistics(HQUIC stream, bool audio) {
+    HQUIC connection;
+    {
+      std::lock_guard lock(mutex_);
+      if (stream != (audio ? audio_stream_ : control_stream_)) return;
+      connection = connection_;
+    }
+    SampleStatistics(connection);
+  }
+
+  // MsQuic can wait for its worker when queried from another thread. Query only
+  // from callbacks running on this connection, with neither mutex held.
+  void SampleStatistics(HQUIC connection) {
+    if (!connection) return;
+    const auto now = std::chrono::steady_clock::now();
+    {
+      std::lock_guard lock(statistics_mutex_);
+      if (connection != statistics_connection_ ||
+          now - last_statistics_at_ < std::chrono::milliseconds(100)) return;
+      last_statistics_at_ = now;
+    }
+    QUIC_STATISTICS_V2 statistics{};
+    std::uint32_t size = sizeof(statistics);
+    if (QUIC_FAILED(api_->GetParam(connection, QUIC_PARAM_CONN_STATISTICS_V2, &size, &statistics))) return;
+    std::lock_guard lock(statistics_mutex_);
+    if (connection == statistics_connection_) statistics_ = statistics;
   }
 
   void LogProbeStatistics(HQUIC connection, HQUIC stream = nullptr) {
@@ -878,6 +919,10 @@ class MsQuicServer final : public QuicServer {
   }
 
   std::mutex mutex_;
+  std::mutex statistics_mutex_;
+  HQUIC statistics_connection_ = nullptr;
+  std::chrono::steady_clock::time_point last_statistics_at_{};
+  std::optional<QUIC_STATISTICS_V2> statistics_;
   std::condition_variable shutdown_condition_;
   const QUIC_API_TABLE* api_ = nullptr;
   HQUIC registration_ = nullptr;
