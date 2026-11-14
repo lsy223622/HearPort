@@ -343,6 +343,15 @@ class MsQuicServer final : public QuicServer {
     previous_acknowledged_bytes_per_second_ = 0;
   }
 
+  std::optional<LinkTiming> ReadLinkTiming() override {
+    std::lock_guard lock(mutex_);
+    if (!started_ || !connection_ || !api_) return {};
+    QUIC_STATISTICS_V2 statistics{};
+    std::uint32_t size = sizeof(statistics);
+    if (QUIC_FAILED(api_->GetParam(connection_, QUIC_PARAM_CONN_STATISTICS_V2, &size, &statistics))) return {};
+    return LinkTiming{statistics.Rtt, statistics.RecvValidAckFrames};
+  }
+
   ReliableAudioCapacity AudioCapacity() override {
     std::lock_guard lock(mutex_);
     if (!started_ || connection_ == nullptr || api_ == nullptr) return {};
@@ -933,6 +942,7 @@ class UnavailableQuicServer final : public QuicServer {
   void ConfigureAudioWindow(std::uint32_t, std::uint32_t, std::uint32_t) override {}
   void ConfirmReliableReceived(std::uint32_t, std::uint32_t, std::uint32_t) override {}
   ReliableAudioCapacity AudioCapacity() override { return {}; }
+  std::optional<LinkTiming> ReadLinkTiming() override { return {}; }
   void StopReliableAudio() override {}
   bool StartReliableAudio(std::uint32_t, std::uint32_t) override { return false; }
   void CloseConnection() override {}

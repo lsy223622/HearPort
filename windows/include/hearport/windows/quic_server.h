@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string_view>
 
@@ -41,6 +42,11 @@ struct ReliableAudioCapacity {
   std::uint64_t round_trip_ns = 0;
 };
 
+struct LinkTiming {
+  std::uint32_t rtt_us;
+  std::uint64_t ack_frames;
+};
+
 class QuicServer {
  public:
   virtual ~QuicServer() = default;
@@ -58,6 +64,7 @@ class QuicServer {
   virtual void ConfirmReliableReceived(std::uint32_t stream_id, std::uint32_t generation,
                                        std::uint32_t sequence) = 0;
   virtual ReliableAudioCapacity AudioCapacity() = 0;
+  virtual std::optional<LinkTiming> ReadLinkTiming() = 0;
   virtual void StopReliableAudio() = 0;
   virtual void CloseConnection() = 0;
   virtual std::uint16_t LocalPort() const = 0;
