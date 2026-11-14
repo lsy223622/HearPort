@@ -315,6 +315,7 @@ struct MainWindow::Impl {
     status = Label({}, 27, true);
     detail = Label();
     sender = Command(Tr(L"Start sender", L"启动发送服务"), MainAction::sender, true);
+    sender.CornerRadius({6, 6, 6, 6});
     sender.Margin({0, 6, 0, 0});
     connection.Children().Append(status);
     connection.Children().Append(detail);
@@ -616,7 +617,8 @@ void MainWindow::SetComputer(const std::wstring& text) { SetText(impl_->computer
 void MainWindow::SetActions(bool running, bool sender_enabled, bool paired, bool pair_enabled) {
   if (running != impl_->sending) {
     impl_->sending = running;
-    impl_->sender.Style(running ? nullptr : impl_->AccentButton());
+    if (running) impl_->sender.ClearValue(FrameworkElement::StyleProperty());
+    else impl_->sender.Style(impl_->AccentButton());
   }
   impl_->sender.Content(winrt::box_value(running ? Tr(L"Stop sender", L"停止发送服务") : Tr(L"Start sender", L"启动发送服务")));
   impl_->sender.IsEnabled(sender_enabled);
