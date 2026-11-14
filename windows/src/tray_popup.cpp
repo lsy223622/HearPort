@@ -39,7 +39,10 @@ using namespace winrt::Microsoft::UI::Xaml::Controls;
 using namespace winrt::Microsoft::UI::Xaml::Input;
 using namespace winrt::Microsoft::UI::Composition::SystemBackdrops;
 
-constexpr double kSliderWidth = 196;
+constexpr int kPopupWidth = 352;
+constexpr int kPopupHeight = 132;
+constexpr int kPopupHeightWithVolume = 174;
+constexpr double kSliderWidth = 236;
 constexpr double kThumbDiameter = 18;
 constexpr double kTrackTravel = kSliderWidth - kThumbDiameter;
 
@@ -51,6 +54,7 @@ const wchar_t* Translate(const wchar_t* english, const wchar_t* chinese) {
 
 struct TrayPopup::Impl {
   std::function<void()> open;
+  std::function<void()> toggle_sender;
   std::function<void(std::uint32_t)> preview;
   std::function<void(std::uint32_t)> commit;
   std::function<void()> cancel;
@@ -75,8 +79,13 @@ struct TrayPopup::Impl {
   Border frame{nullptr};
   StackPanel volume_row{nullptr};
   TextBlock state{nullptr};
+  TextBlock connection_method{nullptr};
+  FontIcon connection_icon{nullptr};
+  Border footer{nullptr};
   TextBlock percent{nullptr};
   Button open_button{nullptr};
+  Button power_button{nullptr};
+  TextBlock power_label{nullptr};
   Slider slider{nullptr};
   Border slider_fill{nullptr};
   Border slider_thumb{nullptr};
@@ -84,6 +93,8 @@ struct TrayPopup::Impl {
   bool updating = false;
   bool dragging = false;
   bool connected = false;
+  bool usb = false;
+  bool running = false;
   std::optional<std::uint32_t> volume;
   std::optional<std::uint32_t> pending_value;
   std::shared_ptr<bool> alive = std::make_shared<bool>(true);
@@ -204,6 +215,9 @@ struct TrayPopup::Impl {
              : winrt::Windows::UI::ViewManagement::UIColorType::AccentDark1);
     frame.BorderBrush(SolidColorBrush(high_contrast ? system_color(COLOR_WINDOWTEXT)
         : dark ? Color{48, 255, 255, 255} : Color{42, 0, 0, 0}));
+    footer.BorderBrush(SolidColorBrush(high_contrast ? system_color(COLOR_WINDOWTEXT)
+        : dark ? Color{34, 255, 255, 255} : Color{32, 0, 0, 0}));
+    footer.Background(SolidColorBrush(dark ? Color{33, 0, 0, 0} : Color{27, 255, 255, 255}));
     slider_track.Background(SolidColorBrush(high_contrast ? system_color(COLOR_WINDOWTEXT)
         : dark ? Color{255, 157, 157, 157} : Color{255, 122, 122, 122}));
     slider_fill.Background(SolidColorBrush(high_contrast ? system_color(COLOR_HIGHLIGHT) : accent));
@@ -255,25 +269,65 @@ struct TrayPopup::Impl {
     entrance_timer.Tick([this](auto&&, auto&&) { AdvanceEntrance(); });
 
     content = StackPanel();
-    content.Padding({18, 15, 18, 12});
-    content.Spacing(8);
+    StackPanel body;
+    body.Padding({18, 14, 18, 10});
+    body.Spacing(8);
+    Grid header_row;
     StackPanel header;
     header.Orientation(Orientation::Horizontal);
-    header.Spacing(10);
-    FontIcon icon;
-    icon.Glyph(L"\uE70A");
-    icon.FontSize(17);
-    header.Children().Append(icon);
+    header.Spacing(12);
+    header.Height(49);
+    header.Translation({0, -3, 0});
+    SymbolIcon device(Symbol::CellPhone);
+    device.VerticalAlignment(VerticalAlignment::Center);
+    header.Children().Append(device);
+    StackPanel labels;
+    labels.VerticalAlignment(VerticalAlignment::Center);
+    labels.Spacing(3);
     state = TextBlock();
     state.FontSize(15);
     state.FontWeight({600});
-    state.VerticalAlignment(VerticalAlignment::Center);
-    header.Children().Append(state);
-    content.Children().Append(header);
+    labels.Children().Append(state);
+    StackPanel method;
+    method.Orientation(Orientation::Horizontal);
+    method.Spacing(6);
+    connection_icon = FontIcon();
+    connection_icon.FontSize(12);
+    connection_icon.VerticalAlignment(VerticalAlignment::Center);
+    method.Children().Append(connection_icon);
+    connection_method = TextBlock();
+    connection_method.FontSize(12);
+    connection_method.Opacity(.76);
+    method.Children().Append(connection_method);
+    labels.Children().Append(method);
+    header.Children().Append(labels);
+    header_row.Children().Append(header);
+    power_button = Button();
+    power_button.Background(Media::SolidColorBrush(winrt::Windows::UI::Color{}));
+    power_button.BorderThickness({0, 0, 0, 0});
+    power_button.HorizontalAlignment(HorizontalAlignment::Right);
+    power_button.VerticalAlignment(VerticalAlignment::Top);
+    power_button.Padding({6, 4, 6, 4});
+    StackPanel power_content;
+    power_content.Orientation(Orientation::Horizontal);
+    power_content.Spacing(6);
+    FontIcon power;
+    power.Glyph(L"\uE7E8");
+    power.FontSize(15);
+    power.VerticalAlignment(VerticalAlignment::Center);
+    power_content.Children().Append(power);
+    power_label = TextBlock();
+    power_content.Children().Append(power_label);
+    power_button.Content(power_content);
+    power_button.Click([this](auto&&, auto&&) { toggle_sender(); });
+    header_row.Children().Append(power_button);
+    body.Children().Append(header_row);
+    content.Children().Append(body);
 
     volume_row = StackPanel();
     volume_row.Orientation(Orientation::Horizontal);
-    volume_row.Spacing(10);
+    volume_row.Spacing(8);
+    volume_row.Height(34);
     volume_row.Visibility(Visibility::Collapsed);
     FontIcon speaker;
     speaker.Glyph(L"\uE767");
@@ -323,14 +377,31 @@ struct TrayPopup::Impl {
     volume_row.Children().Append(speaker);
     volume_row.Children().Append(slider_surface);
     volume_row.Children().Append(percent);
-    content.Children().Append(volume_row);
+    body.Children().Append(volume_row);
 
+    footer = Border();
+    footer.BorderThickness({0, 1, 0, 0});
+    footer.Padding({18, 10, 14, 10});
+    Grid footer_row;
+    TextBlock caption;
+    caption.Text(Translate(L"Adjust iPad volume", L"调节 iPad 音量"));
+    caption.VerticalAlignment(VerticalAlignment::Center);
+    footer_row.Children().Append(caption);
     open_button = Button();
-    open_button.Content(winrt::box_value(Translate(L"Open HearPort", L"打开 HearPort")));
+    open_button.Content(SymbolIcon(Symbol::Setting));
     open_button.HorizontalAlignment(HorizontalAlignment::Right);
-    open_button.CornerRadius({6, 6, 6, 6});
+    open_button.Width(36);
+    open_button.Height(36);
+    open_button.Padding({0, 0, 0, 0});
+    open_button.BorderThickness({0, 0, 0, 0});
+    open_button.Background(Media::SolidColorBrush(winrt::Windows::UI::Color{}));
+    const auto settings = Translate(L"Settings", L"设置");
+    Automation::AutomationProperties::SetName(open_button, settings);
+    ToolTipService::SetToolTip(open_button, winrt::box_value(settings));
     open_button.Click([this](auto&&, auto&&) { Hide(); open(); });
-    content.Children().Append(open_button);
+    footer_row.Children().Append(open_button);
+    footer.Child(footer_row);
+    content.Children().Append(footer);
 
     slider.AddHandler(UIElement::PointerPressedEvent(), winrt::box_value(PointerEventHandler(
         [this](auto&&, const PointerRoutedEventArgs& args) {
@@ -388,9 +459,10 @@ struct TrayPopup::Impl {
   }
 };
 
-TrayPopup::TrayPopup(std::function<void()> open, std::function<void(std::uint32_t)> preview,
+TrayPopup::TrayPopup(std::function<void()> open, std::function<void()> toggle_sender,
+                     std::function<void(std::uint32_t)> preview,
                      std::function<void(std::uint32_t)> commit, std::function<void()> cancel)
-    : impl_(new Impl{std::move(open), std::move(preview), std::move(commit), std::move(cancel)}) {}
+    : impl_(new Impl{std::move(open), std::move(toggle_sender), std::move(preview), std::move(commit), std::move(cancel)}) {}
 
 TrayPopup::~TrayPopup() {
   *impl_->alive = false;
@@ -408,7 +480,7 @@ HRESULT TrayPopup::Show(const RECT& anchor) {
   if (!impl_->window) {
     try {
       impl_->Create();
-      Update(impl_->connected, impl_->volume);
+      Update(impl_->connected, impl_->usb, impl_->running, impl_->volume);
     } catch (const winrt::hresult_error& error) {
       OutputDebugStringW(error.message().c_str());
       return error.code();
@@ -421,8 +493,8 @@ HRESULT TrayPopup::Show(const RECT& anchor) {
   UINT dpi_y = 96;
   GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &dpi, &dpi_y);
   const auto scale = [dpi](int size) { return MulDiv(size, dpi, 96); };
-  const int width = scale(320);
-  const int height = scale(impl_->volume_row.Visibility() == Visibility::Visible ? 142 : 104);
+  const int width = scale(kPopupWidth);
+  const int height = scale(impl_->volume_row.Visibility() == Visibility::Visible ? kPopupHeightWithVolume : kPopupHeight);
   const auto& work = monitor_info.rcWork;
   const int x = std::clamp<int>(anchor.right - width, work.left, std::max<int>(work.left, work.right - width));
   const int above = anchor.top - height - scale(8);
@@ -450,17 +522,30 @@ void TrayPopup::Hide() { impl_->Hide(); }
 
 bool TrayPopup::visible() const { return impl_->app_window && impl_->app_window.IsVisible(); }
 
-void TrayPopup::Update(bool connected, std::optional<std::uint32_t> volume) {
+void TrayPopup::Update(bool connected, bool usb, bool running, std::optional<std::uint32_t> volume) {
   impl_->connected = connected;
+  impl_->usb = usb;
+  impl_->running = running;
   impl_->volume = volume;
   if (!impl_->window) return;
   if (!volume) {
     impl_->dragging = false;
     impl_->pending_value.reset();
   }
-  const auto title = connected ? Translate(L"iPad connected", L"iPad 已连接")
-                               : Translate(L"iPad not connected", L"iPad 未连接");
+  const auto command = running ? Translate(L"Stop", L"停止") : Translate(L"Start", L"启动");
+  if (impl_->power_label.Text() != command) {
+    impl_->power_label.Text(command);
+    Automation::AutomationProperties::SetName(impl_->power_button, command);
+  }
+  const auto title = connected ? Translate(L"HearPort connected", L"HearPort 已连接")
+                               : Translate(L"HearPort not connected", L"HearPort 未连接");
   if (impl_->state.Text() != title) impl_->state.Text(title);
+  const auto method = usb ? L"USB" : Translate(L"Network", L"网络");
+  if (impl_->connection_method.Text() != method) impl_->connection_method.Text(method);
+  const auto glyph = usb ? L"\uE88E" : L"\uE701";
+  if (impl_->connection_icon.Glyph() != glyph) impl_->connection_icon.Glyph(glyph);
+  impl_->connection_icon.Visibility(connected ? Visibility::Visible : Visibility::Collapsed);
+  impl_->connection_method.Visibility(connected ? Visibility::Visible : Visibility::Collapsed);
   const auto visibility = volume ? Visibility::Visible : Visibility::Collapsed;
   if (impl_->volume_row.Visibility() != visibility) {
     impl_->volume_row.Visibility(visibility);
@@ -472,7 +557,7 @@ void TrayPopup::Update(bool connected, std::optional<std::uint32_t> volume) {
       }
       auto size = impl_->app_window.Size();
       auto position = impl_->app_window.Position();
-      const int height = MulDiv(volume ? 142 : 104, size.Width, 320);
+      const int height = MulDiv(volume ? kPopupHeightWithVolume : kPopupHeight, size.Width, kPopupWidth);
       impl_->app_window.MoveAndResize({position.X, position.Y + size.Height - height, size.Width, height});
     }
   }

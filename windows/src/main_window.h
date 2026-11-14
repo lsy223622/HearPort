@@ -9,7 +9,7 @@
 #include <string>
 #include <vector>
 
-enum class LinkStability { unknown, poor, variable, stable };
+#include "link_presentation.h"
 
 enum class MainAction {
   pair, sender, live_test, network_test, music_test, log, reports,
