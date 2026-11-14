@@ -4,6 +4,8 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <iosfwd>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <span>
@@ -45,7 +47,7 @@ class DebugSessionTrace {
                        std::int64_t state_at_ns) noexcept;
   bool IsActive() const noexcept;
   std::uint64_t dropped_records() const noexcept;
-  std::string Finish(std::string_view reason);
+  void Finish(std::ostream& output, std::string_view reason);
 
  private:
   struct PacketRecord {
@@ -56,7 +58,6 @@ class DebugSessionTrace {
     std::int64_t send_state_at_ns = 0;
     std::int64_t transport_sent_at_ns = 0;
     DebugSendState send_state = DebugSendState::unknown;
-    std::uint64_t generation = 0;
     bool has_packet = false;
     bool has_send_state = false;
     bool has_final_state = false;
@@ -66,14 +67,16 @@ class DebugSessionTrace {
     bool send_canceled = false;
   };
 
+  static constexpr std::size_t kRecordsPerBlock = 1024;
+  PacketRecord* GetRecord(std::uint32_t sequence) noexcept;
+
   std::size_t capacity_;
-  std::vector<PacketRecord> records_;
+  std::vector<std::unique_ptr<PacketRecord[]>> blocks_;
   mutable std::mutex mutex_;
   std::array<std::byte, 16> session_id_{};
   std::uint32_t stream_id_ = 0;
   std::uint32_t sequence_stride_ = 1;
   std::size_t packet_count_ = 0;
-  std::uint64_t generation_ = 0;
   std::atomic<std::uint64_t> dropped_records_{0};
   std::atomic<bool> active_{false};
 };

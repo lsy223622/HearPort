@@ -3,6 +3,7 @@
 #include <cassert>
 #include <cstddef>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -22,6 +23,12 @@
 using hearport::windows::DebugSendState;
 using hearport::windows::DebugSessionTrace;
 
+std::string FinishReport(DebugSessionTrace& trace, std::string_view reason) {
+  std::ostringstream output;
+  trace.Finish(output, reason);
+  return std::move(output).str();
+}
+
 int main() {
   const std::array<std::byte, 16> session_id = {
       std::byte{0x01}, std::byte{0x02}, std::byte{0x03}, std::byte{0x04},
@@ -40,7 +47,7 @@ int main() {
   assert(!trace.RecordPacket(2, 300, 310, 320, false));
   assert(trace.dropped_records() == 1);
 
-  const auto report = trace.Finish("duration_expired");
+  const auto report = FinishReport(trace, "duration_expired");
   assert(report.find("\"transport_sent_at_ns\":130") != std::string::npos);
   assert(report.find("\"session_id\":\"0102030405060708090a0b0c0d0e0f10\"") !=
          std::string::npos);
@@ -73,7 +80,7 @@ int main() {
   assert(sampled.dropped_records() == 0);
   assert(!sampled.RecordPacket(8, 10, 20, 30, true));
   assert(sampled.dropped_records() == 1);
-  const auto sampled_report = sampled.Finish("test");
+  const auto sampled_report = FinishReport(sampled, "test");
   assert(sampled_report.find("\"sequence_stride\":4") != std::string::npos);
   assert(sampled_report.find("\"record_count\":2") != std::string::npos);
   assert(sampled_report.find("\"sequence\":4") != std::string::npos);
@@ -81,7 +88,7 @@ int main() {
   assert(sampled_report.find("\"send_completed_at_ns\":50") != std::string::npos);
   assert(sampled.Begin(session_id, 79));
   assert(sampled.RecordPacket(1, 10, 20, 30, true));
-  const auto reset_report = sampled.Finish("test");
+  const auto reset_report = FinishReport(sampled, "test");
   assert(reset_report.find("\"sequence_stride\":1") != std::string::npos);
   assert(reset_report.find("\"record_count\":1") != std::string::npos);
   assert(reset_report.find("\"sequence\":4") == std::string::npos);
@@ -110,7 +117,7 @@ int main() {
   assert(callback_before_packet.RecordPacket(
       identity->sequence, 10, 20, 30, true,
       hearport::windows::ProbeSendOutcome{hearport::windows::ProbeSendStatus::accepted, 1}));
-  const auto identity_report = callback_before_packet.Finish("test");
+  const auto identity_report = FinishReport(callback_before_packet, "test");
   assert(identity_report.find("\"stream_id\":16909060") !=
          std::string::npos);
   assert(identity_report.find("\"sequence\":74565") !=
@@ -122,8 +129,20 @@ int main() {
   DebugSessionTrace maximum(DebugSessionTrace::kMaximumPackets);
   assert(maximum.Begin(session_id, 88));
   assert(maximum.RecordPacket(0, 1, 2, 3, true));
-  assert(maximum.Finish("test").find("\"record_count\":1") !=
+  assert(FinishReport(maximum, "test").find("\"record_count\":1") !=
          std::string::npos);
+
+  // A failed output must still end the session and discard recorded data.
+  assert(maximum.Begin(session_id, 89));
+  assert(maximum.RecordPacket(999'999, 1, 2, 3, true));
+  std::ostream failed_output(nullptr);
+  maximum.Finish(failed_output, "test");
+  assert(!maximum.IsActive());
+  assert(maximum.Begin(session_id, 90));
+  assert(maximum.RecordPacket(0, 1, 2, 3, true));
+  const auto after_failure = FinishReport(maximum, "test");
+  assert(after_failure.find("\"record_count\":1") != std::string::npos);
+  assert(after_failure.find("\"sequence\":999999") == std::string::npos);
 
   constexpr std::size_t packets = 20'000;
   DebugSessionTrace concurrent(packets);
@@ -150,7 +169,7 @@ int main() {
   assert(recorded == packets);
   assert(acknowledged == packets);
   assert(concurrent.dropped_records() == 0);
-  const auto concurrent_report = concurrent.Finish("test");
+  const auto concurrent_report = FinishReport(concurrent, "test");
   assert(concurrent_report.find("\"record_count\":20000") != std::string::npos);
   return 0;
 }
