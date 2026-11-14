@@ -34,6 +34,11 @@ public static class HearPortPaintCheck {
             throw new Exception("Could not send the tray popup deactivation");
         }
     }
+    public static void DoubleClickTray(int processId) {
+        if (!PostMessage(MainWindow(processId), 0x8001, IntPtr.Zero, new IntPtr(0x0203))) {
+            throw new Exception("Could not send tray double-click");
+        }
+    }
     public static void ToggleTrayPopup(int processId) {
         if (!PostMessage(MainWindow(processId), 0x8001, IntPtr.Zero, new IntPtr(0x0400))) {
             throw new Exception("Could not send tray activation");
@@ -113,7 +118,7 @@ $slider = [System.Windows.Automation.PropertyCondition]::new($types, [System.Win
 $button = [System.Windows.Automation.PropertyCondition]::new($types, [System.Windows.Automation.ControlType]::Button)
 $label = $null
 for ($attempt = 0; $attempt -lt 20 -and !$label; ++$attempt) {
-    foreach ($text in @('iPad not connected', 'iPad 未连接')) {
+    foreach ($text in @('HearPort not connected', 'HearPort 未连接')) {
         $name = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::NameProperty, $text)
         $label = $window.FindFirst($tree, $name)
         if ($label) { break }
@@ -129,3 +134,17 @@ for ($attempt = 0; $attempt -lt 20 -and $popup -ne [IntPtr]::Zero; ++$attempt) {
 }
 if ($popup -ne [IntPtr]::Zero) { throw 'Changing focus did not dismiss the popup' }
 Write-Output 'WinUI tray popup opened without a slider and dismissed when focus changed'
+[HearPortPaintCheck]::ToggleTrayPopup($ProcessId)
+for ($attempt = 0; $attempt -lt 60 -and $popup -eq [IntPtr]::Zero; ++$attempt) {
+    Start-Sleep -Milliseconds 100
+    $popup = [HearPortPaintCheck]::TrayPopup($ProcessId)
+}
+if ($popup -eq [IntPtr]::Zero) { throw 'WinUI tray popup did not reopen' }
+$window = [System.Windows.Automation.AutomationElement]::FromHandle($popup)
+$null = Wait-NamedElement $window @('Adjust iPad volume', '调节 iPad 音量')
+$null = Wait-NamedElement $window @('Stop', '停止') ([System.Windows.Automation.ControlType]::Button)
+Invoke-NamedElement $window @('Settings', '设置')
+$null = Wait-NamedElement $root @('Run when I sign in to Windows', '登录 Windows 后自动运行')
+[HearPortPaintCheck]::DoubleClickTray($ProcessId)
+$null = Wait-NamedElement $root @('Pair new iPad', '配对新 iPad', 'Unpair iPad', '取消配对')
+Write-Output 'Tray power control, settings and double-click overview navigation verified'

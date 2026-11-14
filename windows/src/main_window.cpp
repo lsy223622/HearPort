@@ -115,6 +115,7 @@ struct MainWindow::Impl {
   Grid volume_row{nullptr};
   Border volume_card{nullptr};
   Viewbox connection_logo{nullptr};
+  Media::GradientStop hero_color{nullptr};
   std::array<Shapes::Path, 4> connection_marks{nullptr, nullptr, nullptr, nullptr};
   bool logo_connected = false, logo_usb = false;
   LinkStability logo_stability = LinkStability::unknown;
@@ -303,23 +304,17 @@ struct MainWindow::Impl {
     const auto high_contrast = winrt::Windows::UI::ViewManagement::AccessibilitySettings().HighContrast();
     const bool dark = connection_logo.ActualTheme() == ElementTheme::Dark;
     const auto theme_ink = Label().Foreground();
-    Color color;
-    const wchar_t* title;
-    int bars;
+    const auto rgb = LinkColor(logo_usb, logo_stability, dark);
+    const Color color{255, GetRValue(rgb), GetGValue(rgb), GetBValue(rgb)};
+    const wchar_t* title = Tr(L"Assessing link", L"正在评估链路");
     switch (logo_stability) {
-      case LinkStability::stable:
-        color = logo_usb ? Color{255, 0, 122, 255} : Color{255, 30, 210, 167};
-        title = Tr(L"Stable timing", L"时序稳定"); bars = 3; break;
-      case LinkStability::variable:
-        color = {255, 255, 149, 0};
-        title = Tr(L"Fluctuating", L"波动"); bars = 2; break;
-      case LinkStability::poor:
-        color = {255, 255, 59, 48};
-        title = Tr(L"Unstable", L"不稳定"); bars = 1; break;
-      default:
-        color = dark ? Color{255, 172, 172, 177} : Color{255, 106, 106, 112};
-        title = Tr(L"Assessing link", L"正在评估链路"); bars = 3; break;
+      case LinkStability::stable: title = Tr(L"Stable timing", L"时序稳定"); break;
+      case LinkStability::variable: title = Tr(L"Fluctuating", L"波动"); break;
+      case LinkStability::poor: title = Tr(L"Unstable", L"不稳定"); break;
+      default: break;
     }
+    hero_color.Color(logo_connected && !high_contrast ? color : Color{});
+    const int bars = LinkBars(logo_stability);
     const Media::Brush ink = high_contrast ? theme_ink : Media::SolidColorBrush(color);
     for (int i = 0; i < 4; ++i) {
       const bool cable = i == 3;
@@ -344,10 +339,11 @@ struct MainWindow::Impl {
           <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
             <GradientStop Color="{ThemeResource CardBackgroundFillColorDefault}" Offset="0"/>
             <GradientStop Color="{ThemeResource CardBackgroundFillColorDefault}" Offset="0.45"/>
-            <GradientStop Color="{ThemeResource SystemAccentColor}" Offset="1"/>
+            <GradientStop Offset="1"/>
           </LinearGradientBrush>
         </Border.Background>
       </Border>)").as<Border>();
+    hero_color = tint.Background().as<Media::LinearGradientBrush>().GradientStops().GetAt(2);
     auto hero_layout = Columns({{1, GridUnitType::Star}, {1, GridUnitType::Auto}});
     hero_layout.Padding({24, 22, 24, 22});
     auto connection = Column(8);

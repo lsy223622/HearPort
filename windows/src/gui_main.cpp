@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cwchar>
 #include <deque>
@@ -52,6 +53,7 @@ constexpr UINT kConnectionMessage = WM_APP + 3;
 constexpr UINT kCalibrationRequestMessage = WM_APP + 4;
 constexpr UINT kUnpairCompletedMessage = WM_APP + 5;
 constexpr UINT kTimer = 1;
+constexpr UINT kTrayClickTimer = 2;
 constexpr UINT kTrayIcon = 1;
 constexpr int kDiagnostics = 105;
 constexpr int kNetworkProbe = 110;
@@ -63,6 +65,75 @@ std::wstring Tr(const wchar_t* english, const wchar_t* chinese) {
   return PRIMARYLANGID(GetUserDefaultUILanguage()) == LANG_CHINESE
              ? chinese
              : english;
+}
+
+HICON DrawConnectedTrayIcon(int size, bool usb, LinkStability stability, bool dark) {
+  BITMAPINFO info{};
+  info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+  info.bmiHeader.biWidth = size;
+  info.bmiHeader.biHeight = -size;
+  info.bmiHeader.biPlanes = 1;
+  info.bmiHeader.biBitCount = 32;
+  void* bits = nullptr;
+  const auto bitmap = CreateDIBSection(nullptr, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
+  if (!bitmap) return nullptr;
+  const auto stride = ((size + 15) / 16) * 2;
+  const std::vector<BYTE> mask_bits(stride * size, 0);
+  const auto mask = CreateBitmap(size, size, 1, 1, mask_bits.data());
+  if (!mask) { DeleteObject(bitmap); return nullptr; }
+
+  struct Stroke { double x1, y1, x2, y2; };
+  // The same overlapping devices and connection marks as the overview logo,
+  // simplified to stay legible at the notification area's 16 px size.
+  constexpr Stroke outline[]{
+      {3.5,7,3.5,3.8},{3.5,3.8,4.5,2.7},{4.5,2.7,12.1,2.7},
+      {12.1,2.7,13.1,3.8},{13.1,3.8,13.1,6},
+      {13.1,12.1,12.3,13.3},{12.3,13.3,10.4,13.3},
+      {1.5,9.3,2.2,8.6},{2.2,8.6,7.8,8.6},{7.8,8.6,8.5,9.3},
+      {8.5,9.3,8.5,12.6},{8.5,12.6,7.8,13.3},{7.8,13.3,2.2,13.3},
+      {2.2,13.3,1.5,12.6},{1.5,12.6,1.5,9.3}};
+  constexpr Stroke cable[]{{8.5,10.8,11.3,10.8},{11.3,10.8,13.4,9.9},
+      {13.4,9.9,14.1,8.6},{14.1,8.6,13.9,7.2},{13.9,7.2,13.1,6}};
+  constexpr Stroke signal[][2]{
+      {{9.8,8.9,10.2,10},{10.2,10,9.8,11.1}},
+      {{11.9,8.0,12.5,10},{12.5,10,11.9,12.0}},
+      {{14.1,7.0,14.9,10},{14.9,10,14.1,13.0}}};
+  const bool contrast = [] {
+    HIGHCONTRASTW state{sizeof(state)};
+    return SystemParametersInfoW(SPI_GETHIGHCONTRAST, sizeof(state), &state, 0) &&
+           (state.dwFlags & HCF_HIGHCONTRASTON);
+  }();
+  const auto ink = contrast ? GetSysColor(COLOR_WINDOWTEXT)
+                            : dark ? RGB(255,255,255) : RGB(27,27,27);
+  const auto link = contrast ? GetSysColor(COLOR_HIGHLIGHT) : LinkColor(usb, stability, dark);
+  const auto covers = [](const Stroke& line, double x, double y) {
+    const auto dx = line.x2 - line.x1, dy = line.y2 - line.y1;
+    const auto t = std::clamp(((x - line.x1) * dx + (y - line.y1) * dy) / (dx * dx + dy * dy), 0.0, 1.0);
+    return std::hypot(x - line.x1 - t * dx, y - line.y1 - t * dy) <= .70;
+  };
+  auto* pixels = static_cast<std::uint32_t*>(bits);
+  for (int y = 0; y < size; ++y) for (int x = 0; x < size; ++x) {
+    unsigned a = 0, r = 0, g = 0, b = 0;
+    for (int sy = 0; sy < 4; ++sy) for (int sx = 0; sx < 4; ++sx) {
+      const auto px = (x + (sx + .5) / 4) * 16 / size;
+      const auto py = (y + (sy + .5) / 4) * 16 / size;
+      const auto hit = [&](const Stroke& stroke) { return covers(stroke, px, py); };
+      bool signal_hit = usb && std::ranges::any_of(cable, hit);
+      if (!usb) {
+        for (int bar = 0; bar < LinkBars(stability); ++bar)
+          signal_hit = signal_hit || std::ranges::any_of(signal[bar], hit);
+      }
+      if (!signal_hit && !std::ranges::any_of(outline, hit)) continue;
+      const auto color = signal_hit ? link : ink;
+      a += 255; r += GetRValue(color); g += GetGValue(color); b += GetBValue(color);
+    }
+    pixels[y * size + x] = (a / 16 << 24) | (r / 16 << 16) | (g / 16 << 8) | (b / 16);
+  }
+  ICONINFO icon{TRUE, 0, 0, mask, bitmap};
+  const auto result = CreateIconIndirect(&icon);
+  DeleteObject(mask);
+  DeleteObject(bitmap);
+  return result;
 }
 
 std::wstring ExecutablePath() {
@@ -247,7 +318,7 @@ class Application {
           volume_editing_ = editing;
           volume_position_ = value;
           if (editing) {
-            if (tray_popup_) tray_popup_->Update(connected_, value);
+            if (tray_popup_) tray_popup_->Update(connected_, usb_connected_, running_, value);
           } else {
             CommitVolume(changed);
           }
@@ -294,24 +365,49 @@ class Application {
   void SelectPage(int page) { main_window_->SelectPage(page); }
 
   void ApplyTheme() {
-    const bool was_dark = dark_;
     dark_ = SystemDarkMode();
-    if (tray_ready_ && dark_ != was_dark) {
-      NOTIFYICONDATAW icon{};
-      icon.cbSize = sizeof(icon);
-      icon.hWnd = hwnd_;
-      icon.uID = kTrayIcon;
-      icon.uFlags = NIF_ICON;
-      icon.hIcon = ThemeIcon(GetSystemMetrics(SM_CXSMICON));
-      Shell_NotifyIconW(NIM_MODIFY, &icon);
-    }
+    RefreshTrayIcon();
   }
 
-  HICON ThemeIcon(int size) const {
-    return reinterpret_cast<HICON>(LoadImageW(
-        instance_, MAKEINTRESOURCEW(dark_ ? IDI_HEARPORT_TRAY_DARK
-                                         : IDI_HEARPORT_TRAY_LIGHT),
-        IMAGE_ICON, size, size, LR_SHARED));
+  void FillTrayIcon(NOTIFYICONDATAW& icon) {
+    const int size = GetSystemMetrics(SM_CXSMICON);
+    if (connected_) {
+      if (tray_connection_icon_) DestroyIcon(tray_connection_icon_);
+      tray_connection_icon_ = DrawConnectedTrayIcon(size, usb_connected_, link_stability_, dark_);
+    }
+    icon.hIcon = connected_ ? tray_connection_icon_ : nullptr;
+    if (!icon.hIcon) {
+      icon.hIcon = reinterpret_cast<HICON>(LoadImageW(
+          instance_, MAKEINTRESOURCEW(dark_ ? IDI_HEARPORT_TRAY_DARK : IDI_HEARPORT_TRAY_LIGHT),
+          IMAGE_ICON, size, size, LR_SHARED));
+    }
+    std::wstring tip = Tr(L"HearPort not connected", L"HearPort 未连接");
+    if (connected_) {
+      tip = usb_connected_ ? L"HearPort · USB" : Tr(L"HearPort · Network", L"HearPort · 网络");
+      tip += link_stability_ == LinkStability::stable ? Tr(L" · Stable", L" · 稳定")
+           : link_stability_ == LinkStability::variable ? Tr(L" · Fluctuating", L" · 波动")
+           : link_stability_ == LinkStability::poor ? Tr(L" · Unstable", L" · 不稳定")
+           : Tr(L" · Assessing", L" · 评估中");
+    }
+    lstrcpynW(icon.szTip, tip.c_str(), ARRAYSIZE(icon.szTip));
+  }
+
+  void RefreshTrayIcon() {
+    if (!tray_ready_) return;
+    NOTIFYICONDATAW icon{sizeof(icon)};
+    icon.hWnd = hwnd_;
+    icon.uID = kTrayIcon;
+    icon.uFlags = NIF_ICON | NIF_TIP | NIF_SHOWTIP;
+    FillTrayIcon(icon);
+    Shell_NotifyIconW(NIM_MODIFY, &icon);
+  }
+
+  void UpdateLinkPresentation() {
+    main_window_->SetLinkStability(connected_, connected_ && usb_connected_, link_stability_);
+    const TrayLink current{connected_, connected_ && usb_connected_, link_stability_};
+    if (current == tray_link_) return;
+    tray_link_ = current;
+    RefreshTrayIcon();
   }
 
   void AddTrayIcon() {
@@ -319,10 +415,9 @@ class Application {
     icon.cbSize = sizeof(icon);
     icon.hWnd = hwnd_;
     icon.uID = kTrayIcon;
-    icon.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+    icon.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP;
     icon.uCallbackMessage = kTrayMessage;
-    icon.hIcon = ThemeIcon(GetSystemMetrics(SM_CXSMICON));
-    lstrcpynW(icon.szTip, L"HearPort", ARRAYSIZE(icon.szTip));
+    FillTrayIcon(icon);
     tray_ready_ = Shell_NotifyIconW(NIM_ADD, &icon) != FALSE;
     main_window_->EnableHide(tray_ready_);
     if (tray_ready_) {
@@ -355,7 +450,12 @@ class Application {
     }
     if (!tray_popup_) {
       tray_popup_ = std::make_unique<TrayPopup>(
-          [this] { ShowWindowFromTray(); },
+          [this] { SelectPage(2); ShowWindowFromTray(); },
+          [this] {
+            if (unpair_pending_) return;
+            if (running_) StopSender();
+            else StartService();
+          },
           [this](std::uint32_t percent) {
             volume_editing_ = true;
             volume_position_ = percent;
@@ -382,6 +482,11 @@ class Application {
           L"\n" + code;
       main_window_->Notify(message);
     }
+  }
+
+  void CancelTrayClick() {
+    KillTimer(hwnd_, kTrayClickTimer);
+    tray_click_pending_ = false;
   }
 
   void ShowTrayMenu() {
@@ -417,13 +522,13 @@ class Application {
     if (volume.percent && !volume_editing_ && !volume.adjusting) volume_position_ = *volume.percent;
     const auto value = volume_available_ ? std::optional{volume_position_} : std::nullopt;
     main_window_->SetVolume(value);
-    if (tray_popup_) tray_popup_->Update(connected_, value);
+    if (tray_popup_) tray_popup_->Update(connected_, usb_connected_, running_, value);
   }
 
   void UpdateLinkStability() {
     if (!connected_ || !service_) {
       ResetLinkStability();
-      main_window_->SetLinkStability(false, false, LinkStability::unknown);
+      UpdateLinkPresentation();
       return;
     }
 
@@ -474,7 +579,7 @@ class Application {
         }
       }
     }
-    main_window_->SetLinkStability(true, usb_connected_, link_stability_);
+    UpdateLinkPresentation();
   }
 
   void ResetLinkStability() {
@@ -866,8 +971,10 @@ class Application {
   void Shutdown() {
     if (std::exchange(shutting_down_, true)) return;
     KillTimer(hwnd_, kTimer);
+    CancelTrayClick();
     tray_popup_.reset();
     RemoveTrayIcon();
+    if (tray_connection_icon_) DestroyIcon(std::exchange(tray_connection_icon_, nullptr));
     StopService();
   }
 
@@ -1081,18 +1188,23 @@ class Application {
     }
   }
 
+  void StopSender() {
+    const bool diagnostic_active = diagnostic_duration_.has_value();
+    StopService();
+    if (diagnostic_active) main_window_->SetDiagnostic(Tr(L"Diagnostic session stopped.", L"诊断已停止。"));
+  }
+
+  void ToggleSender() {
+    if (unpair_pending_) return;
+    if (!running_) { StartService(); return; }
+    main_window_->Confirm(Tr(L"Stop sending audio to the iPad?", L"停止向 iPad 发送声音吗？"),
+                         Tr(L"Stop", L"停止").c_str(), [this] { StopSender(); });
+  }
+
   void HandleAction(MainAction action) {
     switch (action) {
       case MainAction::pair: if (paired_) ForgetPairing(); else OpenPairing(); break;
-      case MainAction::sender:
-        if (!running_) { StartService(); break; }
-        main_window_->Confirm(Tr(L"Stop sending audio to the iPad?", L"停止向 iPad 发送声音吗？"),
-                             Tr(L"Stop", L"停止").c_str(), [this] {
-          const bool diagnostic_active = diagnostic_duration_.has_value();
-          StopService();
-          if (diagnostic_active) main_window_->SetDiagnostic(Tr(L"Diagnostic session stopped.", L"诊断已停止。"));
-        });
-        break;
+      case MainAction::sender: ToggleSender(); break;
       case MainAction::live_test:
       case MainAction::network_test:
       case MainAction::music_test: ShowTestSettings(action); break;
@@ -1154,6 +1266,11 @@ class Application {
         return 0;
       case WM_TIMER:
         if (wparam == kTimer) OnTimer();
+        if (wparam == kTrayClickTimer && tray_click_pending_) {
+          KillTimer(hwnd_, kTrayClickTimer);
+          tray_click_pending_ = false;
+          ToggleTrayPopup(tray_click_anchor_);
+        }
         return 0;
       case WM_SIZE:
         if (wparam == SIZE_MINIMIZED && tray_ready_) ShowWindow(hwnd_, SW_HIDE);
@@ -1167,11 +1284,34 @@ class Application {
         if (LOWORD(wparam) == kTrayExit) ConfirmExit();
         break;
       case kTrayMessage:
-        if (LOWORD(lparam) == NIN_SELECT || LOWORD(lparam) == NIN_KEYSELECT) {
-          ToggleTrayPopup({GET_X_LPARAM(wparam), GET_Y_LPARAM(wparam)});
-        } else if (LOWORD(lparam) == WM_RBUTTONUP ||
-                   LOWORD(lparam) == WM_CONTEXTMENU) {
-          ShowTrayMenu();
+        switch (LOWORD(lparam)) {
+          case WM_LBUTTONDBLCLK:
+            CancelTrayClick();
+            suppress_tray_select_until_ = Clock::now() + std::chrono::milliseconds(GetDoubleClickTime());
+            SelectPage(0);
+            ShowWindowFromTray();
+            break;
+          case NIN_SELECT:
+            if (Clock::now() < suppress_tray_select_until_) break;
+            if (tray_click_pending_) {
+              CancelTrayClick();
+              SelectPage(0);
+              ShowWindowFromTray();
+            } else {
+              tray_click_anchor_ = {GET_X_LPARAM(wparam), GET_Y_LPARAM(wparam)};
+              tray_click_pending_ = SetTimer(hwnd_, kTrayClickTimer, GetDoubleClickTime(), nullptr) != 0;
+              if (!tray_click_pending_) ToggleTrayPopup(tray_click_anchor_);
+            }
+            break;
+          case NIN_KEYSELECT:
+            CancelTrayClick();
+            ToggleTrayPopup({GET_X_LPARAM(wparam), GET_Y_LPARAM(wparam)});
+            break;
+          case WM_RBUTTONUP:
+          case WM_CONTEXTMENU:
+            CancelTrayClick();
+            ShowTrayMenu();
+            break;
         }
         return 0;
       case WM_CLOSE:
@@ -1222,6 +1362,16 @@ class Application {
   LinkStability link_stability_ = LinkStability::unknown, link_improving_to_ = LinkStability::unknown;
   bool certificate_ready_ = false;
   bool tray_ready_ = false;
+  struct TrayLink {
+    bool connected = false;
+    bool usb = false;
+    LinkStability stability = LinkStability::unknown;
+    bool operator==(const TrayLink&) const = default;
+  } tray_link_;
+  HICON tray_connection_icon_ = nullptr;
+  bool tray_click_pending_ = false;
+  POINT tray_click_anchor_{};
+  Clock::time_point suppress_tray_select_until_{};
   bool dark_ = false;
   std::uint16_t port_ = 52137;
   CaptureSource capture_source_ = LoadCaptureSource();
