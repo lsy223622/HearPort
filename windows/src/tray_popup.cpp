@@ -334,8 +334,8 @@ struct TrayPopup::Impl {
     header.Children().Append(connection_logo.view);
     StackPanel labels;
     labels.VerticalAlignment(VerticalAlignment::Top);
-    labels.Margin({0, 5, 0, 0});
-    labels.Spacing(3);
+    labels.Margin({0, 3, 0, 0});
+    labels.Spacing(5);
     state = TextBlock();
     state.FontSize(15);
     state.FontWeight({600});
