@@ -76,9 +76,10 @@ struct TrayPopup::Impl {
   Dispatching::DispatcherQueueTimer entrance_timer{nullptr};
   std::chrono::steady_clock::time_point entrance_start;
   int entrance_x = 0;
-  int entrance_y = 0;
+  int popup_bottom = 0;
   int entrance_offset = 0;
-  bool anchored_at_bottom = true;
+  int frame_top_inset = 0;
+  bool frame_margins_supported = false;
   Dispatching::DispatcherQueueTimer volume_timer{nullptr};
   std::chrono::steady_clock::time_point volume_transition_start;
   double volume_progress = 0, volume_from = 0;
@@ -91,7 +92,7 @@ struct TrayPopup::Impl {
   bool pointer_was_down = false;
   DesktopAcrylicController acrylic{nullptr};
   SystemBackdropConfiguration backdrop{nullptr};
-  StackPanel content{nullptr};
+  Grid content{nullptr};
   Border frame{nullptr};
   Grid volume_row{nullptr};
   Grid slider_surface{nullptr};
@@ -184,7 +185,8 @@ struct TrayPopup::Impl {
     RECT rect{};
     if ((foreground && !HasForeground(foreground) && foreground != opening_foreground) ||
         (pressed && !dragging && GetCursorPos(&cursor) &&
-         GetWindowRect(hwnd, &rect) && !PtInRect(&rect, cursor))) {
+         GetWindowRect(hwnd, &rect) &&
+         (!PtInRect(&rect, cursor) || cursor.y < rect.top + frame_top_inset))) {
       Hide();
     } else if (HasForeground(foreground)) {
       opening_foreground = nullptr;
@@ -257,9 +259,12 @@ struct TrayPopup::Impl {
     // Quintic ease-out: the surface clears the tray quickly and settles at its anchor.
     const double remaining = 1 - std::clamp(elapsed, 0.0, 1.0);
     const int offset = static_cast<int>(std::lround(entrance_offset * std::pow(remaining, 5)));
-    SetWindowPos(hwnd, nullptr, entrance_x, entrance_y + offset, 0, 0,
+    SetWindowPos(hwnd, nullptr, entrance_x, popup_bottom - app_window.Size().Height + offset, 0, 0,
                  SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
-    if (!offset) entrance_timer.Stop();
+    if (!offset) {
+      entrance_timer.Stop();
+      if (volume_progress != (volume_target ? 1 : 0)) StartVolumeTransition();
+    }
   }
 
   void Reveal() {
@@ -267,8 +272,9 @@ struct TrayPopup::Impl {
     preparing = false;
     entrance_timer.Stop();
     frame.Opacity(1);
-    SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
-    SetWindowPos(hwnd, nullptr, entrance_x, entrance_y + entrance_offset, 0, 0,
+    SetWindowLongPtrW(hwnd, GWL_EXSTYLE, GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & ~WS_EX_LAYERED);
+    if (frame_margins_supported) ResizeForVolume();
+    SetWindowPos(hwnd, nullptr, entrance_x, popup_bottom - app_window.Size().Height + entrance_offset, 0, 0,
                  SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
     opening_foreground = GetForegroundWindow();
     pointer_was_down = PointerDown();
@@ -305,14 +311,20 @@ struct TrayPopup::Impl {
   }
 
   void ResizeForVolume() {
-    const auto size = app_window.Size();
-    const auto position = app_window.Position();
-    const int height = MulDiv(kPopupHeight, popup_width, kPopupWidth) +
-        static_cast<int>(std::lround(kVolumeSpace * volume_progress * popup_width / kPopupWidth));
-    const int delta = anchored_at_bottom ? size.Height - height : 0;
-    if (size.Height == height) return;
-    entrance_y += delta;
-    app_window.MoveAndResize({position.X, position.Y + delta, size.Width, height});
+    if (frame_margins_supported) {
+      const double inset = kVolumeSpace * (1 - volume_progress);
+      const auto top = static_cast<short>(std::lround(inset * popup_width / kPopupWidth));
+      const FRAME_MARGIN margins{1, 1, static_cast<short>(std::max(1, 2 * top)), 1};
+      DwmSetWindowAttribute(hwnd, DWMWA_BORDER_MARGINS, &margins, sizeof(margins));
+      frame_top_inset = top;
+      frame.Margin({0, inset, 0, 0});
+      return;
+    }
+    const int height = static_cast<int>(std::lround(
+        (kPopupHeight + kVolumeSpace * volume_progress) * popup_width / kPopupWidth));
+    if (app_window.Size().Height == height) return;
+    SetWindowPos(hwnd, nullptr, entrance_x, popup_bottom - height, popup_width, height,
+                 SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOCOPYBITS);
   }
 
   void AdvanceVolume() {
@@ -323,6 +335,12 @@ struct TrayPopup::Impl {
     SetVolumeProgress(std::lerp(volume_from, volume_target ? 1.0 : 0.0, eased));
     ResizeForVolume();
     if (t == 1) volume_timer.Stop();
+  }
+
+  void StartVolumeTransition() {
+    volume_from = volume_progress;
+    volume_transition_start = std::chrono::steady_clock::now();
+    volume_timer.Start();
   }
 
   void SetVolumeVisible(bool show) {
@@ -336,9 +354,8 @@ struct TrayPopup::Impl {
       if (preparing || app_window.IsVisible()) ResizeForVolume();
       return;
     }
-    volume_from = volume_progress;
-    volume_transition_start = std::chrono::steady_clock::now();
-    volume_timer.Start();
+    // Let the entrance reach its anchor before changing the height.
+    if (!entrance_timer.IsRunning()) StartVolumeTransition();
   }
 
   void CreateVolumeMask() {
@@ -396,8 +413,10 @@ struct TrayPopup::Impl {
     const auto accent = winrt::Windows::UI::ViewManagement::UISettings().GetColorValue(
         dark ? winrt::Windows::UI::ViewManagement::UIColorType::AccentLight2
              : winrt::Windows::UI::ViewManagement::UIColorType::AccentDark1);
-    frame.BorderBrush(SolidColorBrush(high_contrast ? system_color(COLOR_WINDOWTEXT)
-        : dark ? Color{48, 255, 255, 255} : Color{42, 0, 0, 0}));
+    if (!frame_margins_supported) {
+      frame.BorderBrush(SolidColorBrush(high_contrast ? system_color(COLOR_WINDOWTEXT)
+          : dark ? Color{48, 255, 255, 255} : Color{42, 0, 0, 0}));
+    }
     footer.Background(SolidColorBrush(dark ? Color{33, 0, 0, 0} : Color{27, 255, 255, 255}));
     slider_track.Background(SolidColorBrush(high_contrast ? system_color(COLOR_WINDOWTEXT)
         : dark ? Color{255, 157, 157, 157} : Color{255, 122, 122, 122}));
@@ -438,7 +457,15 @@ struct TrayPopup::Impl {
     const auto corners = DWMWCP_ROUND;
     const COLORREF border = DWMWA_COLOR_NONE;
     DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corners, sizeof(corners));
-    DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, &border, sizeof(border));
+    const FRAME_MARGIN margins{1, 1, 1, 1};
+    frame_margins_supported = SUCCEEDED(
+        DwmSetWindowAttribute(hwnd, DWMWA_BORDER_MARGINS, &margins, sizeof(margins)));
+    if (!frame_margins_supported) {
+      DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, &border, sizeof(border));
+    }
+    const BOOL disable_transitions = TRUE;
+    DwmSetWindowAttribute(hwnd, DWMWA_TRANSITIONS_FORCEDISABLED,
+                          &disable_transitions, sizeof(disable_transitions));
     SetWindowSubclass(hwnd, WindowProc, 1, reinterpret_cast<DWORD_PTR>(this));
     SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
@@ -452,7 +479,13 @@ struct TrayPopup::Impl {
     volume_timer.Interval(std::chrono::milliseconds(16));
     volume_timer.Tick([this](auto&&, auto&&) { AdvanceVolume(); });
 
-    content = StackPanel();
+    content = Grid();
+    RowDefinition body_definition;
+    body_definition.Height({1, GridUnitType::Star});
+    RowDefinition footer_definition;
+    footer_definition.Height({1, GridUnitType::Auto});
+    content.RowDefinitions().Append(body_definition);
+    content.RowDefinitions().Append(footer_definition);
     StackPanel body;
     body.Padding({18, 14, 18, 10});
     Grid header_row;
@@ -614,6 +647,7 @@ struct TrayPopup::Impl {
     navigation.Children().Append(open_button);
     footer_row.Children().Append(navigation);
     footer.Child(footer_row);
+    Grid::SetRow(footer, 1);
     content.Children().Append(footer);
 
     slider.AddHandler(UIElement::PointerPressedEvent(), winrt::box_value(PointerEventHandler(
@@ -720,14 +754,15 @@ HRESULT TrayPopup::Show(const RECT& anchor) {
   const int height = scale(impl_->volume_target ? kPopupHeightWithVolume : kPopupHeight);
   const auto& work = monitor_info.rcWork;
   const int x = std::clamp<int>(anchor.right - width, work.left, std::max<int>(work.left, work.right - width));
-  const int above = anchor.top - height - scale(8);
-  impl_->anchored_at_bottom = above >= work.top;
-  const int preferred_y = impl_->anchored_at_bottom ? above : anchor.bottom + scale(8);
-  const int y = std::clamp<int>(preferred_y, work.top, std::max<int>(work.top, work.bottom - height));
+  const int expanded_height = scale(kPopupHeightWithVolume);
+  const int above_bottom = anchor.top - scale(8);
+  const bool opens_above = above_bottom - expanded_height >= work.top;
+  const int preferred_bottom = opens_above ? above_bottom : anchor.bottom + scale(8) + height;
+  impl_->popup_bottom = std::clamp<int>(preferred_bottom,
+      std::min<int>(work.top + expanded_height, work.bottom), work.bottom);
   impl_->entrance_x = x;
-  impl_->entrance_y = y;
   impl_->entrance_offset = winrt::Windows::UI::ViewManagement::UISettings().AnimationsEnabled()
-      ? scale(preferred_y == above ? 32 : -32) : 0;
+      ? scale(opens_above ? 32 : -32) : 0;
   // A nearly transparent host still renders on the target monitor. Reveal it
   // only after XAML produces a frame at the visible size and DPI.
   impl_->preparing = true;
@@ -736,7 +771,9 @@ HRESULT TrayPopup::Show(const RECT& anchor) {
   SetWindowLongPtrW(impl_->hwnd, GWL_EXSTYLE,
                     GetWindowLongPtrW(impl_->hwnd, GWL_EXSTYLE) | WS_EX_LAYERED);
   SetLayeredWindowAttributes(impl_->hwnd, 0, 1, LWA_ALPHA);
-  impl_->app_window.MoveAndResize({x, y + impl_->entrance_offset, width, height});
+  const int host_height = impl_->frame_margins_supported ? expanded_height : height;
+  impl_->app_window.MoveAndResize({x, impl_->popup_bottom - host_height + impl_->entrance_offset, width, host_height});
+  if (impl_->frame_margins_supported) impl_->ResizeForVolume();
   impl_->rendered = Media::CompositionTarget::Rendered(winrt::auto_revoke,
       [state = impl_.get()](auto&&, auto&&) {
         if (!state->preparing || !state->frame.IsLoaded() ||
