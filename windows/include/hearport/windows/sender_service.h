@@ -72,6 +72,7 @@ class SenderService {
   void ConfigureCoordinatedAudio(bool enabled);
   struct AudioFormat { bool opus; std::uint32_t bitrate, frames; };
   AudioFormat audio_format() const;
+  std::optional<LinkTiming> ReadLinkTiming() { return quic_->ReadLinkTiming(); }
   bool ConfigureAudioFormat(wire::ControlEnvelope& setup);
   bool ConfigurePlayoutBudget(std::uint32_t target_ms, std::uint32_t maximum_ms,
                               std::uint32_t output_reserve_ms);

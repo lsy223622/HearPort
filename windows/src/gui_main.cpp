@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cwchar>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -419,8 +420,76 @@ class Application {
     if (tray_popup_) tray_popup_->Update(connected_, value);
   }
 
+  void UpdateLinkStability() {
+    if (!connected_ || !service_) {
+      ResetLinkStability();
+      main_window_->SetLinkStability(false, false, LinkStability::unknown);
+      return;
+    }
+
+    const auto now = Clock::now();
+    if (!link_started_ || (last_link_poll_ && now - *last_link_poll_ > std::chrono::seconds(3))) {
+      ResetLinkStability();
+      link_started_ = now;
+    }
+    if (!last_link_poll_ || now - *last_link_poll_ >= std::chrono::milliseconds(1800)) {
+      last_link_poll_ = now;
+      // Wait for fresh transport ACKs before taking another RTT observation.
+      const auto sample = service_->ReadLinkTiming();
+      if (sample && sample->rtt_us && sample->ack_frames > last_link_ack_) {
+        last_link_ack_ = sample->ack_frames;
+        last_link_response_ = now;
+        link_observations_.emplace_back(now, sample->rtt_us / 1000.0);
+      }
+      while (!link_observations_.empty() && now - link_observations_.front().first > std::chrono::seconds(12))
+        link_observations_.pop_front();
+
+      if (now - last_link_response_.value_or(*link_started_) > std::chrono::seconds(6)) {
+        link_stability_ = LinkStability::poor;
+        link_improvement_at_.reset();
+      } else if (link_observations_.size() < 3 ||
+                 link_observations_.back().first - link_observations_.front().first < std::chrono::seconds(4)) {
+        if (link_stability_ != LinkStability::poor) link_stability_ = LinkStability::unknown;
+      } else {
+        std::vector<double> sorted;
+        for (const auto& observation : link_observations_) sorted.push_back(observation.second);
+        std::sort(sorted.begin(), sorted.end());
+        const auto percentile = [&](double fraction) {
+          const auto position = (sorted.size() - 1) * fraction;
+          const auto low = static_cast<std::size_t>(position);
+          return sorted[low] + (sorted[std::min(low + 1, sorted.size() - 1)] - sorted[low]) * (position - low);
+        };
+        const auto variation = percentile(.9) - percentile(.1);
+        const auto candidate = variation <= 10 ? LinkStability::stable :
+                               variation <= 30 ? LinkStability::variable : LinkStability::poor;
+        if (link_stability_ == LinkStability::unknown || candidate <= link_stability_) {
+          link_stability_ = candidate;
+          link_improvement_at_.reset();
+        } else if (!link_improvement_at_ || link_improving_to_ != candidate) {
+          link_improving_to_ = candidate;
+          link_improvement_at_ = now;
+        } else if (now - *link_improvement_at_ >= std::chrono::seconds(8)) {
+          link_stability_ = candidate;
+          link_improvement_at_.reset();
+        }
+      }
+    }
+    main_window_->SetLinkStability(true, usb_connected_, link_stability_);
+  }
+
+  void ResetLinkStability() {
+    link_started_.reset();
+    last_link_poll_.reset();
+    last_link_response_.reset();
+    link_improvement_at_.reset();
+    link_observations_.clear();
+    last_link_ack_ = 0;
+    link_stability_ = LinkStability::unknown;
+  }
+
   void UpdateStatus() {
     UpdateVolume();
+    UpdateLinkStability();
     std::wstring heading;
     std::wstring detail;
     const auto source = connected_ && service_ ? service_->capture_source() : capture_source_;
@@ -1071,6 +1140,7 @@ class Application {
         return 0;
       case kConnectionMessage:
         if (unpair_pending_) return 0;
+        if (connected_ != (wparam != 0) || usb_connected_ != ((lparam & 2) != 0)) ResetLinkStability();
         connected_ = wparam != 0;
         usb_connected_ = (lparam & 2) != 0;
         if (host_) service_ = &host_->service();
@@ -1144,6 +1214,10 @@ class Application {
   bool running_ = false;
   bool connected_ = false;
   bool usb_connected_ = false;
+  std::optional<Clock::time_point> link_started_, last_link_poll_, last_link_response_, link_improvement_at_;
+  std::deque<std::pair<Clock::time_point, double>> link_observations_;
+  std::uint64_t last_link_ack_ = 0;
+  LinkStability link_stability_ = LinkStability::unknown, link_improving_to_ = LinkStability::unknown;
   bool certificate_ready_ = false;
   bool tray_ready_ = false;
   bool dark_ = false;

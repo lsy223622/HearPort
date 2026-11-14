@@ -9,6 +9,8 @@
 #include <string>
 #include <vector>
 
+enum class LinkStability { unknown, poor, variable, stable };
+
 enum class MainAction {
   pair, sender, live_test, network_test, music_test, log, reports,
   results, detailed_logging, port, capture, auto_start, hide, exit
@@ -43,6 +45,7 @@ class MainWindow {
   int page() const;
   void SetStatus(const std::wstring& heading, const std::wstring& detail,
                  const std::wstring& audio, const std::wstring& port);
+  void SetLinkStability(bool connected, bool usb, LinkStability stability);
   void SetComputer(const std::wstring& text);
   void SetActions(bool running, bool sender_enabled, bool paired, bool pair_enabled);
   void SetPairing(const std::wstring& text);
