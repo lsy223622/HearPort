@@ -43,7 +43,10 @@ using namespace winrt::Microsoft::UI::Composition::SystemBackdrops;
 
 constexpr int kPopupWidth = 352;
 constexpr int kPopupHeight = 116;
-constexpr int kPopupHeightWithVolume = 158;
+constexpr int kVolumeSpace = 42;
+constexpr int kPopupHeightWithVolume = kPopupHeight + kVolumeSpace;
+constexpr int kVolumeRowHeight = 34;
+constexpr int kWheelVolumeStep = 5;
 constexpr double kIconWidth = 24;
 constexpr double kThumbDiameter = 18;
 
@@ -75,6 +78,16 @@ struct TrayPopup::Impl {
   int entrance_x = 0;
   int entrance_y = 0;
   int entrance_offset = 0;
+  bool anchored_at_bottom = true;
+  Dispatching::DispatcherQueueTimer volume_timer{nullptr};
+  std::chrono::steady_clock::time_point volume_transition_start;
+  double volume_progress = 0, volume_from = 0;
+  bool volume_target = false;
+  Grid volume_slot{nullptr}, volume_source{nullptr}, volume_mask_host{nullptr};
+  Media::RectangleGeometry volume_clip{nullptr};
+  Composition::CompositionVisualSurface volume_surface{nullptr};
+  Composition::CompositionColorGradientStop feather_start{nullptr}, feather_end{nullptr};
+  Composition::SpriteVisual masked_volume{nullptr};
   bool pointer_was_down = false;
   DesktopAcrylicController acrylic{nullptr};
   SystemBackdropConfiguration backdrop{nullptr};
@@ -86,6 +99,10 @@ struct TrayPopup::Impl {
   ConnectionLogo connection_logo;
   Border footer{nullptr};
   TextBlock percent{nullptr};
+  Button mute_button{nullptr};
+  FontIcon speaker{nullptr};
+  std::uint32_t unmuted_volume = 20;
+  int wheel_delta = 0;
   Button open_button{nullptr};
   Button power_button{nullptr};
   TextBlock power_label{nullptr};
@@ -114,7 +131,16 @@ struct TrayPopup::Impl {
   }
 
   void UpdateLabel() const {
-    percent.Text(std::to_wstring(Position()) + L"%");
+    const auto value = Position();
+    percent.Text(std::to_wstring(value) + L"%");
+    const auto glyph = value ? L"\uE767" : L"\uE74F";
+    if (speaker.Glyph() != glyph) {
+      speaker.Glyph(glyph);
+      const auto label = value ? Translate(L"Mute iPad", L"静音 iPad") :
+                                 Translate(L"Unmute iPad", L"取消 iPad 静音");
+      Automation::AutomationProperties::SetName(mute_button, label);
+      ToolTipService::SetToolTip(mute_button, winrt::box_value(label));
+    }
     const double travel = std::max(0.0, slider_surface.ActualWidth() - kThumbDiameter);
     slider_track.Width(travel);
     const double filled = travel * slider.Value() / 100;
@@ -133,6 +159,7 @@ struct TrayPopup::Impl {
     if (app_window && app_window.IsVisible()) {
       dismiss_timer.Stop();
       entrance_timer.Stop();
+      volume_timer.Stop();
       app_window.Hide();
       CancelDrag();
     }
@@ -168,12 +195,29 @@ struct TrayPopup::Impl {
                                       UINT_PTR id, DWORD_PTR data) {
     auto* self = reinterpret_cast<Impl*>(data);
     if (message == WM_NCCALCSIZE && wp) return 0;
+    if (message == WM_MOUSEWHEEL && self->ScrollVolume(wp, lp)) return 0;
     if (message == WM_ACTIVATE && !self->preparing && LOWORD(wp) == WA_INACTIVE &&
         !self->HasForeground(reinterpret_cast<HWND>(lp))) {
       self->Hide();
     }
     if (message == WM_NCDESTROY) RemoveWindowSubclass(hwnd, WindowProc, id);
     return DefSubclassProc(hwnd, message, wp, lp);
+  }
+
+  bool ScrollVolume(WPARAM wp, LPARAM lp) {
+    if (!volume || dragging || volume_progress != 1 || preparing || !app_window.IsVisible()) return false;
+    POINT cursor{static_cast<short>(LOWORD(lp)), static_cast<short>(HIWORD(lp))};
+    if (!ScreenToClient(hwnd, &cursor)) return false;
+    const auto scale = frame.XamlRoot().RasterizationScale();
+    const auto point = frame.TransformToVisual(slider_surface).TransformPoint({
+        static_cast<float>(cursor.x / scale), static_cast<float>(cursor.y / scale)});
+    if (point.X < 0 || point.X >= slider_surface.ActualWidth() ||
+        point.Y < 0 || point.Y >= slider_surface.ActualHeight()) return false;
+    wheel_delta += GET_WHEEL_DELTA_WPARAM(wp);
+    const int steps = wheel_delta / WHEEL_DELTA;
+    wheel_delta %= WHEEL_DELTA;
+    if (steps) slider.Value(std::clamp(static_cast<int>(Position()) + steps * kWheelVolumeStep, 0, 100));
+    return true;
   }
 
   void ApplyBackdrop(FrameworkElement const& root) {
@@ -235,6 +279,99 @@ struct TrayPopup::Impl {
       entrance_timer.Start();
     }
     dismiss_timer.Start();
+  }
+
+  void SetVolumeProgress(double progress) {
+    volume_progress = progress;
+    const auto height = kVolumeSpace * progress;
+    volume_slot.Height(height);
+    volume_clip.Rect({0, 0, static_cast<float>(volume_slot.ActualWidth()),
+                      static_cast<float>(height)});
+    const float offset = static_cast<float>(height - kVolumeRowHeight);
+    const bool animating = progress > 0 && progress < 1;
+    // Keep the source opaque for the visual surface, but outside the slot's
+    // clip while its masked copy is on screen.
+    volume_source.Translation({animating ? static_cast<float>(kPopupWidth) : 0,
+                               offset, 0});
+    volume_mask_host.Translation({0, offset, 0});
+    volume_row.IsHitTestVisible(volume_target && !animating);
+    volume_slot.Visibility(progress > 0 ? Visibility::Visible : Visibility::Collapsed);
+    masked_volume.Opacity(animating ? static_cast<float>(progress) : 0);
+    if (animating) {
+      const auto edge = std::clamp(-offset / kVolumeRowHeight, 0.0f, 1.0f);
+      feather_start.Offset(edge);
+      feather_end.Offset(std::min(edge + 6.0f / kVolumeRowHeight, 1.0f));
+    }
+  }
+
+  void ResizeForVolume() {
+    const auto size = app_window.Size();
+    const auto position = app_window.Position();
+    const int height = MulDiv(kPopupHeight, popup_width, kPopupWidth) +
+        static_cast<int>(std::lround(kVolumeSpace * volume_progress * popup_width / kPopupWidth));
+    const int delta = anchored_at_bottom ? size.Height - height : 0;
+    if (size.Height == height) return;
+    entrance_y += delta;
+    app_window.MoveAndResize({position.X, position.Y + delta, size.Width, height});
+  }
+
+  void AdvanceVolume() {
+    const double elapsed = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - volume_transition_start).count();
+    const double t = std::clamp(elapsed / 220.0, 0.0, 1.0);
+    const double eased = t * t * (3 - 2 * t);
+    SetVolumeProgress(std::lerp(volume_from, volume_target ? 1.0 : 0.0, eased));
+    ResizeForVolume();
+    if (t == 1) volume_timer.Stop();
+  }
+
+  void SetVolumeVisible(bool show) {
+    if (volume_target == show) return;
+    volume_target = show;
+    mute_button.IsEnabled(show);
+    slider.IsEnabled(show);
+    if (!app_window.IsVisible() || preparing ||
+        !winrt::Windows::UI::ViewManagement::UISettings().AnimationsEnabled()) {
+      SetVolumeProgress(show ? 1 : 0);
+      if (preparing || app_window.IsVisible()) ResizeForVolume();
+      return;
+    }
+    volume_from = volume_progress;
+    volume_transition_start = std::chrono::steady_clock::now();
+    volume_timer.Start();
+  }
+
+  void CreateVolumeMask() {
+    // Render the live row through an alpha mask only while it crosses the
+    // header boundary. The acrylic background is never used as a cover.
+    using Hosting::ElementCompositionPreview;
+    const auto visual = ElementCompositionPreview::GetElementVisual(volume_row);
+    const auto compositor = visual.Compositor();
+    volume_surface = compositor.CreateVisualSurface();
+    volume_surface.SourceVisual(visual);
+    const auto gradient = compositor.CreateLinearGradientBrush();
+    gradient.StartPoint({0, 0});
+    gradient.EndPoint({0, 1});
+    feather_start = compositor.CreateColorGradientStop(0, {0, 255, 255, 255});
+    feather_end = compositor.CreateColorGradientStop(0, {255, 255, 255, 255});
+    gradient.ColorStops().Append(feather_start);
+    gradient.ColorStops().Append(feather_end);
+    const auto mask = compositor.CreateMaskBrush();
+    mask.Source(compositor.CreateSurfaceBrush(volume_surface));
+    mask.Mask(gradient);
+    masked_volume = compositor.CreateSpriteVisual();
+    masked_volume.Brush(mask);
+    masked_volume.Opacity(0);
+    ElementCompositionPreview::SetElementChildVisual(volume_mask_host, masked_volume);
+    volume_row.SizeChanged([this](auto&&, const SizeChangedEventArgs& args) {
+      const winrt::Windows::Foundation::Numerics::float2 size{
+          args.NewSize().Width, args.NewSize().Height};
+      volume_surface.SourceSize(size);
+      masked_volume.Size(size);
+    });
+    volume_slot.SizeChanged([this](auto&&, const SizeChangedEventArgs& args) {
+      volume_clip.Rect({0, 0, args.NewSize().Width, args.NewSize().Height});
+    });
   }
 
   void UpdateLink() {
@@ -311,11 +448,13 @@ struct TrayPopup::Impl {
     entrance_timer = dispatcher.CreateTimer();
     entrance_timer.Interval(std::chrono::milliseconds(16));
     entrance_timer.Tick([this](auto&&, auto&&) { AdvanceEntrance(); });
+    volume_timer = dispatcher.CreateTimer();
+    volume_timer.Interval(std::chrono::milliseconds(16));
+    volume_timer.Tick([this](auto&&, auto&&) { AdvanceVolume(); });
 
     content = StackPanel();
     StackPanel body;
     body.Padding({18, 14, 18, 10});
-    body.Spacing(8);
     Grid header_row;
     StackPanel header;
     header.Orientation(Orientation::Horizontal);
@@ -366,12 +505,9 @@ struct TrayPopup::Impl {
       column.Width(width);
       volume_row.ColumnDefinitions().Append(column);
     }
-    volume_row.Height(34);
-    volume_row.Visibility(Visibility::Collapsed);
-    FontIcon speaker;
-    speaker.Glyph(L"\uE767");
+    volume_row.Height(kVolumeRowHeight);
+    speaker = FontIcon();
     speaker.FontSize(17);
-    speaker.Width(kIconWidth);
     speaker.VerticalAlignment(VerticalAlignment::Center);
     percent = TextBlock();
     percent.MinWidth(46);
@@ -414,13 +550,39 @@ struct TrayPopup::Impl {
     slider.LostFocus([this](auto&&, auto&&) { slider_thumb.BorderThickness({4, 4, 4, 4}); });
     slider_surface.Children().Append(slider);
     slider_surface.Children().Append(slider_art);
-    volume_row.Children().Append(speaker);
+    mute_button = Button();
+    mute_button.Content(speaker);
+    mute_button.Width(kIconWidth);
+    mute_button.Height(kVolumeRowHeight);
+    mute_button.Padding({0, 0, 0, 0});
+    mute_button.BorderThickness({0, 0, 0, 0});
+    mute_button.Background(Media::SolidColorBrush(winrt::Windows::UI::Color{}));
+    mute_button.Click([this](auto&&, auto&&) {
+      if (!volume || dragging) return;
+      slider.Value(Position() ? 0 : unmuted_volume);
+    });
+    volume_row.Children().Append(mute_button);
     slider_surface.SizeChanged([this](auto&&, auto&&) { UpdateLabel(); });
     Grid::SetColumn(slider_surface, 1);
     Grid::SetColumn(percent, 2);
     volume_row.Children().Append(slider_surface);
     volume_row.Children().Append(percent);
-    body.Children().Append(volume_row);
+    volume_slot = Grid();
+    volume_slot.Height(0);
+    volume_slot.Visibility(Visibility::Collapsed);
+    volume_clip = Media::RectangleGeometry();
+    volume_slot.Clip(volume_clip);
+    volume_source = Grid();
+    volume_source.Height(kVolumeRowHeight);
+    volume_source.VerticalAlignment(VerticalAlignment::Top);
+    volume_source.Children().Append(volume_row);
+    volume_slot.Children().Append(volume_source);
+    volume_mask_host = Grid();
+    volume_mask_host.Height(kVolumeRowHeight);
+    volume_mask_host.VerticalAlignment(VerticalAlignment::Top);
+    volume_mask_host.IsHitTestVisible(false);
+    volume_slot.Children().Append(volume_mask_host);
+    body.Children().Append(volume_slot);
 
     footer = Border();
     footer.Padding({18, 10, 14, 10});
@@ -467,13 +629,16 @@ struct TrayPopup::Impl {
     slider.AddHandler(UIElement::PointerReleasedEvent(), winrt::box_value(PointerEventHandler(
         [this](auto&&, auto&&) {
           if (!std::exchange(dragging, false)) return;
-          if (Position() != drag_start) commit(Position());
+          const auto value = Position();
+          if (value) unmuted_volume = value;
+          if (value != drag_start) commit(value);
           else cancel();
         })), true);
     slider.PointerCanceled([this](auto&&, auto&&) { CancelDrag(); });
     slider.ValueChanged([this](auto&&, auto&&) {
       UpdateLabel();
       if (updating) return;
+      if (!dragging && Position()) unmuted_volume = Position();
       if (dragging) {
         preview(Position());
         return;
@@ -502,6 +667,7 @@ struct TrayPopup::Impl {
     frame.BorderThickness({1, 1, 1, 1});
     frame.Child(content);
     window.Content(frame);
+    CreateVolumeMask();
     UpdateChrome(frame.ActualTheme());
     frame.ActualThemeChanged([this](FrameworkElement const& root, auto&&) {
       UpdateChrome(root.ActualTheme());
@@ -523,6 +689,7 @@ TrayPopup::~TrayPopup() {
   if (impl_->window) {
     if (impl_->dismiss_timer) impl_->dismiss_timer.Stop();
     if (impl_->entrance_timer) impl_->entrance_timer.Stop();
+    if (impl_->volume_timer) impl_->volume_timer.Stop();
     if (impl_->acrylic) impl_->acrylic.Close();
     if (impl_->hwnd) RemoveWindowSubclass(impl_->hwnd, Impl::WindowProc, 1);
     if (impl_->closing.value) impl_->window.Closed(impl_->closing);
@@ -549,11 +716,13 @@ HRESULT TrayPopup::Show(const RECT& anchor) {
   GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &dpi, &dpi_y);
   const auto scale = [dpi](int size) { return MulDiv(size, dpi, 96); };
   const int width = scale(kPopupWidth);
-  const int height = scale(impl_->volume_row.Visibility() == Visibility::Visible ? kPopupHeightWithVolume : kPopupHeight);
+  impl_->SetVolumeProgress(impl_->volume_target ? 1 : 0);
+  const int height = scale(impl_->volume_target ? kPopupHeightWithVolume : kPopupHeight);
   const auto& work = monitor_info.rcWork;
   const int x = std::clamp<int>(anchor.right - width, work.left, std::max<int>(work.left, work.right - width));
   const int above = anchor.top - height - scale(8);
-  const int preferred_y = above >= work.top ? above : anchor.bottom + scale(8);
+  impl_->anchored_at_bottom = above >= work.top;
+  const int preferred_y = impl_->anchored_at_bottom ? above : anchor.bottom + scale(8);
   const int y = std::clamp<int>(preferred_y, work.top, std::max<int>(work.top, work.bottom - height));
   impl_->entrance_x = x;
   impl_->entrance_y = y;
@@ -595,6 +764,7 @@ bool TrayPopup::visible() const { return impl_->preparing || (impl_->app_window 
 
 void TrayPopup::Update(bool connected, bool usb, LinkStability stability, bool running, std::optional<std::uint32_t> volume) {
   const bool link_changed = impl_->running != running || impl_->connected != connected || impl_->usb != usb || impl_->stability != stability;
+  if (impl_->connected && !connected) impl_->unmuted_volume = 20;
   impl_->connected = connected;
   impl_->usb = usb;
   impl_->stability = stability;
@@ -604,6 +774,7 @@ void TrayPopup::Update(bool connected, bool usb, LinkStability stability, bool r
   if (!volume) {
     impl_->dragging = false;
     impl_->pending_value.reset();
+    impl_->wheel_delta = 0;
   }
   const auto command = running ? Translate(L"Stop", L"停止") : Translate(L"Start", L"启动");
   if (impl_->power_label.Text() != command) {
@@ -614,27 +785,8 @@ void TrayPopup::Update(bool connected, bool usb, LinkStability stability, bool r
                                : Translate(L"HearPort not connected", L"HearPort 未连接");
   if (impl_->state.Text() != title) impl_->state.Text(title);
   if (link_changed) impl_->UpdateLink();
-  const auto visibility = volume ? Visibility::Visible : Visibility::Collapsed;
-  if (impl_->volume_row.Visibility() != visibility) {
-    impl_->volume_row.Visibility(visibility);
-    if (impl_->preparing) {
-      auto position = impl_->app_window.Position();
-      auto size = impl_->app_window.Size();
-      const int height = MulDiv(volume ? kPopupHeightWithVolume : kPopupHeight, impl_->popup_width, kPopupWidth);
-      impl_->entrance_y += size.Height - height;
-      impl_->app_window.MoveAndResize({position.X, position.Y, size.Width, height});
-    } else if (visible()) {
-      if (impl_->entrance_timer.IsRunning()) {
-        impl_->entrance_timer.Stop();
-        SetWindowPos(impl_->hwnd, nullptr, impl_->entrance_x, impl_->entrance_y, 0, 0,
-                     SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
-      }
-      auto size = impl_->app_window.Size();
-      auto position = impl_->app_window.Position();
-      const int height = MulDiv(volume ? kPopupHeightWithVolume : kPopupHeight, size.Width, kPopupWidth);
-      impl_->app_window.MoveAndResize({position.X, position.Y + size.Height - height, size.Width, height});
-    }
-  }
+  impl_->SetVolumeVisible(volume.has_value());
+  if (volume && *volume && !impl_->dragging) impl_->unmuted_volume = *volume;
   if (volume && !impl_->dragging && impl_->Position() != *volume) {
     impl_->updating = true;
     impl_->slider.Value(*volume);
