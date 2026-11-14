@@ -261,8 +261,6 @@ struct TrayPopup::Impl {
              : winrt::Windows::UI::ViewManagement::UIColorType::AccentDark1);
     frame.BorderBrush(SolidColorBrush(high_contrast ? system_color(COLOR_WINDOWTEXT)
         : dark ? Color{48, 255, 255, 255} : Color{42, 0, 0, 0}));
-    footer.BorderBrush(SolidColorBrush(high_contrast ? system_color(COLOR_WINDOWTEXT)
-        : dark ? Color{34, 255, 255, 255} : Color{32, 0, 0, 0}));
     footer.Background(SolidColorBrush(dark ? Color{33, 0, 0, 0} : Color{27, 255, 255, 255}));
     slider_track.Background(SolidColorBrush(high_contrast ? system_color(COLOR_WINDOWTEXT)
         : dark ? Color{255, 157, 157, 157} : Color{255, 122, 122, 122}));
@@ -425,7 +423,6 @@ struct TrayPopup::Impl {
     body.Children().Append(volume_row);
 
     footer = Border();
-    footer.BorderThickness({0, 1, 0, 0});
     footer.Padding({18, 10, 14, 10});
     Grid footer_row;
     TextBlock caption;
