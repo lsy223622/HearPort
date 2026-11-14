@@ -145,6 +145,17 @@ $null = Wait-NamedElement $window @('Adjust iPad volume', '调节 iPad 音量')
 $null = Wait-NamedElement $window @('Stop', '停止') ([System.Windows.Automation.ControlType]::Button)
 Invoke-NamedElement $window @('Settings', '设置')
 $null = Wait-NamedElement $root @('Run when I sign in to Windows', '登录 Windows 后自动运行')
+[HearPortPaintCheck]::ToggleTrayPopup($ProcessId)
+$popup = [IntPtr]::Zero
+for ($attempt = 0; $attempt -lt 60 -and $popup -eq [IntPtr]::Zero; ++$attempt) {
+    Start-Sleep -Milliseconds 100
+    $popup = [HearPortPaintCheck]::TrayPopup($ProcessId)
+}
+if ($popup -eq [IntPtr]::Zero) { throw 'WinUI tray popup did not open from settings' }
+$window = [System.Windows.Automation.AutomationElement]::FromHandle($popup)
+Invoke-NamedElement $window @('Overview', '概览')
+$null = Wait-NamedElement $root @('Pair new iPad', '配对新 iPad', 'Unpair iPad', '取消配对')
+Select-Page $root 'SettingsPage'
 [HearPortPaintCheck]::DoubleClickTray($ProcessId)
 $null = Wait-NamedElement $root @('Pair new iPad', '配对新 iPad', 'Unpair iPad', '取消配对')
 Write-Output 'Tray power control, settings and double-click overview navigation verified'

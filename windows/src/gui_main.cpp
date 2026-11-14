@@ -318,7 +318,7 @@ class Application {
           volume_editing_ = editing;
           volume_position_ = value;
           if (editing) {
-            if (tray_popup_) tray_popup_->Update(connected_, usb_connected_, running_, value);
+            if (tray_popup_) tray_popup_->Update(connected_, usb_connected_, link_stability_, running_, value);
           } else {
             CommitVolume(changed);
           }
@@ -450,6 +450,7 @@ class Application {
     }
     if (!tray_popup_) {
       tray_popup_ = std::make_unique<TrayPopup>(
+          [this] { SelectPage(0); ShowWindowFromTray(); },
           [this] { SelectPage(2); ShowWindowFromTray(); },
           [this] {
             if (unpair_pending_) return;
@@ -522,7 +523,7 @@ class Application {
     if (volume.percent && !volume_editing_ && !volume.adjusting) volume_position_ = *volume.percent;
     const auto value = volume_available_ ? std::optional{volume_position_} : std::nullopt;
     main_window_->SetVolume(value);
-    if (tray_popup_) tray_popup_->Update(connected_, usb_connected_, running_, value);
+    if (tray_popup_) tray_popup_->Update(connected_, usb_connected_, link_stability_, running_, value);
   }
 
   void UpdateLinkStability() {
@@ -593,8 +594,8 @@ class Application {
   }
 
   void UpdateStatus() {
-    UpdateVolume();
     UpdateLinkStability();
+    UpdateVolume();
     std::wstring heading;
     std::wstring detail;
     const auto source = connected_ && service_ ? service_->capture_source() : capture_source_;
