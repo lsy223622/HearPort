@@ -53,7 +53,6 @@ constexpr UINT kConnectionMessage = WM_APP + 3;
 constexpr UINT kCalibrationRequestMessage = WM_APP + 4;
 constexpr UINT kUnpairCompletedMessage = WM_APP + 5;
 constexpr UINT kTimer = 1;
-constexpr UINT kTrayClickTimer = 2;
 constexpr UINT kTrayIcon = 1;
 constexpr int kDiagnostics = 105;
 constexpr int kNetworkProbe = 110;
@@ -483,11 +482,6 @@ class Application {
           L"\n" + code;
       main_window_->Notify(message);
     }
-  }
-
-  void CancelTrayClick() {
-    KillTimer(hwnd_, kTrayClickTimer);
-    tray_click_pending_ = false;
   }
 
   void ShowTrayMenu() {
@@ -972,7 +966,6 @@ class Application {
   void Shutdown() {
     if (std::exchange(shutting_down_, true)) return;
     KillTimer(hwnd_, kTimer);
-    CancelTrayClick();
     tray_popup_.reset();
     RemoveTrayIcon();
     if (tray_connection_icon_) DestroyIcon(std::exchange(tray_connection_icon_, nullptr));
@@ -1267,11 +1260,6 @@ class Application {
         return 0;
       case WM_TIMER:
         if (wparam == kTimer) OnTimer();
-        if (wparam == kTrayClickTimer && tray_click_pending_) {
-          KillTimer(hwnd_, kTrayClickTimer);
-          tray_click_pending_ = false;
-          ToggleTrayPopup(tray_click_anchor_);
-        }
         return 0;
       case WM_SIZE:
         if (wparam == SIZE_MINIMIZED && tray_ready_) ShowWindow(hwnd_, SW_HIDE);
@@ -1287,30 +1275,19 @@ class Application {
       case kTrayMessage:
         switch (LOWORD(lparam)) {
           case WM_LBUTTONDBLCLK:
-            CancelTrayClick();
             suppress_tray_select_until_ = Clock::now() + std::chrono::milliseconds(GetDoubleClickTime());
             SelectPage(0);
             ShowWindowFromTray();
             break;
           case NIN_SELECT:
-            if (Clock::now() < suppress_tray_select_until_) break;
-            if (tray_click_pending_) {
-              CancelTrayClick();
-              SelectPage(0);
-              ShowWindowFromTray();
-            } else {
-              tray_click_anchor_ = {GET_X_LPARAM(wparam), GET_Y_LPARAM(wparam)};
-              tray_click_pending_ = SetTimer(hwnd_, kTrayClickTimer, GetDoubleClickTime(), nullptr) != 0;
-              if (!tray_click_pending_) ToggleTrayPopup(tray_click_anchor_);
-            }
-            break;
+            // The shell sends a final select after the double-click's button-up.
+            if (std::exchange(suppress_tray_select_until_, {}) > Clock::now()) break;
+            [[fallthrough]];
           case NIN_KEYSELECT:
-            CancelTrayClick();
             ToggleTrayPopup({GET_X_LPARAM(wparam), GET_Y_LPARAM(wparam)});
             break;
           case WM_RBUTTONUP:
           case WM_CONTEXTMENU:
-            CancelTrayClick();
             ShowTrayMenu();
             break;
         }
@@ -1370,8 +1347,6 @@ class Application {
     bool operator==(const TrayLink&) const = default;
   } tray_link_;
   HICON tray_connection_icon_ = nullptr;
-  bool tray_click_pending_ = false;
-  POINT tray_click_anchor_{};
   Clock::time_point suppress_tray_select_until_{};
   bool dark_ = false;
   std::uint16_t port_ = 52137;

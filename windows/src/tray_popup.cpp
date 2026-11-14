@@ -106,6 +106,7 @@ struct TrayPopup::Impl {
   std::uint32_t drag_start = 0;
   winrt::event_token closing;
   Media::CompositionTarget::Rendered_revoker rendered;
+  Media::CompositionTarget::Rendering_revoker rendering;
   bool preparing = false;
   bool frame_rendered = false;
   int popup_width = 0;
@@ -131,6 +132,7 @@ struct TrayPopup::Impl {
   void Hide() {
     preparing = false;
     rendered.revoke();
+    rendering.revoke();
     if (app_window && app_window.IsVisible()) {
       dismiss_timer.Stop();
       entrance_timer.Stop();
@@ -224,7 +226,6 @@ struct TrayPopup::Impl {
     window.Activate();
     SetForegroundWindow(hwnd);
     if (entrance_offset) {
-      DwmFlush();
       entrance_start = {};
       entrance_timer.Start();
     }
@@ -524,6 +525,7 @@ TrayPopup::TrayPopup(std::function<void()> open_home, std::function<void()> open
 TrayPopup::~TrayPopup() {
   *impl_->alive = false;
   impl_->rendered.revoke();
+  impl_->rendering.revoke();
   if (impl_->window) {
     if (impl_->dismiss_timer) impl_->dismiss_timer.Stop();
     if (impl_->entrance_timer) impl_->entrance_timer.Stop();
@@ -572,6 +574,10 @@ HRESULT TrayPopup::Show(const RECT& anchor) {
                     GetWindowLongPtrW(impl_->hwnd, GWL_EXSTYLE) | WS_EX_LAYERED);
   SetLayeredWindowAttributes(impl_->hwnd, 0, 1, LWA_ALPHA);
   impl_->app_window.MoveAndResize({x, y + impl_->entrance_offset, width, height});
+  // Keep XAML rendering while the window is being prepared, even when its
+  // content is unchanged on a repeat open. Remove the handler after reveal.
+  impl_->rendering = Media::CompositionTarget::Rendering(winrt::auto_revoke,
+      [](auto&&, auto&&) {});
   impl_->rendered = Media::CompositionTarget::Rendered(winrt::auto_revoke,
       [state = impl_.get()](auto&&, auto&&) {
         if (!state->preparing || !state->frame.IsLoaded() ||
@@ -580,6 +586,7 @@ HRESULT TrayPopup::Show(const RECT& anchor) {
         // window. Wait another frame after the popup has completed layout.
         if (!std::exchange(state->frame_rendered, true)) return;
         state->rendered.revoke();
+        state->rendering.revoke();
         state->dispatcher.TryEnqueue([state, alive = state->alive] {
           if (*alive && state->preparing) {
             DwmFlush();
