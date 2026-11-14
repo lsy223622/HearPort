@@ -42,16 +42,20 @@ public static class HearPortPaintCheck {
 }
 "@
 $tree = [System.Windows.Automation.TreeScope]::Descendants
-function Find-NamedElement($window, [string[]]$Names) {
+function Find-NamedElement($window, [string[]]$Names, $Type) {
     foreach ($text in $Names) {
         $name = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::NameProperty, $text)
+        if ($Type) {
+            $control = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::ControlTypeProperty, $Type)
+            $name = [System.Windows.Automation.AndCondition]::new($name, $control)
+        }
         $match = $window.FindFirst($tree, $name)
         if ($match) { return $match }
     }
 }
-function Wait-NamedElement($window, [string[]]$Names) {
+function Wait-NamedElement($window, [string[]]$Names, $Type) {
     for ($i = 0; $i -lt 30; ++$i) {
-        $element = Find-NamedElement $window $Names
+        $element = Find-NamedElement $window $Names $Type
         if ($element) { return $element }
         Start-Sleep -Milliseconds 100
     }
@@ -61,8 +65,12 @@ function Select-Page($window, [string]$Id) {
     $condition = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::AutomationIdProperty, $Id)
     $item = $window.FindFirst($tree, $condition)
     if (!$item) { throw "Missing page tab: $Id" }
-    $toggle = $item.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern)
-    if ($toggle.Current.ToggleState -ne [System.Windows.Automation.ToggleState]::On) { $toggle.Toggle() }
+    $selection = $item.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern)
+    if (!$selection.Current.IsSelected) { $selection.Select() }
+}
+function Invoke-NamedElement($window, [string[]]$Names) {
+    $item = Wait-NamedElement $window $Names ([System.Windows.Automation.ControlType]::Button)
+    $item.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
 }
 $main = [HearPortPaintCheck]::MainWindow($ProcessId)
 if ($main -eq [IntPtr]::Zero) { throw 'HearPort main window not found' }
@@ -70,13 +78,27 @@ $root = [System.Windows.Automation.AutomationElement]::FromHandle($main)
 $null = Wait-NamedElement $root @('Overview', '概览')
 Select-Page $root 'DiagnosticsPage'
 $null = Wait-NamedElement $root @('Open sender log', '打开运行日志')
+Invoke-NamedElement $root @('Network test', '网络测试')
+$null = Wait-NamedElement $root @('Test type', '测试类型')
+Invoke-NamedElement $root @('Cancel', '取消')
 Select-Page $root 'SettingsPage'
 $null = Wait-NamedElement $root @('Run when I sign in to Windows', '登录 Windows 后自动运行')
+$capture = Wait-NamedElement $root @('Audio capture', '音频采集') ([System.Windows.Automation.ControlType]::ComboBox)
+$dropdown = $capture.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
+$dropdown.Expand()
 $null = Wait-NamedElement $root @('Process loopback', '进程回环')
 $null = Wait-NamedElement $root @('Default output device', '默认输出设备')
+$dropdown.Collapse()
+Invoke-NamedElement $root @('Edit', '修改')
+$port = Wait-NamedElement $root @('UDP port', 'UDP 端口') ([System.Windows.Automation.ControlType]::Edit)
+$field = $port.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
+$field.SetValue('65536')
+Invoke-NamedElement $root @('Apply', '应用')
+$null = Wait-NamedElement $root @('Enter a UDP port from 1 to 65535.', '请输入 1 至 65535 之间的 UDP 端口。')
+Invoke-NamedElement $root @('Cancel', '取消')
 Select-Page $root 'OverviewPage'
 $null = Wait-NamedElement $root @('Pair new iPad', '配对新 iPad', 'Unpair iPad', '取消配对')
-Write-Output 'WinUI main window opened and all three pages navigated'
+Write-Output 'WinUI navigation, audio source options, network dialog and UDP validation verified'
 [HearPortPaintCheck]::ToggleTrayPopup($ProcessId)
 $popup = [IntPtr]::Zero
 for ($attempt = 0; $attempt -lt 60 -and $popup -eq [IntPtr]::Zero; ++$attempt) {
