@@ -21,6 +21,7 @@
 #include <winrt/Microsoft.UI.Xaml.XamlTypeInfo.h>
 #include <winrt/Microsoft.UI.Xaml.Input.h>
 #include <winrt/Microsoft.UI.Xaml.Media.h>
+#include <winrt/Microsoft.UI.Xaml.Media.Animation.h>
 
 #include "connection_logo.h"
 
@@ -118,7 +119,6 @@ struct MainWindow::Impl {
   Border volume_card{nullptr};
   ConnectionLogo connection_logo;
   bool logo_running = false;
-  Media::GradientStop hero_color{nullptr};
   bool logo_connected = false, logo_usb = false;
   LinkStability logo_stability = LinkStability::unknown;
   Slider volume{nullptr};
@@ -306,8 +306,8 @@ struct MainWindow::Impl {
     using winrt::Windows::UI::Color;
     const auto high_contrast = winrt::Windows::UI::ViewManagement::AccessibilitySettings().HighContrast();
     const bool dark = connection_logo.view.ActualTheme() == ElementTheme::Dark;
-    const auto theme_ink = Label().Foreground();
-    const auto rgb = LinkColor(logo_usb, logo_stability, dark);
+    const auto rgb = high_contrast ? GetSysColor(COLOR_WINDOWTEXT)
+                                   : LinkColor(logo_usb, logo_stability, dark);
     const Color color{255, GetRValue(rgb), GetGValue(rgb), GetBValue(rgb)};
     const wchar_t* title = Tr(L"Assessing link", L"正在评估链路");
     switch (logo_stability) {
@@ -316,9 +316,8 @@ struct MainWindow::Impl {
       case LinkStability::poor: title = Tr(L"Unstable", L"不稳定"); break;
       default: break;
     }
-    hero_color.Color(logo_connected && !high_contrast ? color : Color{});
-    const Media::Brush ink = high_contrast ? theme_ink : Media::SolidColorBrush(color);
-    connection_logo.Update(logo_running, logo_connected, logo_usb, logo_stability, ink);
+    connection_logo.Update(logo_running, logo_connected, logo_usb, logo_stability, color,
+                           logo_connected && !high_contrast ? color : Color{});
     const auto description = logo_connected ? title : Tr(L"iPad not connected", L"iPad 未连接");
     ToolTipService::SetToolTip(connection_logo.view, winrt::box_value(description));
     Automation::AutomationProperties::SetName(connection_logo.view, description);
@@ -338,7 +337,7 @@ struct MainWindow::Impl {
           </LinearGradientBrush>
         </Border.Background>
       </Border>)").as<Border>();
-    hero_color = tint.Background().as<Media::LinearGradientBrush>().GradientStops().GetAt(2);
+    connection_logo.tint = tint.Background().as<Media::LinearGradientBrush>().GradientStops().GetAt(2);
     auto hero_layout = Columns({{1, GridUnitType::Star}, {1, GridUnitType::Auto}});
     hero_layout.Padding({24, 22, 24, 22});
     auto connection = Column(8);
@@ -354,7 +353,7 @@ struct MainWindow::Impl {
     hero_layout.Children().Append(connection);
 
     // Device outline and connection strokes match the iPad's HearPort symbol.
-    connection_logo.Create();
+    connection_logo.Create(window);
     connection_logo.view.Width(154);
     connection_logo.view.Height(108);
     connection_logo.view.Margin({12, 0, 8, 0});
@@ -576,6 +575,12 @@ struct MainWindow::Impl {
     page_host = ContentControl();
     page_host.HorizontalContentAlignment(HorizontalAlignment::Stretch);
     page_host.VerticalContentAlignment(VerticalAlignment::Stretch);
+    Media::Animation::ContentThemeTransition enter;
+    enter.HorizontalOffset(0);
+    enter.VerticalOffset(24);
+    Media::Animation::TransitionCollection transitions;
+    transitions.Append(enter);
+    page_host.ContentTransitions(transitions);
     navigation.Content(page_host);
     Display(0);
     window.Content(root);
@@ -586,6 +591,7 @@ struct MainWindow::Impl {
   }
 
   void Display(int page) {
+    if (page == current_page && scroll[page]) return;
     current_page = page;
     if (!scroll[page]) {
       scroll[page] = ScrollViewer();
