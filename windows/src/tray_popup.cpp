@@ -405,10 +405,9 @@ struct TrayPopup::Impl {
     using winrt::Windows::UI::Color;
     const bool dark = frame.ActualTheme() == ElementTheme::Dark;
     const bool high_contrast = winrt::Windows::UI::ViewManagement::AccessibilitySettings().HighContrast();
-    const auto rgb = LinkColor(usb, stability, dark);
-    const Media::Brush ink = high_contrast ? state.Foreground() :
-        Media::SolidColorBrush(Color{255, GetRValue(rgb), GetGValue(rgb), GetBValue(rgb)});
-    connection_logo.Update(running, connected, usb, stability, ink);
+    const auto rgb = high_contrast ? GetSysColor(COLOR_WINDOWTEXT) : LinkColor(usb, stability, dark);
+    connection_logo.Update(running, connected, usb, stability,
+                           Color{255, GetRValue(rgb), GetGValue(rgb), GetBValue(rgb)});
   }
 
   void UpdateChrome(ElementTheme theme) const {
@@ -504,7 +503,7 @@ struct TrayPopup::Impl {
     header.Orientation(Orientation::Horizontal);
     header.Spacing(12);
     header.Height(33);
-    connection_logo.Create();
+    connection_logo.Create(window);
     connection_logo.view.Width(kIconWidth);
     connection_logo.view.Height(24);
     connection_logo.view.VerticalAlignment(VerticalAlignment::Top);
