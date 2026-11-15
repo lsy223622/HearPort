@@ -2,6 +2,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include "main_window.h"
 #include "winui_runtime.h"
+#include <commctrl.h>
 #include <shobjidl.h>
 
 #undef GetCurrentTime
@@ -36,6 +37,19 @@ namespace {
 using namespace winrt::Microsoft::UI;
 using namespace Xaml;
 using namespace Controls;
+constexpr int kMinimumWindowWidth = 620;
+
+LRESULT CALLBACK EnforceMinimumWidth(HWND window, UINT message, WPARAM wparam, LPARAM lparam,
+                                     UINT_PTR id, DWORD_PTR) {
+  if (message == WM_NCDESTROY) RemoveWindowSubclass(window, EnforceMinimumWidth, id);
+  const auto result = DefSubclassProc(window, message, wparam, lparam);
+  if (message == WM_GETMINMAXINFO) {
+    auto& limits = *reinterpret_cast<MINMAXINFO*>(lparam);
+    limits.ptMinTrackSize.x = std::max<LONG>(limits.ptMinTrackSize.x,
+        MulDiv(kMinimumWindowWidth, GetDpiForWindow(window), 96));
+  }
+  return result;
+}
 // CMake builds the UI in C++ so there is no XAML compiler generated provider.
 struct HearPortXamlApp : ApplicationT<HearPortXamlApp, Markup::IXamlMetadataProvider> {
   explicit HearPortXamlApp(std::function<void()> start) : launched(std::move(start)) {}
@@ -510,6 +524,7 @@ struct MainWindow::Impl {
       return FALSE;
     }, reinterpret_cast<LPARAM>(&hwnd));
     if (!hwnd) winrt::throw_hresult(E_HANDLE);
+    if (!SetWindowSubclass(hwnd, EnforceMinimumWidth, 1, 0)) winrt::throw_hresult(E_FAIL);
     const UINT dpi = GetDpiForWindow(hwnd);
     MONITORINFO monitor{sizeof(monitor)};
     if (GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &monitor)) {
@@ -598,7 +613,12 @@ struct MainWindow::Impl {
     current_page = page;
     if (!scroll[page]) {
       scroll[page] = ScrollViewer();
-      scroll[page].Content(pages[page]);
+      scroll[page].HorizontalContentAlignment(HorizontalAlignment::Stretch);
+      scroll[page].HorizontalScrollMode(ScrollMode::Disabled);
+      scroll[page].HorizontalScrollBarVisibility(ScrollBarVisibility::Disabled);
+      Grid viewport;
+      viewport.Children().Append(pages[page]);
+      scroll[page].Content(viewport);
     }
     navigation.SelectedItem(destinations[page]);
     page_host.Content(scroll[page]);
