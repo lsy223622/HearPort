@@ -1,6 +1,8 @@
 #include <array>
 #include <cassert>
 #include <cstddef>
+#include <cstring>
+#include <cstdlib>
 #include <span>
 #include <vector>
 
@@ -65,5 +67,24 @@ int main() {
   timed.frame_count = 120;
   timed.payload.assign(480, std::byte{0x33});
   assert(hearport::wire::DecodeTimedAudioRecord(hearport::wire::EncodeTimedAudioRecord(timed)));
+  // 44.1 kHz starts with three blocks of 110 samples, then a block of 111.
+  std::array<float, 240> samples;
+  samples.fill(-0.5f);
+  std::memcpy(packet.pcm.data(), samples.data(), packet.pcm.size());
+  timed.kind = hearport::wire::AudioRecordKind::adaptive_pcm;
+  unsigned total_samples = 0;
+  for (unsigned block = 0; block < 400; ++block) {
+    timed.source_frame = block * 120;
+    timed.payload = hearport::wire::EncodeAdaptivePcm(packet, timed.source_frame, 44100, 24);
+    total_samples += static_cast<unsigned>((timed.payload.size() - 3) / 6);
+    const auto wire = hearport::wire::EncodeTimedAudioRecord(timed);
+    const auto roundtrip = hearport::wire::DecodeTimedAudioRecord(wire);
+    if (!roundtrip || roundtrip->payload != timed.payload || roundtrip->frame_count != 120 ||
+        timed.payload[3] != std::byte{0} || timed.payload[4] != std::byte{0} ||
+        timed.payload[5] != std::byte{0xc0} ||
+        hearport::wire::DecodeTimedAudioRecord(std::span(wire).first(wire.size() - 1))) std::abort();
+  }
+  if (total_samples != 44100 ||
+      hearport::wire::EncodeAdaptivePcm(packet, 0, 48000, 16).size() != 483) std::abort();
   return 0;
 }

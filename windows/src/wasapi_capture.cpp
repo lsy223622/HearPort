@@ -6,7 +6,9 @@
 #include <audioclientactivationparams.h>
 #include <avrt.h>
 #include <ksmedia.h>
+#include <initguid.h>
 #include <mmdeviceapi.h>
+#undef INITGUID
 #include <windows.h>
 #include <wrl/client.h>
 #include <wrl/implements.h>
@@ -123,6 +125,38 @@ PcmFormat ReadPcmFormat(const WAVEFORMATEX& wave_format) {
 }
 
 }  // namespace
+
+std::optional<PcmResolution> ReadSystemPcmResolution() {
+  const auto initialized = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+  if (FAILED(initialized) && initialized != RPC_E_CHANGED_MODE) return std::nullopt;
+  std::optional<PcmResolution> result;
+  {
+    ComPtr<IMMDeviceEnumerator> enumerator;
+    ComPtr<IMMDevice> device;
+    ComPtr<IPropertyStore> properties;
+    PROPVARIANT value{};
+    if (SUCCEEDED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
+                                  IID_PPV_ARGS(&enumerator))) &&
+        SUCCEEDED(enumerator->GetDefaultAudioEndpoint(eRender, eConsole, &device)) &&
+        SUCCEEDED(device->OpenPropertyStore(STGM_READ, &properties)) &&
+        SUCCEEDED(properties->GetValue(PKEY_AudioEngine_DeviceFormat, &value)) &&
+        value.vt == VT_BLOB && value.blob.cbSize >= sizeof(PCMWAVEFORMAT)) {
+      WAVEFORMATEXTENSIBLE wave{};
+      std::memcpy(&wave, value.blob.pBlobData,
+                  std::min<std::size_t>(value.blob.cbSize, sizeof(wave)));
+      unsigned bits = wave.Format.wBitsPerSample;
+      if (wave.Format.wFormatTag == WAVE_FORMAT_EXTENSIBLE &&
+          value.blob.cbSize >= sizeof(wave) && wave.Samples.wValidBitsPerSample != 0) {
+        bits = wave.Samples.wValidBitsPerSample;
+      }
+      if (wave.Format.nSamplesPerSec != 0 && bits != 0)
+        result = PcmResolution{wave.Format.nSamplesPerSec, bits};
+    }
+    PropVariantClear(&value);
+  }
+  if (SUCCEEDED(initialized)) CoUninitialize();
+  return result;
+}
 
 struct WasapiLoopbackCapture::Impl {
   PacketHandler on_packet;

@@ -112,6 +112,14 @@ int main() {
   const auto audio_replay = lag.ReplayFresh(11, 1'120'000'000, std::nullopt, std::nullopt);
   assert(audio_replay.size() == 1 && audio_replay[0].kind == hearport::wire::AudioRecordKind::audio);
   assert(hearport::wire::EncodeTimedAudioRecord(audio_replay[0]).size() == 992);
+  auto reduced = audio;
+  reduced.kind = hearport::wire::AudioRecordKind::adaptive_pcm;
+  reduced.source_frame = 120;
+  reduced.payload = hearport::wire::EncodeAdaptivePcm({}, 120, 44100, 16);
+  lag.Retain(reduced, reduced.captured_at_ns);
+  const auto mixed = lag.ReplayFresh(11, 1'120'000'000, std::nullopt, std::nullopt);
+  if (mixed.size() != 2 || mixed[1].kind != reduced.kind || mixed[1].payload != reduced.payload)
+    std::abort();
 
   lag.Begin(7, 11, start, std::chrono::milliseconds(89));
   lag.Produced(100431);

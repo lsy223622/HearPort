@@ -70,7 +70,14 @@ class SenderService {
   bool MarkStartStreamAckWritten(std::uint32_t stream_id);
   void ConfigureReliableAudio(bool enabled);
   void ConfigureCoordinatedAudio(bool enabled);
-  struct AudioFormat { bool opus; std::uint32_t bitrate, frames; };
+  void ConfigureAdaptivePcm(bool peer_supports_pcm);
+  void ConfigurePcmLimits(PcmResolution limits);
+  void SetSystemPcmResolution(PcmResolution resolution);
+  struct AudioFormat {
+    bool opus;
+    std::uint32_t bitrate, frames;
+    PcmResolution pcm{};
+  };
   AudioFormat audio_format() const;
   std::optional<LinkTiming> ReadLinkTiming() { return quic_->ReadLinkTiming(); }
   bool ConfigureAudioFormat(wire::ControlEnvelope& setup);
@@ -185,6 +192,10 @@ class SenderService {
   LiveAudioEncoder live_encoder_;
   AudioFormat negotiated_format_{false, 3072000, 120};
   std::atomic<bool> live_opus_ = false;
+  PcmResolution pcm_limits_;
+  PcmResolution system_pcm_{48000, 32};
+  bool adaptive_pcm_ = false;
+  PcmResolution LivePcmResolution() const;
   SessionState session_;
   ControlHandler control_handler_;
   ResetHandler reset_handler_;

@@ -128,7 +128,9 @@ class ReliableAudioLag {
           (latest_received && (*latest_received - record.sequence) < 0x80000000u) ||
           (played_source && record.source_frame + record.frame_count <= *played_source)) continue;
       record.generation = generation;
-      if (record.kind != wire::AudioRecordKind::audio) record.kind = wire::AudioRecordKind::retransmission;
+      if (record.kind != wire::AudioRecordKind::audio &&
+          record.kind != wire::AudioRecordKind::adaptive_pcm)
+        record.kind = wire::AudioRecordKind::retransmission;
       result.push_back(std::move(record));
     }
     return result;

@@ -24,7 +24,7 @@ struct ReliableAudioRecords {
             timedDecoder = decoder
             generation = decoder.generation
             return try timedPackets.map {
-                try AudioDatagram(streamID: $0.streamID, sequence: $0.sequence, pcm: $0.payload)
+                try AudioDatagram(streamID: $0.streamID, sequence: $0.sequence, pcm: $0.playbackPCM())
             }
         }
         pending.append(bytes)
@@ -142,12 +142,29 @@ struct ReliableTimedAudioRecords {
         }
         var records: [TimedAudioRecord] = []
         var consumed = 0
-        while pending.count - consumed >= 992 {
-            let record = try TimedAudioRecord(encoded: pending.subdata(in: consumed..<consumed + 992))
+        while pending.count - consumed >= 32 {
+            let kind = TimedAudioRecord.read(pending, consumed + 14, 2)
+            let length: Int
+            if kind == UInt64(AudioRecordKind.adaptivePcm.rawValue) {
+                guard pending.count - consumed >= 35 else { break }
+                let sourceFrame = TimedAudioRecord.read(pending, consumed + 24, 8)
+                guard let payloadLength = TimedAudioRecord.adaptivePayloadLength(
+                    pending, at: consumed + 32, sourceFrame: sourceFrame) else {
+                    throw ReliableAudioRecordsError.invalidRecord
+                }
+                length = 32 + payloadLength
+            } else if kind == UInt64(AudioRecordKind.audio.rawValue) {
+                length = 992
+            } else {
+                throw ReliableAudioRecordsError.invalidRecord
+            }
+            guard pending.count - consumed >= length else { break }
+            let record = try TimedAudioRecord(encoded: pending.subdata(in: consumed..<consumed + length))
             guard record.streamID == expectedStreamID, record.generation == generation,
-                  record.kind == .audio else { throw ReliableAudioRecordsError.invalidRecord }
+                  record.kind == .audio || record.kind == .adaptivePcm
+            else { throw ReliableAudioRecordsError.invalidRecord }
             records.append(record)
-            consumed += 992
+            consumed += length
         }
         if consumed != 0 { pending.removeSubrange(0..<consumed) }
         return records

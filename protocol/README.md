@@ -9,6 +9,16 @@ before StartStreamAck; the sender creates the encoder and echoes the actual
 lookahead. Peers without the capability retain the existing PCM wire contract.
 Diagnostic matrices negotiate PCM here and select their test format separately.
 
+Coordinated receivers can advertise bit 4096 in ConnectRequest to accept
+variable PCM during normal playback. Kind 7 retains the 120-frame, 48 kHz
+timeline in the timed header. Its payload starts with a big-endian u16 sample
+rate (8000–48000 Hz) and a u8 valid depth (8–32 bits). Interleaved stereo follows
+as signed little-endian PCM in the smallest whole-byte container, with Float32LE
+at 32 bits. A block at index `source_frame / 120` carries the difference
+between consecutive cumulative sample counts at 400 blocks per second,
+rounded down. Reliable timed streams use this length to parse kind 7 alongside
+fixed-size kind 0 records.
+
 Opus uses the existing timed kind 5 records and u16-length Reliable framing.
 Logical sequence numbers still represent 120 source frames, so a 480-frame
 record advances by four units. Capture time includes encoder lookahead in

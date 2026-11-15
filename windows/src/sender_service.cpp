@@ -1060,7 +1060,37 @@ void SenderService::ConfigureReliableAudio(bool enabled) {
 
 SenderService::AudioFormat SenderService::audio_format() const {
   std::lock_guard lock(audio_send_mutex_);
-  return negotiated_format_;
+  auto format = negotiated_format_;
+  if (!format.opus) {
+    format.pcm = LivePcmResolution();
+    format.bitrate = 2 * format.pcm.rate * ((format.pcm.bits + 7) / 8) * 8;
+  }
+  return format;
+}
+
+PcmResolution SenderService::LivePcmResolution() const {
+  if (!adaptive_pcm_ || music_clip_ || network_probe_ || calibration_options_)
+    return {48000, 32};
+  const auto rate = std::min(system_pcm_.rate, pcm_limits_.rate ? pcm_limits_.rate : 48000);
+  const auto bits = std::min(system_pcm_.bits, pcm_limits_.bits ? pcm_limits_.bits : 32);
+  return {std::clamp(rate, 8000u, 48000u), std::clamp(bits, 8u, 32u)};
+}
+
+void SenderService::ConfigureAdaptivePcm(bool supported) {
+  const auto system = supported ? ReadSystemPcmResolution() : std::nullopt;
+  std::lock_guard lock(audio_send_mutex_);
+  system_pcm_ = system.value_or(PcmResolution{48000, 32});
+  adaptive_pcm_ = supported;
+}
+
+void SenderService::ConfigurePcmLimits(PcmResolution limits) {
+  std::lock_guard lock(audio_send_mutex_);
+  pcm_limits_ = limits;
+}
+
+void SenderService::SetSystemPcmResolution(PcmResolution resolution) {
+  std::lock_guard lock(audio_send_mutex_);
+  system_pcm_ = resolution;
 }
 
 bool SenderService::ConfigureAudioFormat(wire::ControlEnvelope& setup) {
@@ -1412,7 +1442,13 @@ void SenderService::AudioWorker() {
       record.sequence = queued.packet.sequence;
       record.captured_at_ns = static_cast<std::uint64_t>(queued.captured_at_ns);
       record.source_frame = queued.source_frame;
-      record.payload.assign(queued.packet.pcm.begin(), queued.packet.pcm.end());
+      const auto pcm = LivePcmResolution();
+      if (pcm.rate == 48000 && pcm.bits == 32) {
+        record.payload.assign(queued.packet.pcm.begin(), queued.packet.pcm.end());
+      } else {
+        record.kind = wire::AudioRecordKind::adaptive_pcm;
+        record.payload = wire::EncodeAdaptivePcm(queued.packet, queued.source_frame, pcm.rate, pcm.bits);
+      }
       if (reliable_mode_.load()) {
         std::lock_guard reliable_lock(reliable_mutex_);
         reliable_lag_.Retain(record, static_cast<std::uint64_t>(MonotonicNanoseconds()));
