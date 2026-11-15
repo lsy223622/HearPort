@@ -443,7 +443,7 @@ public final class ReceiverControlSession {
         let features = ControlFeature.diagnosticsUpload | ControlFeature.networkProbe |
             ControlFeature.networkProbeRepeat | ControlFeature.coordinatedAudio | ControlFeature.musicTest | ControlFeature.environmentCalibration |
             ControlFeature.compressionMusic | ControlFeature.liveCompression | ControlFeature.adaptiveCalibration |
-            ControlFeature.systemVolume |
+            ControlFeature.systemVolume | ControlFeature.adaptivePcm |
             (audioMode == .reliable ? ControlFeature.reliableAudio : 0)
         let envelope = ControlEnvelope(.connectRequest(authMode: mode,
                                                        peerID: peerID,

@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string_view>
 
@@ -12,6 +13,14 @@
 namespace hearport::windows {
 
 enum class CaptureSource { process, endpoint };
+
+struct PcmResolution {
+  std::uint32_t rate = 0;
+  unsigned bits = 0;
+  bool operator==(const PcmResolution&) const = default;
+};
+
+std::optional<PcmResolution> ReadSystemPcmResolution();
 
 class WasapiLoopbackCapture {
  public:

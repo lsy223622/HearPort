@@ -495,11 +495,12 @@ public final class HearPortReceiver {
 
     @discardableResult
     public func receiveTimedRecord(_ record: TimedAudioRecord) -> AudioDisposition? {
-        guard record.frameCount == 120, record.payload.count == 960,
-              record.kind == .audio || record.kind == .retransmission || record.kind == .repeated
+        guard record.frameCount == 120,
+              record.kind == .audio || record.kind == .adaptivePcm ||
+              record.kind == .retransmission || record.kind == .repeated
         else { return nil }
         guard let packet = try? AudioDatagram(streamID: record.streamID,
-                                              sequence: record.sequence, pcm: record.payload) else {
+                                              sequence: record.sequence, pcm: record.playbackPCM()) else {
             return nil
         }
         return receiveDatagram(packet.encoded, timedRecord: record)
@@ -569,7 +570,8 @@ public final class HearPortReceiver {
 
     @discardableResult
     public func receiveDatagram(_ data: Data, timedRecord: TimedAudioRecord? = nil) -> AudioDisposition? {
-        realtimeMetrics.recordDatagram(byteCount: data.count)
+        realtimeMetrics.recordDatagram(byteCount: timedRecord?.kind == .adaptivePcm
+            ? 32 + (timedRecord?.payload.count ?? 0) : data.count)
         let receivedAt = DispatchTime.now().uptimeNanoseconds
         let packet: AudioDatagram
         do {
@@ -628,7 +630,8 @@ public final class HearPortReceiver {
                 if compressionMusicRound == nil && liveAudioDecoder == nil,
                    insertResult == .inserted || insertResult == .late, let timedRecord, let captured {
                     playoutController?.observeArrival(sourceFrame: timedRecord.sourceFrame,
-                        capturedAt: captured, receivedAt: receivedAt, original: timedRecord.kind == .audio)
+                        capturedAt: captured, receivedAt: receivedAt,
+                        original: timedRecord.kind == .audio || timedRecord.kind == .adaptivePcm)
                 }
                 let started = playoutController == nil ? (jitter?.startIfReady() ?? false) : false
                 pumpLocked()

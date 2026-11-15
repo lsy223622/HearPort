@@ -33,6 +33,7 @@ public enum ControlFeature {
     public static let liveCompression: UInt32 = 512
     public static let adaptiveCalibration: UInt32 = 1024
     public static let systemVolume: UInt32 = 2048
+    public static let adaptivePcm: UInt32 = 4096
 }
 
 public struct AudioProgressTiming: Equatable, Sendable {

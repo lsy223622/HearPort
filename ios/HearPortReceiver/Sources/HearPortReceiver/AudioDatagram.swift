@@ -5,7 +5,9 @@ public enum AudioDatagramError: Error, Equatable {
     case zeroStreamID
 }
 
-public enum AudioRecordKind: UInt16, Sendable { case audio, fec, retransmission, repeated, probe, opus, pcm16 }
+public enum AudioRecordKind: UInt16, Sendable {
+    case audio, fec, retransmission, repeated, probe, opus, pcm16, adaptivePcm
+}
 
 public struct TimedAudioRecord: Equatable, Sendable {
     public let streamID: UInt32
@@ -26,6 +28,9 @@ public struct TimedAudioRecord: Equatable, Sendable {
             validFraming = frameCount == 120 && payload.count == 960
         case .pcm16:
             validFraming = frameCount == 120 && payload.count == 480
+        case .adaptivePcm:
+            validFraming = frameCount == 120 &&
+                Self.adaptivePayloadLength(payload, at: payload.startIndex, sourceFrame: sourceFrame) == payload.count
         case .opus:
             validFraming = [120, 240, 480].contains(Int(frameCount))
         default:
@@ -71,7 +76,52 @@ public struct TimedAudioRecord: Equatable, Sendable {
         return bytes
     }
 
-    private static func read(_ bytes: Data, _ offset: Int, _ count: Int) -> UInt64 {
+    static func adaptivePayloadLength(_ bytes: Data, at offset: Int, sourceFrame: UInt64) -> Int? {
+        guard bytes.endIndex - offset >= 3 else { return nil }
+        let rate = Int(read(bytes, offset, 2))
+        let bits = Int(bytes[offset + 2])
+        guard (8_000...48_000).contains(rate), (8...32).contains(bits) else { return nil }
+        let width = (bits + 7) / 8
+        let block = Int(sourceFrame / 120 % 400)
+        let frames = (block + 1) * rate / 400 - block * rate / 400
+        return 3 + frames * 2 * width
+    }
+
+    func playbackPCM() -> Data {
+        guard kind == .adaptivePcm else { return payload }
+        let depth = Int(payload[payload.startIndex + 2])
+        let width = (depth + 7) / 8
+        let stride = width * 2
+        let frames = (payload.count - 3) / stride
+        var samples = [Float]()
+        samples.reserveCapacity(frames * 2)
+        for offset in Swift.stride(from: payload.startIndex + 3, to: payload.endIndex, by: width) {
+            var bits: UInt32 = 0
+            for byte in 0..<width { bits |= UInt32(payload[offset + byte]) << (8 * byte) }
+            let sample: Float
+            if depth == 32 {
+                sample = Float(bitPattern: bits)
+            } else {
+                let shift = 32 - depth
+                sample = Float(Int32(bitPattern: bits << shift) >> shift) / Float(1 << (depth - 1))
+            }
+            samples.append(sample.isFinite ? sample : 0)
+        }
+        var output = [Float]()
+        output.reserveCapacity(240)
+        for frame in 0..<120 {
+            let position = max(0, min(Float(frames - 1), (Float(frame) + 0.5) * Float(frames) / 120 - 0.5))
+            let lo = Int(position)
+            let hi = min(lo + 1, frames - 1)
+            let fraction = position - Float(lo)
+            for channel in 0..<2 {
+                output.append(samples[lo * 2 + channel] * (1 - fraction) + samples[hi * 2 + channel] * fraction)
+            }
+        }
+        return output.withUnsafeBytes { Data($0) }
+    }
+
+    static func read(_ bytes: Data, _ offset: Int, _ count: Int) -> UInt64 {
         bytes[offset..<(offset + count)].reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
     }
 }

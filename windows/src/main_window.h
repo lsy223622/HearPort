@@ -55,6 +55,9 @@ class MainWindow {
   void EnableCapture(bool enabled);
   void SetCapture(int value);
   int capture() const;
+  void ConfigurePcmLimits(unsigned rate, unsigned bits,
+                          std::function<bool(bool, unsigned)> save);
+  void SetSystemPcmResolution(unsigned rate, unsigned bits);
   void SetPort(std::uint16_t value);
   bool detailed_logging() const;
   bool auto_start() const;

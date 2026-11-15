@@ -26,7 +26,9 @@ EncodedAudioDatagram EncodeAudioDatagram(const AudioDatagram& packet);
 std::optional<AudioDatagram> DecodeAudioDatagram(
     std::span<const std::byte> bytes);
 
-enum class AudioRecordKind : std::uint16_t { audio, fec, retransmission, repeated, probe, opus, pcm16 };
+enum class AudioRecordKind : std::uint16_t {
+  audio, fec, retransmission, repeated, probe, opus, pcm16, adaptive_pcm
+};
 
 struct TimedAudioRecord {
   std::uint32_t stream_id = 0;
@@ -41,5 +43,9 @@ struct TimedAudioRecord {
 
 std::vector<std::byte> EncodeTimedAudioRecord(const TimedAudioRecord& record);
 std::optional<TimedAudioRecord> DecodeTimedAudioRecord(std::span<const std::byte> bytes);
+
+// The record timeline stays at 48 kHz, including when fewer samples are sent.
+std::vector<std::byte> EncodeAdaptivePcm(const AudioDatagram& packet, std::uint64_t source_frame,
+                                         std::uint32_t rate, unsigned bits);
 
 }  // namespace hearport::wire

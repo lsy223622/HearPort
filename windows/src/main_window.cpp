@@ -123,6 +123,7 @@ struct MainWindow::Impl {
   LinkStability logo_stability = LinkStability::unknown;
   Slider volume{nullptr};
   ComboBox capture_source{nullptr};
+  TextBox pcm_rate{nullptr}, pcm_bits{nullptr};
   TextBlock port{nullptr};
   ToggleSwitch logging{nullptr}, startup{nullptr};
   bool updating_capture = false;
@@ -458,6 +459,16 @@ struct MainWindow::Impl {
     const auto capture_label = Tr(L"Audio capture", L"音频采集");
     Automation::AutomationProperties::SetName(capture_source, capture_label);
     SettingRow(connection, Symbol::Audio, capture_label, capture_source);
+    pcm_rate = TextBox();
+    pcm_bits = TextBox();
+    const auto add_limit = [&](const TextBox& input, const wchar_t* label) {
+      input.Width(155);
+      input.MaxLength(6);
+      Automation::AutomationProperties::SetName(input, label);
+      SettingRow(connection, Symbol::Audio, label, input);
+    };
+    add_limit(pcm_rate, Tr(L"PCM sample rate limit (Hz)", L"PCM 采样率上限（Hz）"));
+    add_limit(pcm_bits, Tr(L"PCM bit depth limit", L"PCM 位深上限"));
     port = Label();
     port.Text(std::to_wstring(port_number));
     auto edit = Command(Tr(L"Edit", L"修改"), MainAction::port);
@@ -682,6 +693,52 @@ void MainWindow::SetCapture(int value) {
   impl_->updating_capture = false;
 }
 int MainWindow::capture() const { return impl_->capture_source.SelectedIndex(); }
+
+void MainWindow::ConfigurePcmLimits(unsigned rate, unsigned bits,
+                                    std::function<bool(bool, unsigned)> save) {
+  const auto bind = [this, &save](const TextBox& input, bool rate_field, unsigned current,
+                                  unsigned minimum, unsigned maximum) {
+    input.Text(current ? std::to_wstring(current) : std::wstring{});
+    // Both Enter and focus loss commit the same edit.
+    auto commit = [this, weak_input = winrt::make_weak(input), rate_field,
+                   current, minimum, maximum, save]() mutable {
+      const auto input = weak_input.get();
+      if (!input) return;
+      const auto text = input.Text();
+      unsigned value = 0;
+      bool valid = true;
+      for (const auto character : text) {
+        if (character < L'0' || character > L'9') { valid = false; break; }
+        value = value * 10 + (character - L'0');
+      }
+      if (!valid || (!text.empty() && (value < minimum || value > maximum))) {
+        Notify(std::wstring(Tr(L"Enter a number from ", L"请输入 ")) + std::to_wstring(minimum) +
+               L"–" + std::to_wstring(maximum) + Tr(L", or leave it blank.", L" 范围内的数字，或留空。"));
+      } else if (value == current || save(rate_field, value)) {
+        current = value;
+      }
+      input.Text(current ? std::to_wstring(current) : std::wstring{});
+    };
+    auto apply = std::make_shared<decltype(commit)>(std::move(commit));
+    input.LostFocus([apply](auto&&, auto&&) { (*apply)(); });
+    input.KeyDown([apply](auto&&, const Xaml::Input::KeyRoutedEventArgs& args) {
+      if (args.Key() == winrt::Windows::System::VirtualKey::Enter) {
+        args.Handled(true);
+        (*apply)();
+      }
+    });
+  };
+  bind(impl_->pcm_rate, true, rate, 8000, 48000);
+  bind(impl_->pcm_bits, false, bits, 8, 32);
+}
+
+void MainWindow::SetSystemPcmResolution(unsigned rate, unsigned bits) {
+  const auto placeholder = [](unsigned value) {
+    return value ? std::to_wstring(value) : std::wstring(Tr(L"System", L"系统默认"));
+  };
+  impl_->pcm_rate.PlaceholderText(placeholder(rate));
+  impl_->pcm_bits.PlaceholderText(placeholder(bits));
+}
 void MainWindow::SetPort(std::uint16_t value) {
   SetText(impl_->port, std::to_wstring(value));
 }

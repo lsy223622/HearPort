@@ -43,6 +43,7 @@ namespace {
 
 using hearport::windows::SenderAuthentication;
 using hearport::windows::CaptureSource;
+using hearport::windows::PcmResolution;
 using hearport::windows::SenderDiagnosticLogger;
 using hearport::windows::SenderService;
 using Clock = std::chrono::steady_clock;
@@ -245,6 +246,15 @@ CaptureSource LoadCaptureSource() {
   return CaptureSource::process;
 }
 
+unsigned LoadPcmLimit(const wchar_t* name, unsigned minimum, unsigned maximum) {
+  DWORD value = 0;
+  DWORD size = sizeof(value);
+  if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\HearPort", name, RRF_RT_REG_DWORD,
+                   nullptr, &value, &size) != ERROR_SUCCESS || value < minimum || value > maximum)
+    return 0;
+  return value;
+}
+
 bool SaveSetting(const wchar_t* name, DWORD value) {
   HKEY key = nullptr;
   if (RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\HearPort", 0, nullptr,
@@ -336,6 +346,20 @@ class Application {
       return 1;
     }
     hwnd_ = main_window_->handle();
+    main_window_->ConfigurePcmLimits(pcm_limits_.rate, pcm_limits_.bits,
+        [this](bool rate, unsigned value) {
+          if (!SaveSetting(rate ? L"PcmSampleRateLimit" : L"PcmBitDepthLimit", value)) {
+            main_window_->Notify(Tr(L"Could not save the PCM limit.", L"无法保存 PCM 上限。"));
+            return false;
+          }
+          if (rate) pcm_limits_.rate = value;
+          else pcm_limits_.bits = value;
+          RefreshSystemPcm();
+          if (service_) service_->ConfigurePcmLimits(pcm_limits_);
+          UpdateStatus();
+          return true;
+        });
+    RefreshSystemPcm();
     if (!SetWindowSubclass(hwnd_, WindowProc, 1, reinterpret_cast<DWORD_PTR>(this))) return 1;
     if (const auto icon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_HEARPORT))) {
       SendMessageW(hwnd_, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(icon));
@@ -739,7 +763,10 @@ class Application {
         const auto format = service_->audio_format();
         std::wostringstream description;
         description << Tr(L"Audio: ", L"音频：") << (format.opus ? L"Opus" : L"PCM")
-                    << L" · " << format.bitrate / 1000 << L" kb/s · " << format.frames / 48.0 << L" ms";
+                    << L" · ";
+        if (!format.opus)
+          description << format.pcm.rate / 1000.0 << L" kHz / " << format.pcm.bits << L" bit · ";
+        description << format.bitrate / 1000.0 << L" kb/s · " << format.frames / 48.0 << L" ms";
         detail = description.str();
       }
     } else if (running_ && completed_test_) {
@@ -866,6 +893,7 @@ class Application {
     host_ = std::make_unique<hearport::windows::SenderHost>(*identity, data_dir_ / L"diagnostics");
     host_->Configure([&](SenderService& service) {
       service.ConfigureCaptureSource(capture_source_);
+      service.ConfigurePcmLimits(pcm_limits_);
       service.ConfigureNetworkProbe(network_probe);
       service.ConfigureDebugDuration(diagnostics);
       if (calibration) service.ConfigureCalibration({static_cast<std::uint16_t>(calibration_seconds_), static_cast<std::uint16_t>(calibration_maximum_), calibration_goal_});
@@ -1134,7 +1162,21 @@ class Application {
     return {};
   }
 
+  void RefreshSystemPcm() {
+    const auto current = hearport::windows::ReadSystemPcmResolution().value_or(PcmResolution{});
+    if (current != system_pcm_) {
+      system_pcm_ = current;
+      main_window_->SetSystemPcmResolution(current.rate, current.bits);
+    }
+    if (service_ && current.rate && current.bits) service_->SetSystemPcmResolution(current);
+  }
+
   void OnTimer() {
+    if ((connected_ || (main_window_->page() == 2 && IsWindowVisible(hwnd_))) &&
+        Clock::now() >= next_pcm_refresh_) {
+      next_pcm_refresh_ = Clock::now() + std::chrono::seconds(3);
+      RefreshSystemPcm();
+    }
     const bool volume_visible = (main_window_->page() == 0 && IsWindowVisible(hwnd_)) ||
                                 (tray_popup_ && tray_popup_->visible());
     if (host_ && connected_ && volume_visible && !volume_editing_) {
@@ -1351,6 +1393,10 @@ class Application {
   bool dark_ = false;
   std::uint16_t port_ = 52137;
   CaptureSource capture_source_ = LoadCaptureSource();
+  PcmResolution pcm_limits_{LoadPcmLimit(L"PcmSampleRateLimit", 8000, 48000),
+                            LoadPcmLimit(L"PcmBitDepthLimit", 8, 32)};
+  PcmResolution system_pcm_{};
+  Clock::time_point next_pcm_refresh_{};
   std::wstring error_;
   std::filesystem::path data_dir_;
   std::optional<Clock::time_point> pin_expires_;

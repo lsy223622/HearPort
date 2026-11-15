@@ -171,6 +171,8 @@ bool SenderAuthentication::HandleConnect(
   peer_supports_system_volume_ = (envelope.feature_bits & wire::kFeatureSystemVolume) != 0;
   peer_coordinated_audio_ = (envelope.feature_bits & wire::kFeatureCoordinatedAudio) != 0;
   service_.ConfigureCoordinatedAudio(peer_coordinated_audio_);
+  service_.ConfigureAdaptivePcm(peer_coordinated_audio_ &&
+      (envelope.feature_bits & wire::kFeatureAdaptivePcm) != 0);
 
   if (envelope.auth_mode == AuthMode::remembered) {
     const auto credential = credential_store_.Load();

@@ -55,6 +55,7 @@ inline constexpr std::uint32_t kFeatureCompressionMusic = 256u;
 inline constexpr std::uint32_t kFeatureLiveCompression = 512u;
 inline constexpr std::uint32_t kFeatureAdaptiveCalibration = 1024u;
 inline constexpr std::uint32_t kFeatureSystemVolume = 2048u;
+inline constexpr std::uint32_t kFeatureAdaptivePcm = 4096u;
 inline constexpr std::size_t kDiagnosticReportChunkMaxBytes = 60u * 1024u;
 
 // This is the small, schema-shaped value used at the platform boundary. The
