@@ -3,6 +3,7 @@
 #include "main_window.h"
 #include "winui_runtime.h"
 #include <commctrl.h>
+#include <dwmapi.h>
 #include <shobjidl.h>
 
 #undef GetCurrentTime
@@ -17,18 +18,20 @@
 #include <winrt/Microsoft.UI.Xaml.Controls.h>
 #include <winrt/Microsoft.UI.Xaml.Controls.Primitives.h>
 #include <winrt/Microsoft.UI.Composition.SystemBackdrops.h>
+#include <winrt/Microsoft.UI.Composition.h>
+#include <winrt/Microsoft.UI.Xaml.Hosting.h>
 #include <winrt/Microsoft.UI.Xaml.Markup.h>
 #include <winrt/Microsoft.UI.Xaml.Shapes.h>
 #include <winrt/Microsoft.UI.Xaml.XamlTypeInfo.h>
 #include <winrt/Microsoft.UI.Xaml.Input.h>
 #include <winrt/Microsoft.UI.Xaml.Media.h>
-#include <winrt/Microsoft.UI.Xaml.Media.Animation.h>
 
 #include "connection_logo.h"
 #include "volume_wheel.h"
 
 #include <array>
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <utility>
 #include <filesystem>
@@ -40,10 +43,17 @@ using namespace Controls;
 constexpr int kMinimumWindowWidth = 620;
 
 LRESULT CALLBACK MainWindowFrameProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam,
-                                     UINT_PTR id, DWORD_PTR) {
-  // WinUI and Mica paint the client area. The GDI erase can expose an
-  // empty background before composition catches up with a resize.
-  if (message == WM_ERASEBKGND) return 1;
+                                     UINT_PTR id, DWORD_PTR data) {
+  if (message == WM_ERASEBKGND) {
+    // Match the native surface exposed before WinUI presents its next frame.
+    const auto dc = reinterpret_cast<HDC>(wparam);
+    RECT client{};
+    GetClientRect(window, &client);
+    const auto old = SetDCBrushColor(dc, *reinterpret_cast<const COLORREF*>(data));
+    FillRect(dc, &client, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+    SetDCBrushColor(dc, old);
+    return 1;
+  }
   if (message == WM_NCDESTROY) RemoveWindowSubclass(window, MainWindowFrameProc, id);
   const auto result = DefSubclassProc(window, message, wparam, lparam);
   if (message == WM_GETMINMAXINFO) {
@@ -154,10 +164,15 @@ struct MainWindow::Impl {
   std::optional<std::uint32_t> pending_volume;
   std::shared_ptr<bool> alive = std::make_shared<bool>(true);
   int current_page = 0;
+  COLORREF native_background = GetSysColor(COLOR_WINDOW);
 
-  void UpdateTitleBar(ElementTheme theme) const {
+  void UpdateTitleBar(ElementTheme theme) {
     const bool dark = theme == ElementTheme::Dark;
     const auto high_contrast = winrt::Windows::UI::ViewManagement::AccessibilitySettings().HighContrast();
+    native_background = high_contrast ? GetSysColor(COLOR_WINDOW) :
+        dark ? RGB(32, 32, 32) : RGB(243, 243, 243);
+    const BOOL native_dark = dark && !high_contrast;
+    DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &native_dark, sizeof(native_dark));
     auto chrome = window.AppWindow().TitleBar();
     if (high_contrast) {
       chrome.ResetToDefault();
@@ -527,7 +542,8 @@ struct MainWindow::Impl {
       return FALSE;
     }, reinterpret_cast<LPARAM>(&hwnd));
     if (!hwnd) winrt::throw_hresult(E_HANDLE);
-    if (!SetWindowSubclass(hwnd, MainWindowFrameProc, 1, 0)) winrt::throw_hresult(E_FAIL);
+    if (!SetWindowSubclass(hwnd, MainWindowFrameProc, 1,
+                           reinterpret_cast<DWORD_PTR>(&native_background))) winrt::throw_hresult(E_FAIL);
     const UINT dpi = GetDpiForWindow(hwnd);
     MONITORINFO monitor{sizeof(monitor)};
     if (GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &monitor)) {
@@ -596,12 +612,6 @@ struct MainWindow::Impl {
     page_host = ContentControl();
     page_host.HorizontalContentAlignment(HorizontalAlignment::Stretch);
     page_host.VerticalContentAlignment(VerticalAlignment::Stretch);
-    Media::Animation::ContentThemeTransition enter;
-    enter.HorizontalOffset(0);
-    enter.VerticalOffset(24);
-    Media::Animation::TransitionCollection transitions;
-    transitions.Append(enter);
-    page_host.ContentTransitions(transitions);
     navigation.Content(page_host);
     Display(0);
     window.Content(root);
@@ -625,6 +635,24 @@ struct MainWindow::Impl {
     }
     navigation.SelectedItem(destinations[page]);
     page_host.Content(scroll[page]);
+    if (!page_host.IsLoaded() ||
+        !winrt::Windows::UI::ViewManagement::UISettings().AnimationsEnabled()) return;
+    // Animate the selected page once, independently of subsequent layout passes.
+    using Hosting::ElementCompositionPreview;
+    ElementCompositionPreview::SetIsTranslationEnabled(scroll[page], true);
+    const auto visual = ElementCompositionPreview::GetElementVisual(scroll[page]);
+    const auto compositor = visual.Compositor();
+    const auto ease_out = compositor.CreateCubicBezierEasingFunction({.15f, .65f}, {.25f, 1.f});
+    const auto move = compositor.CreateVector3KeyFrameAnimation();
+    move.InsertKeyFrame(0, {0, 24, 0});
+    move.InsertKeyFrame(1, {0, 0, 0}, ease_out);
+    move.Duration(std::chrono::milliseconds(220));
+    visual.StartAnimation(L"Translation", move);
+    const auto fade = compositor.CreateScalarKeyFrameAnimation();
+    fade.InsertKeyFrame(0, 0);
+    fade.InsertKeyFrame(1, 1, ease_out);
+    fade.Duration(std::chrono::milliseconds(180));
+    visual.StartAnimation(L"Opacity", fade);
   }
   std::array<ScrollViewer, 3> scroll{nullptr, nullptr, nullptr};
 };
