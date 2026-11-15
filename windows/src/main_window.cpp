@@ -629,6 +629,7 @@ struct MainWindow::Impl {
       scroll[page].HorizontalContentAlignment(HorizontalAlignment::Stretch);
       scroll[page].HorizontalScrollMode(ScrollMode::Disabled);
       scroll[page].HorizontalScrollBarVisibility(ScrollBarVisibility::Disabled);
+      scroll[page].VerticalScrollBarVisibility(ScrollBarVisibility::Auto);
       Grid viewport;
       viewport.Children().Append(pages[page]);
       scroll[page].Content(viewport);
