@@ -39,9 +39,12 @@ using namespace Xaml;
 using namespace Controls;
 constexpr int kMinimumWindowWidth = 620;
 
-LRESULT CALLBACK EnforceMinimumWidth(HWND window, UINT message, WPARAM wparam, LPARAM lparam,
+LRESULT CALLBACK MainWindowFrameProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam,
                                      UINT_PTR id, DWORD_PTR) {
-  if (message == WM_NCDESTROY) RemoveWindowSubclass(window, EnforceMinimumWidth, id);
+  // WinUI and Mica paint the client area. The GDI erase can expose an
+  // empty background before composition catches up with a resize.
+  if (message == WM_ERASEBKGND) return 1;
+  if (message == WM_NCDESTROY) RemoveWindowSubclass(window, MainWindowFrameProc, id);
   const auto result = DefSubclassProc(window, message, wparam, lparam);
   if (message == WM_GETMINMAXINFO) {
     auto& limits = *reinterpret_cast<MINMAXINFO*>(lparam);
@@ -524,7 +527,7 @@ struct MainWindow::Impl {
       return FALSE;
     }, reinterpret_cast<LPARAM>(&hwnd));
     if (!hwnd) winrt::throw_hresult(E_HANDLE);
-    if (!SetWindowSubclass(hwnd, EnforceMinimumWidth, 1, 0)) winrt::throw_hresult(E_FAIL);
+    if (!SetWindowSubclass(hwnd, MainWindowFrameProc, 1, 0)) winrt::throw_hresult(E_FAIL);
     const UINT dpi = GetDpiForWindow(hwnd);
     MONITORINFO monitor{sizeof(monitor)};
     if (GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &monitor)) {
