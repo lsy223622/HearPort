@@ -27,6 +27,7 @@
 #include <winrt/Microsoft.UI.Xaml.Media.h>
 
 #include "connection_logo.h"
+#include "volume_wheel.h"
 
 #include <algorithm>
 #include <chrono>
@@ -46,7 +47,6 @@ constexpr int kPopupHeight = 116;
 constexpr int kVolumeSpace = 42;
 constexpr int kPopupHeightWithVolume = kPopupHeight + kVolumeSpace;
 constexpr int kVolumeRowHeight = 34;
-constexpr int kWheelVolumeStep = 5;
 constexpr double kIconWidth = 24;
 constexpr double kThumbDiameter = 18;
 
@@ -199,29 +199,12 @@ struct TrayPopup::Impl {
                                       UINT_PTR id, DWORD_PTR data) {
     auto* self = reinterpret_cast<Impl*>(data);
     if (message == WM_NCCALCSIZE && wp) return 0;
-    if (message == WM_MOUSEWHEEL && self->ScrollVolume(wp, lp)) return 0;
     if (message == WM_ACTIVATE && !self->preparing && LOWORD(wp) == WA_INACTIVE &&
         !self->HasForeground(reinterpret_cast<HWND>(lp))) {
       self->Hide();
     }
     if (message == WM_NCDESTROY) RemoveWindowSubclass(hwnd, WindowProc, id);
     return DefSubclassProc(hwnd, message, wp, lp);
-  }
-
-  bool ScrollVolume(WPARAM wp, LPARAM lp) {
-    if (!volume || dragging || volume_progress != 1 || preparing || !app_window.IsVisible()) return false;
-    POINT cursor{static_cast<short>(LOWORD(lp)), static_cast<short>(HIWORD(lp))};
-    if (!ScreenToClient(hwnd, &cursor)) return false;
-    const auto scale = frame.XamlRoot().RasterizationScale();
-    const auto point = frame.TransformToVisual(slider_surface).TransformPoint({
-        static_cast<float>(cursor.x / scale), static_cast<float>(cursor.y / scale)});
-    if (point.X < 0 || point.X >= slider_surface.ActualWidth() ||
-        point.Y < 0 || point.Y >= slider_surface.ActualHeight()) return false;
-    wheel_delta += GET_WHEEL_DELTA_WPARAM(wp);
-    const int steps = wheel_delta / WHEEL_DELTA;
-    wheel_delta %= WHEEL_DELTA;
-    if (steps) slider.Value(std::clamp(static_cast<int>(Position()) + steps * kWheelVolumeStep, 0, 100));
-    return true;
   }
 
   void ApplyBackdrop(FrameworkElement const& root) {
@@ -566,6 +549,8 @@ struct TrayPopup::Impl {
     Automation::AutomationProperties::SetName(slider, Translate(L"iPad volume", L"iPad 音量"));
     slider_surface = Grid();
     slider_surface.Height(32);
+    slider_surface.Background(Media::SolidColorBrush(winrt::Windows::UI::Color{}));
+    EnableVolumeWheel(slider_surface, slider, wheel_delta, dragging);
     Canvas slider_art;
     slider_art.IsHitTestVisible(false);
     slider_track = Border();

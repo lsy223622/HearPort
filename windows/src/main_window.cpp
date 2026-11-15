@@ -24,6 +24,7 @@
 #include <winrt/Microsoft.UI.Xaml.Media.Animation.h>
 
 #include "connection_logo.h"
+#include "volume_wheel.h"
 
 #include <array>
 #include <algorithm>
@@ -122,6 +123,7 @@ struct MainWindow::Impl {
   bool logo_connected = false, logo_usb = false;
   LinkStability logo_stability = LinkStability::unknown;
   Slider volume{nullptr};
+  int wheel_delta = 0;
   ComboBox capture_source{nullptr};
   TextBox pcm_rate{nullptr}, pcm_bits{nullptr};
   TextBlock port{nullptr};
@@ -267,6 +269,7 @@ struct MainWindow::Impl {
 
   void VolumeInput() {
     using Xaml::Input::PointerEventHandler;
+    EnableVolumeWheel(volume, volume, wheel_delta, dragging);
     volume.AddHandler(UIElement::PointerPressedEvent(), winrt::box_value(PointerEventHandler(
         [this](auto&&, auto&&) {
           dragging = true;
@@ -679,6 +682,7 @@ void MainWindow::SetVolume(std::optional<std::uint32_t> value) {
   impl_->volume_card.Visibility(value ? Visibility::Visible : Visibility::Collapsed);
   if (!value) {
     impl_->dragging = false;
+    impl_->wheel_delta = 0;
     impl_->pending_volume.reset();
     return;
   }
