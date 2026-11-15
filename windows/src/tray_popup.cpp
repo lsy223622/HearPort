@@ -80,6 +80,7 @@ struct TrayPopup::Impl {
   int entrance_offset = 0;
   int frame_top_inset = 0;
   bool frame_margins_supported = false;
+  short next_frame_top_inset = 0;
   Dispatching::DispatcherQueueTimer volume_timer{nullptr};
   std::chrono::steady_clock::time_point volume_transition_start;
   double volume_progress = 0, volume_from = 0;
@@ -93,6 +94,7 @@ struct TrayPopup::Impl {
   DesktopAcrylicController acrylic{nullptr};
   SystemBackdropConfiguration backdrop{nullptr};
   Grid content{nullptr};
+  StackPanel body{nullptr};
   Border frame{nullptr};
   Grid volume_row{nullptr};
   Grid slider_surface{nullptr};
@@ -310,14 +312,22 @@ struct TrayPopup::Impl {
     }
   }
 
-  void ResizeForVolume() {
+  void ApplyFrameInset(short top) {
+    const FRAME_MARGIN margins{1, 1, std::max<short>(1, top), 1};
+    DwmSetWindowAttribute(hwnd, DWMWA_BORDER_MARGINS, &margins, sizeof(margins));
+    frame_top_inset = top;
+  }
+
+  void ResizeForVolume(bool animate = false) {
     if (frame_margins_supported) {
-      const double inset = kVolumeSpace * (1 - volume_progress);
-      const auto top = static_cast<short>(std::lround(inset * popup_width / kPopupWidth));
-      const FRAME_MARGIN margins{1, 1, static_cast<short>(std::max(1, 2 * top)), 1};
-      DwmSetWindowAttribute(hwnd, DWMWA_BORDER_MARGINS, &margins, sizeof(margins));
-      frame_top_inset = top;
-      frame.Margin({0, inset, 0, 0});
+      const double scale = static_cast<double>(popup_width) / kPopupWidth;
+      const auto top = static_cast<short>(std::lround(kVolumeSpace * (1 - volume_progress) * scale));
+      body.Translation({0, static_cast<float>(top / scale), 0});
+      // The native edge updates before WinUI presents translations made in
+      // this tick. Advance it to the inset submitted on the previous tick.
+      const auto native_top = animate ? next_frame_top_inset : top;
+      next_frame_top_inset = top;
+      if (!animate || native_top != frame_top_inset) ApplyFrameInset(native_top);
       return;
     }
     const int height = static_cast<int>(std::lround(
@@ -333,8 +343,8 @@ struct TrayPopup::Impl {
     const double t = std::clamp(elapsed / 220.0, 0.0, 1.0);
     const double eased = t * t * (3 - 2 * t);
     SetVolumeProgress(std::lerp(volume_from, volume_target ? 1.0 : 0.0, eased));
-    ResizeForVolume();
-    if (t == 1) volume_timer.Stop();
+    ResizeForVolume(true);
+    if (t == 1 && frame_top_inset == next_frame_top_inset) volume_timer.Stop();
   }
 
   void StartVolumeTransition() {
@@ -486,7 +496,8 @@ struct TrayPopup::Impl {
     footer_definition.Height({1, GridUnitType::Auto});
     content.RowDefinitions().Append(body_definition);
     content.RowDefinitions().Append(footer_definition);
-    StackPanel body;
+    body = StackPanel();
+    body.VerticalAlignment(VerticalAlignment::Top);
     body.Padding({18, 14, 18, 10});
     Grid header_row;
     StackPanel header;
