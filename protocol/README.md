@@ -17,7 +17,8 @@ as signed little-endian PCM in the smallest whole-byte container, with Float32LE
 at 32 bits. A block at index `source_frame / 120` carries the difference
 between consecutive cumulative sample counts at 400 blocks per second,
 rounded down. Reliable timed streams use this length to parse kind 7 alongside
-fixed-size kind 0 records.
+fixed-size kind 0 records. Senders can still use kind 0 for 48 kHz stereo
+Float32LE PCM and retain that format for receivers without bit 4096.
 
 Opus uses the existing timed kind 5 records and u16-length Reliable framing.
 Logical sequence numbers still represent 120 source frames, so a 480-frame
@@ -30,7 +31,7 @@ bounded pending-window losses rather than replacing the stream at the live edge.
 sender and the Swift receiver. It is copied from the normative v1 design
 documents and remains the source of truth for field numbers and message
 semantics. The repository uses a dependency-free, schema-shaped codec in
-`core/wire/control_message.cpp` and `ControlMessages.swift` so the reference
+`core/src/wire/control_message.cpp` and `ControlMessages.swift` so the reference
 and Windows builds do not silently fall back to ad-hoc JSON or a second wire
 format; platform builds may replace that adapter with generated protobuf
 bindings only when the serialized bytes remain identical.
@@ -40,7 +41,7 @@ build and reference tests:
 
 - `hearport/1` ALPN;
 - UDP port `52137` by default;
-- 48 kHz, stereo, Float32LE PCM;
+- 48 kHz stereo Float32LE PCM for the fixed-format AUDIO payload;
 - 120 frames and 960 PCM bytes per AUDIO application datagram;
 - 968 bytes for the complete AUDIO application payload;
 - 64 KiB maximum serialized control message.

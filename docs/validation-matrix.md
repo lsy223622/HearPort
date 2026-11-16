@@ -1,5 +1,20 @@
 # HearPort 0.1.0 validation matrix
 
+## WinUI 3 desktop and variable PCM (2026-11-16)
+
+- Merged source `4b0ec90fd6e46092f525d04a9b2793d27f89c558` uses a WinUI 3
+  main window and tray flyout. Windows [Release CI](https://github.com/lsy223622/HearPort/actions/runs/43739678400)
+  passed the portable package checks and the GUI smoke test covering navigation,
+  capture-source selection, and opening and dismissing the disconnected flyout.
+  A separate local Release run passed all 26 CTest checks.
+- The matching [iOS CI](https://github.com/lsy223622/HearPort/actions/runs/43739678393)
+  passed the receiver package tests and unsigned archive workflow. Protocol tests
+  cover variable PCM and mixed fixed/variable records on reliable streams.
+- On the development PC, the user confirmed Windows could change the iPad
+  system volume during playback and after locking the iPad. The user also
+  checked light mode and Windows display scaling. These are interaction
+  observations on development builds.
+
 ## Background playback recovery and system media controls (2026-11-07)
 
 - Application source `39ce86132fbe4b439d47fe3882d3f4c35a1bce61` adds a single, nonrenewing background recovery allowance capped at 20 seconds after eligible playback transport loss; recovery success, explicit disconnect, authentication rejection, diagnostics/calibration and system expiry end the allowance. Audio interruption recovery respects `shouldResume`; media-service reset recreates audio objects and requires an explicit playback request. Now Playing presents live PC audio with play/pause/stop controls; play uses the saved route and remembered authentication, and stop pauses automatic recovery. Diagnostic sessions disable media commands.

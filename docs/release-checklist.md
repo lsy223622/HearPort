@@ -1,5 +1,13 @@
 # HearPort 0.1.0 release checklist
 
+## WinUI 3 merge (2026-11-16)
+
+- [x] Windows Release and iOS receiver workflows passed on the same merged
+  source. See the [validation matrix](validation-matrix.md#winui-3-desktop-and-variable-pcm-2026-11-16).
+- [ ] For distribution, verify the downloaded artifact hashes and launch the
+  extracted Windows ZIP on a clean Windows 11 environment with Windows App
+  Runtime 2.6.5 (x64) or later. Sign the matching IPA for device installation.
+
 ## Chinese UI font fix (2026-10-25)
 
 - [x] Confirmed missing Segoe UI font linking in the user's Sandbox with Microsoft YaHei UI installed. A direct Chinese glyph test failed under the old font choice and passed with the corrected selection.
