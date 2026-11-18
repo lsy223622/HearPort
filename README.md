@@ -33,6 +33,10 @@ it does not require an inbound LAN TCP rule. See `INSTALL.md` in the Windows ZIP
 or the [Windows onboarding guide](https://github.com/lsy223622/HearPort/blob/main/windows/installer/README.md)
 for connection and firewall details.
 
+Daily reconnect behavior, iPad App Shortcuts, the foreground URL shortcut kit
+and the on-device automation verification matrix are documented in
+the [connection automation guide](https://github.com/lsy223622/HearPort/blob/main/docs/connection-automation.md).
+
 ## Windows tray
 
 Click the tray icon for connection status, sender controls and shortcuts to
@@ -124,10 +128,6 @@ documented in the [compression test guide](https://github.com/lsy223622/HearPort
 
 ## Release builds in GitHub Actions
 
-Daily reconnect behavior, iPad App Shortcuts, the foreground URL shortcut kit
-and the on-device automation verification matrix are documented in
-the [connection automation guide](https://github.com/lsy223622/HearPort/blob/main/docs/connection-automation.md).
-
 The `Windows Release package` workflow builds and tests Release on Windows,
 collects dependency notices and produces `HearPort-windows-release` containing
 the portable ZIP, matching source ZIP and SHA-256 manifest. Its vcpkg revision
@@ -137,6 +137,10 @@ when preparing a release; download these artifacts as the distribution files.
 Both workflows also support manual runs from the Actions page.
 
 ## Local development verification
+
+For implementation details, see the [wire protocol](https://github.com/lsy223622/HearPort/blob/main/protocol/README.md),
+[pairing and authentication](https://github.com/lsy223622/HearPort/blob/main/docs/security-implementation.md), and
+[validation matrix](https://github.com/lsy223622/HearPort/blob/main/docs/validation-matrix.md).
 
 Use Python 3.11+, Rust/Cargo 1.87+, CMake and a VS 2022 x64 developer shell.
 Install `msquic:x64-windows` in vcpkg and set `VCPKG_ROOT` to that checkout.
