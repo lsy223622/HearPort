@@ -318,10 +318,10 @@ public final class PlatformAudioOutputController {
             1,
             resampler.requiredInputFrames(outputFrameCount: frameCount, ratio: ratio)
         )
-        let samples = receiver.renderFrames(sourceFrames)
-        if receiver.isRenderActive && !receiver.isConcealing { receivedFramesRendered.increment(by: UInt64(sourceFrames)) }
+        let rendered = receiver.renderOutput(sourceFrames)
+        if rendered.receivedFrames > 0 { receivedFramesRendered.increment(by: UInt64(rendered.receivedFrames)) }
         let output = resampler.process(
-            samples,
+            rendered.samples,
             outputFrameCount: frameCount,
             ratio: ratio
         )

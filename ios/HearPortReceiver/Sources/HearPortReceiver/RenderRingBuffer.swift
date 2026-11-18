@@ -37,33 +37,31 @@ final class RenderRingBuffer: @unchecked Sendable {
     }
 
     @discardableResult
-    func push(_ interleavedStereo: [Float]) -> Int {
-        guard interleavedStereo.count.isMultiple(of: 2) else { return 0 }
-        return interleavedStereo.withUnsafeBufferPointer { samples in
-            Int(hearport_audio_ring_push(storage, samples.baseAddress,
-                                         interleavedStereo.count / 2))
-        }
+    func push(_ interleavedStereo: [Float], received: Bool = true) -> Int {
+        pushTimed(interleavedStereo, sourceBegin: .max, sourceEnd: .max, capturedAt: .max,
+                  received: received)
     }
 
-    func pop(frames requestedFrames: Int) -> (samples: [Float], renderedFrames: Int) {
-        guard requestedFrames > 0 else { return ([], 0) }
+    func pop(frames requestedFrames: Int) -> (samples: [Float], renderedFrames: Int, receivedFrames: Int) {
+        guard requestedFrames > 0 else { return ([], 0, 0) }
         var output = Array(repeating: Float.zero, count: requestedFrames * 2)
         let age = maximumAge.load(), uncertainty = clockUncertainty.load()
         let permittedAge = age == 0 ? 0 : (age > uncertainty ? age - uncertainty : 1)
+        var received = 0
         let rendered = output.withUnsafeMutableBufferPointer { samples in
             Int(hearport_audio_ring_pop_at(storage, samples.baseAddress, requestedFrames,
-                DispatchTime.now().uptimeNanoseconds, permittedAge))
+                DispatchTime.now().uptimeNanoseconds, permittedAge, &received))
         }
-        return (output, rendered)
+        return (output, rendered, received)
     }
 
     @discardableResult
     func pushTimed(_ samples: [Float], sourceBegin: UInt64, sourceEnd: UInt64,
-                    capturedAt: UInt64, deadline: UInt64 = .max) -> Int {
+                    capturedAt: UInt64, deadline: UInt64 = .max, received: Bool = true) -> Int {
         guard samples.count.isMultiple(of: 2) else { return 0 }
         return samples.withUnsafeBufferPointer {
             Int(hearport_audio_ring_push_timed(storage, $0.baseAddress, samples.count / 2,
-                                             sourceBegin, sourceEnd, capturedAt, deadline))
+                                             sourceBegin, sourceEnd, capturedAt, deadline, received))
         }
     }
 }

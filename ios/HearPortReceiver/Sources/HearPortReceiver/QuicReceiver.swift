@@ -770,7 +770,11 @@ public final class HearPortReceiver {
     }
 
     public func renderFrames(_ frameCount: Int) -> [Float] {
-        guard frameCount > 0 else { return [] }
+        renderOutput(frameCount).samples
+    }
+
+    func renderOutput(_ frameCount: Int) -> (samples: [Float], receivedFrames: Int) {
+        guard frameCount > 0 else { return ([], 0) }
         let startedAt = DispatchTime.now().uptimeNanoseconds
         let output = renderRing.pop(frames: frameCount)
         renderRequestFramesAtomic.store(UInt64(frameCount))
@@ -780,7 +784,7 @@ public final class HearPortReceiver {
             underflowFrames: frameCount - output.renderedFrames,
             overflowFrames: 0
         )
-        return output.samples
+        return (output.samples, output.receivedFrames)
     }
 
     private func pumpLocked() {
@@ -800,7 +804,7 @@ public final class HearPortReceiver {
                     at: DispatchTime.now().uptimeNanoseconds,
                     fillPackets: jitter!.fillPackets
                 )
-                renderRing.push(Self.decodePCM(concealed))
+                renderRing.push(Self.decodePCM(concealed), received: false)
             } else {
                 break
             }
@@ -937,7 +941,7 @@ public final class HearPortReceiver {
                     sequence: sequence, decision: .concealed, at: now, fillPackets: jitter!.fillPackets)
                 concealingAtomic.store(1)
                 renderRing.pushTimed(concealment.conceal(frames: 120), sourceBegin: position,
-                                      sourceEnd: position + 120, capturedAt: captured, deadline: .max)
+                                      sourceEnd: position + 120, capturedAt: captured, received: false)
             } else { break }
         }
         jitterFillFramesAtomic.store(UInt64((jitter?.contiguousPackets ?? 0) * 120))
