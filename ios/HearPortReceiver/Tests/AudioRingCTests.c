@@ -114,12 +114,15 @@ static void test_timed_source_progress_and_expiry(void) {
     HearPortAudioRing *ring = hearport_audio_ring_create(8);
     const float samples[8] = {1, -1, 2, -2, 3, -3, 4, -4};
     float output[8] = {0};
-    assert(hearport_audio_ring_push_timed(ring, samples, 4, 100, 106, 1000000000, UINT64_MAX) == 4);
+    size_t received = 0;
+    assert(hearport_audio_ring_push_timed(ring, samples, 4, 100, 106, 1000000000, UINT64_MAX, true) == 4);
     assert(hearport_audio_ring_source_fill(ring) == 6);
-    assert(hearport_audio_ring_pop_at(ring, output, 2, 1010000000, 90000000) == 2);
+    assert(hearport_audio_ring_pop_at(ring, output, 2, 1010000000, 90000000, &received) == 2);
+    assert(received == 2);
     assert(hearport_audio_ring_last_source(ring) == 103);
     assert(hearport_audio_ring_source_fill(ring) == 3);
-    assert(hearport_audio_ring_pop_at(ring, output, 2, 1100000000, 90000000) == 0);
+    assert(hearport_audio_ring_pop_at(ring, output, 2, 1100000000, 90000000, &received) == 0);
+    assert(received == 0);
     assert(hearport_audio_ring_last_source(ring) == 106);
     assert(hearport_audio_ring_expired_frames(ring) == 2);
     hearport_audio_ring_destroy(ring);
@@ -129,14 +132,26 @@ static void test_uncertainty_deadline_survives_staging(void) {
     HearPortAudioRing *ring = hearport_audio_ring_create(8);
     const float samples[8] = {1, -1, 2, -2, 3, -3, 4, -4};
     float output[8] = {0};
-    assert(hearport_audio_ring_push_timed(ring, samples, 4, 0, 4, 1000000000, 1060000000) == 4);
-    assert(hearport_audio_ring_pop_at(ring, output, 4, 1070000000, 99000000) == 0);
+    assert(hearport_audio_ring_push_timed(ring, samples, 4, 0, 4, 1000000000, 1060000000, true) == 4);
+    assert(hearport_audio_ring_pop_at(ring, output, 4, 1070000000, 99000000, NULL) == 0);
     assert(hearport_audio_ring_last_source(ring) == 4);
     assert(hearport_audio_ring_expired_frames(ring) == 4);
     hearport_audio_ring_destroy(ring);
 }
 
+static void test_received_frames_exclude_concealment_and_underflow(void) {
+    HearPortAudioRing *ring = hearport_audio_ring_create(8);
+    float silence[8] = {0};
+    size_t received = 0;
+    assert(hearport_audio_ring_push(ring, silence, 1) == 1);
+    assert(hearport_audio_ring_push_timed(ring, silence, 2, 1, 3, 0, UINT64_MAX, false) == 2);
+    assert(hearport_audio_ring_pop_at(ring, silence, 4, 0, 0, &received) == 3);
+    assert(received == 1);
+    hearport_audio_ring_destroy(ring);
+}
+
 int main(void) {
+    test_received_frames_exclude_concealment_and_underflow();
     test_timed_source_progress_and_expiry();
     test_uncertainty_deadline_survives_staging();
     test_order_capacity_and_underflow();
