@@ -34,7 +34,7 @@ if(HEARPORT_CARGO_EXECUTABLE)
     set_property(
       TARGET hearport_spake2_provider
       APPEND
-      PROPERTY INTERFACE_LINK_LIBRARIES "ws2_32;userenv;ntdll")
+      PROPERTY INTERFACE_LINK_LIBRARIES "ws2_32;userenv;ntdll;synchronization")
   endif()
   add_dependencies(hearport_spake2_provider hearport_spake2_provider_build)
   set(HEARPORT_HAS_SPAKE2_PROVIDER ON)
