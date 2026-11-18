@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 import unittest
 
@@ -43,7 +44,27 @@ class ProtocolConstantsTests(unittest.TestCase):
             constants = json.load(handle)
 
         self.assertEqual(constants["diagnostic_report_chunk_max_bytes"], 60 * 1024)
-        self.assertEqual(constants["feature_bits"]["diagnostics_upload"], 1)
+
+    def test_feature_assignments_match_both_endpoints(self):
+        constants = json.loads((ROOT / "protocol/protocol_constants.json").read_text())
+        features = constants["feature_bits"]
+        bits = list(features.values())
+        self.assertEqual(len(set(bits)), len(bits))
+        self.assertTrue(all(bit > 0 and bit & (bit - 1) == 0 for bit in bits))
+        self.assertEqual(features["diagnostics_upload"], 1)
+
+        cpp = (ROOT / "core/include/hearport/wire/control_message.h").read_text()
+        swift = (ROOT / "ios/HearPortReceiver/Sources/HearPortReceiver/ControlMessages.swift").read_text()
+        swift_features = swift.split("public enum ControlFeature {", 1)[1].split("}", 1)[0]
+        for declarations, pattern in [
+            (cpp, r"kFeature(\w+)\s*=\s*(\d+)u;"),
+            (swift_features, r"static let (\w+): UInt32\s*=\s*(\d+)"),
+        ]:
+            assignments = {
+                re.sub(r"(?<=[a-z])(?=[A-Z])", "_", name).lower(): int(value)
+                for name, value in re.findall(pattern, declarations)
+            }
+            self.assertEqual(assignments, features)
 
 
 if __name__ == "__main__":
