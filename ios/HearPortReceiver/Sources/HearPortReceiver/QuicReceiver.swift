@@ -1120,6 +1120,7 @@ public final class HearPortQuicTransport {
     public var onRemoteAddress: ((String) -> Void)?
 
     private let queue = DispatchQueue(label: "com.hearport.quic")
+    private let queueKey = DispatchSpecificKey<Bool>()
     private let diagnostics: HearPortDiagnostics
     private var group: NWConnectionGroup?
     private var controlStream: NWConnection?
@@ -1149,6 +1150,7 @@ public final class HearPortQuicTransport {
                 audioMode: AudioTransportMode = .datagram) {
         self.diagnostics = diagnostics
         self.audioMode = audioMode
+        queue.setSpecific(key: queueKey, value: true)
         diagnostics.log(
             .debug,
             category: .transport,
@@ -1362,6 +1364,11 @@ public final class HearPortQuicTransport {
 
     func perform(_ action: @escaping () -> Void) { queue.async(execute: action) }
 
+    func performSync(_ action: () -> Void) {
+        if DispatchQueue.getSpecific(key: queueKey) == true { action() }
+        else { queue.sync(execute: action) }
+    }
+
     public func sendControl(
         _ payload: Data,
         completion: @escaping @Sendable (NWError?) -> Void = { _ in }
@@ -1387,6 +1394,10 @@ public final class HearPortQuicTransport {
     }
 
     public func cancel(notify: Bool = true) {
+        performSync { cancelOnQueue(notify: notify) }
+    }
+
+    private func cancelOnQueue(notify: Bool) {
         attemptID = UUID()
         probeTimer?.cancel()
         probeTimer = nil
@@ -1587,15 +1598,12 @@ public final class HearPortQuicTransport {
                     do {
                         try records.finish()
                     } catch ReliableAudioRecordsError.incompleteRecord {
-                        guard let generation = records.generation else {
-                            throw ReliableAudioRecordsError.incompleteRecord
-                        }
                         if self.audioStream === stream { self.audioStream = nil }
                         stream.cancel()
                         self.diagnostics.log(.warning, category: .transport,
                                              message: "reliable_audio_flow_interrupted",
                                              fields: ["event": "reliable_audio_flow_interrupted",
-                                                      "generation": "\(generation)"])
+                                                      "generation": records.generation.map { String($0) } ?? "unknown"])
                         return
                     }
                     if self.audioStream === stream {
@@ -1797,7 +1805,22 @@ public final class HearPortQuicTransport {
                     fields: ["event": "control_read_failed", "error": "\(error)"]
                 )
             }
-            guard error == nil, !isComplete else { return }
+            guard self.controlStream === stream else { return }
+            if error != nil {
+                self.cancel(notify: false)
+                self.updateState(.failed)
+                return
+            }
+            if isComplete {
+                // Flush a reply queued while handling the peer's final control message.
+                stream.send(content: nil, contentContext: .finalMessage, isComplete: true,
+                            completion: .contentProcessed { [weak self] error in
+                    guard let self, self.controlStream === stream else { return }
+                    self.cancel(notify: false)
+                    self.updateState(error == nil ? .closed : .failed)
+                })
+                return
+            }
             self.receiveControl(on: stream)
         }
     }

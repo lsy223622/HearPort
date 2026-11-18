@@ -401,16 +401,20 @@ public final class ReceiverControlSession {
         transport.perform { [self] in
             guard !ending else { return }
             endCompletion = completion
-            guard ready else { cancel(); return }
+            guard ready else { cancelOnTransportQueue(); return }
             ending = true
             send(.sessionEnd(reason: reason))
             DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(500)) { [self] in
-                transport.perform { [self] in if ending { cancel() } }
+                transport.perform { [self] in if ending { cancelOnTransportQueue() } }
             }
         }
     }
 
     public func cancel() {
+        transport.performSync { cancelOnTransportQueue() }
+    }
+
+    private func cancelOnTransportQueue() {
         let completion = endCompletion
         endCompletion = nil
         ending = false
@@ -655,7 +659,7 @@ public final class ReceiverControlSession {
             })
         case .sessionEndAck:
             guard ending else { throw ControlMessageError.invalidMessage }
-            cancel()
+            cancelOnTransportQueue()
         case let .sessionReady(features):
             switch mode {
             case .remembered:

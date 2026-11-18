@@ -37,8 +37,25 @@ class EchoProtocol(QuicConnectionProtocol):
             print(f"stream={event.stream_id} bytes={len(event.data)} fin={event.end_stream}", flush=True)
             if not event.data:
                 return
-            self._quic.send_stream_data(event.stream_id, event.data, end_stream=False)
             self.reliable_requests.extend(event.data)
+            end_control = b"CONTROL_FIN" in self.reliable_requests
+            self._quic.send_stream_data(event.stream_id, event.data, end_stream=end_control)
+            if end_control:
+                self.transmit()
+                return
+            if b"RELIABLE_PARTIAL_PREFACE" in self.reliable_requests:
+                old_stream = self._quic.get_next_available_stream_id(is_unidirectional=True)
+                self._quic.send_stream_data(old_stream, bytes(3), end_stream=True)
+                self.reliable_requests.clear()
+
+                def send_replacement():
+                    stream = self._quic.get_next_available_stream_id(is_unidirectional=True)
+                    preface = (1).to_bytes(4, "big") + (2).to_bytes(4, "big")
+                    packet = (1).to_bytes(4, "big") + (4).to_bytes(4, "big") + bytes(960)
+                    self._quic.send_stream_data(stream, preface + packet, end_stream=True)
+                    self.transmit()
+
+                asyncio.get_running_loop().call_later(0.1, send_replacement)
             for command, sequence, generation, kind, frames, payload in [
                 (b"COMPRESSION_TEST_1", 0, 2, 6, 120, bytes([17]) * 480),
                 (b"COMPRESSION_TEST_2", 24000, 4, 5, 480, bytes([161]) * 320),
