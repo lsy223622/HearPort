@@ -46,7 +46,7 @@ message SessionEndAck {}
 message DiagnosticsStart {
   bytes session_id = 1;         // exactly 16 bytes
   uint32 stream_id = 2;         // non-zero
-  uint32 duration_seconds = 3;  // 60 through 600
+  uint32 duration_seconds = 3;  // 60 through 86400
 }
 
 message DiagnosticsEnd {

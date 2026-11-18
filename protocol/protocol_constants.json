@@ -14,7 +14,19 @@
   "control_message_max_bytes": 65536,
   "diagnostic_report_chunk_max_bytes": 61440,
   "feature_bits": {
-    "diagnostics_upload": 1
+    "diagnostics_upload": 1,
+    "reliable_audio": 2,
+    "network_probe": 4,
+    "network_probe_repeat": 8,
+    "coordinated_audio": 16,
+    "music_test": 32,
+    "environment_calibration": 64,
+    "timed_diagnostics": 128,
+    "compression_music": 256,
+    "live_compression": 512,
+    "adaptive_calibration": 1024,
+    "system_volume": 2048,
+    "adaptive_pcm": 4096
   },
   "audio_header_bytes": 8
 }

@@ -36,8 +36,8 @@ and Windows builds do not silently fall back to ad-hoc JSON or a second wire
 format; platform builds may replace that adapter with generated protobuf
 bindings only when the serialized bytes remain identical.
 
-`protocol_constants.json` contains the fixed v1 wire constants used by the
-build and reference tests:
+`protocol_constants.json` lists the negotiated feature bits and the baseline
+v1 wire constants checked by the reference tests:
 
 - `hearport/1` ALPN;
 - UDP port `52137` by default;
