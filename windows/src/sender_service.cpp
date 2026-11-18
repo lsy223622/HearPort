@@ -148,10 +148,6 @@ bool SenderService::Start() {
     if (closed_handler_) closed_handler_();
   };
 
-  if (!quic_->Start(options_, std::move(callbacks))) {
-    return false;
-  }
-
   {
     std::lock_guard lock(queue_mutex_);
     stop_worker_ = false;
@@ -164,11 +160,14 @@ bool SenderService::Start() {
   control_decoder_.Reset();
   stop_probe_.store(false);
   stop_music_.store(false);
-  if (!network_probe_) audio_thread_ = std::thread([this] { AudioWorker(); });
   {
     std::lock_guard lock(diagnostics_mutex_);
     stop_diagnostics_ = false;
   }
+  if (!quic_->Start(options_, std::move(callbacks))) {
+    return false;
+  }
+  if (!network_probe_) audio_thread_ = std::thread([this] { AudioWorker(); });
   diagnostics_thread_ = std::thread([this] { DiagnosticsWorker(); });
   started_ = true;
   return true;
@@ -1418,7 +1417,8 @@ void SenderService::AudioWorker() {
       { std::lock_guard lock(reliable_mutex_);
         generation = reliable_mode_.load() ? std::max(1u, reliable_generation_) : 1; }
       try {
-        compressed = live_encoder_.Push(queued.packet, queued.captured_at_ns, queued.source_frame, generation);
+        compressed = live_encoder_.Push(queued.packet, queued.captured_at_ns, queued.source_frame,
+                                        generation, queued.queued_at_ns);
       } catch (const std::exception& error) {
         LogDiagnostic(std::string("live_audio_encode_failed error=") + error.what());
         audio_metrics_.record_dropped(false); continue;
@@ -1458,24 +1458,26 @@ void SenderService::AudioWorker() {
       const auto bytes = wire::EncodeAudioDatagram(queued.packet);
       encoded.assign(bytes.begin(), bytes.end());
     }
+    const bool reliable = reliable_mode_.load();
+    const bool expects_send_callback = !reliable || compressed.has_value();
     bool trace_this_packet = false;
     {
       std::lock_guard debug_lock(debug_mutex_);
       trace_this_packet =
           debug_trace_.IsActive() &&
           active_debug_stream_id_ == queued.packet.stream_id;
-      if (trace_this_packet && !reliable_mode_.load()) ++outstanding_debug_sends_;
+      if (trace_this_packet && expects_send_callback) ++outstanding_debug_sends_;
     }
     const auto send_at_ns = MonotonicNanoseconds();
     const bool sent = compressed ? quic_->SendProbe(encoded, compressed->stream_id,
-        compressed->sequence, reliable_mode_.load()).status == ProbeSendStatus::accepted :
+        compressed->sequence, reliable).status == ProbeSendStatus::accepted :
         quic_->SendAudio(encoded);
     if (trace_this_packet) {
-      debug_trace_.RecordPacket(queued.packet.sequence,
-                                queued.captured_at_ns,
-                                queued.queued_at_ns,
+      debug_trace_.RecordPacket(compressed ? compressed->sequence : queued.packet.sequence,
+                                compressed ? static_cast<std::int64_t>(compressed->captured_at_ns) : queued.captured_at_ns,
+                                compressed ? live_encoder_.first_queued_at_ns() : queued.queued_at_ns,
                                 send_at_ns, sent);
-      if (!sent && !reliable_mode_.load()) CompleteDebugSend(queued.packet.stream_id);
+      if (!sent && expects_send_callback) CompleteDebugSend(queued.packet.stream_id);
     }
     if (sent) {
       audio_metrics_.record_sent();
