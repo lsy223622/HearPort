@@ -28,10 +28,12 @@ int main() {
     packet.stream_id = 9;
     for (unsigned sequence = 0; sequence < 8; ++sequence) {
       packet.sequence = sequence;
+      const auto queued = 1'001'000'000ll + sequence * 2'500'000ll;
       auto record = encoder.Push(packet, 1'000'000'000ull + sequence * 2'500'000,
-                                 sequence * 120ull, 1);
+                                 sequence * 120ull, 1, queued);
       assert(record.has_value() == ((sequence + 1) % (frames / 120) == 0));
       if (record) {
+        assert(encoder.first_queued_at_ns() == 1'001'000'000ll + record->sequence * 2'500'000ll);
         assert(record->sequence == sequence + 1 - frames / 120);
         assert(record->source_frame == record->sequence * 120ull);
         assert(record->captured_at_ns == 997'500'000ull + record->sequence * 2'500'000);
@@ -49,21 +51,21 @@ int main() {
   assert(!encoder.Configure(256000, 121));
   assert(encoder.Configure(192000, 480));
   hearport::wire::AudioDatagram p{}; p.stream_id = 1;
-  assert(!encoder.Push(p, 1'000'000'000, 0, 1));
+  assert(!encoder.Push(p, 1'000'000'000, 0, 1, 0));
   // A dropped PCM unit must not be joined to stale samples or shift the wire alignment.
-  p.sequence = 3; assert(!encoder.Push(p, 1'007'500'000, 360, 1));
+  p.sequence = 3; assert(!encoder.Push(p, 1'007'500'000, 360, 1, 0));
   for (unsigned seq = 4; seq < 8; ++seq) {
     p.sequence = seq;
-    const auto record = encoder.Push(p, 1'000'000'000 + seq * 2'500'000ull, seq * 120, 1);
+    const auto record = encoder.Push(p, 1'000'000'000 + seq * 2'500'000ull, seq * 120, 1, 0);
     assert(record.has_value() == (seq == 7));
     if (record) assert(record->sequence == 4);
   }
   assert(encoder.Configure(192000, 480));
-  p.sequence = 0; assert(!encoder.Push(p, 1'000'000'000, 0, 1));
-  p.sequence = 1; assert(!encoder.Push(p, 5'000'000'000, 120, 1));
+  p.sequence = 0; assert(!encoder.Push(p, 1'000'000'000, 0, 1, 0));
+  p.sequence = 1; assert(!encoder.Push(p, 5'000'000'000, 120, 1, 0));
   for (unsigned seq = 4; seq < 8; ++seq) {
     p.sequence = seq;
-    auto record = encoder.Push(p, 6'000'000'000 + seq * 2'500'000ull, seq * 120, 1);
+    auto record = encoder.Push(p, 6'000'000'000 + seq * 2'500'000ull, seq * 120, 1, 0);
     if (record) assert(record->captured_at_ns > 5'900'000'000);
   }
 }

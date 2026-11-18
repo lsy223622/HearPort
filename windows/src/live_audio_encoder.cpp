@@ -20,7 +20,8 @@ bool LiveAudioEncoder::Configure(std::uint32_t bitrate, std::uint32_t frames) {
 }
 
 std::optional<wire::TimedAudioRecord> LiveAudioEncoder::Push(const wire::AudioDatagram& packet,
-    std::uint64_t captured, std::uint64_t source_frame, std::uint32_t generation) {
+    std::uint64_t captured, std::uint64_t source_frame, std::uint32_t generation,
+    std::int64_t queued_at_ns) {
   if (!encoder_) return std::nullopt;
   if (!samples_.empty() && (packet.sequence != expected_ ||
       packet.stream_id != pending_.stream_id || generation != pending_.generation)) samples_.clear();
@@ -32,6 +33,7 @@ std::optional<wire::TimedAudioRecord> LiveAudioEncoder::Push(const wire::AudioDa
   }
   if (samples_.empty()) {
     if (packet.sequence % (frames_ / 120) != 0) return std::nullopt;
+    first_queued_at_ns_ = queued_at_ns;
     pending_ = {};
     pending_.stream_id = packet.stream_id; pending_.generation = generation;
     pending_.sequence = packet.sequence; pending_.source_frame = source_frame;
