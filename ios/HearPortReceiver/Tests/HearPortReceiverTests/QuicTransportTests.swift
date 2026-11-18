@@ -5,6 +5,26 @@ import XCTest
 @testable import HearPortReceiver
 
 final class QuicTransportTests: XCTestCase {
+    func testCancelCompletesOnTransportQueueBeforeReturning() {
+        let transport = HearPortQuicTransport()
+        let key = DispatchSpecificKey<Bool>()
+        let caller = DispatchQueue(label: "test.cancel.caller")
+        caller.setSpecific(key: key, value: true)
+        let closed = expectation(description: "Cancellation delivered")
+        let returned = expectation(description: "Cancellation returned")
+        transport.onStateChange = { state in
+            XCTAssertEqual(state, .closed)
+            XCTAssertNil(DispatchQueue.getSpecific(key: key))
+            transport.cancel(notify: false)
+            closed.fulfill()
+        }
+        caller.async {
+            transport.cancel()
+            returned.fulfill()
+        }
+        wait(for: [closed, returned], timeout: 2, enforceOrder: true)
+    }
+
     func testReportsTheActualConnectedRemoteAddress() throws {
         guard ProcessInfo.processInfo.environment["HEARPORT_QUIC_INTEGRATION"] == "1" else {
             throw XCTSkip("Requires the loopback QUIC echo server")
@@ -408,6 +428,62 @@ final class QuicTransportTests: XCTestCase {
         transport.connect(host: "127.0.0.1", port: 44330,
                           tlsPolicy: .pairing(onPeerSPKIHash: { _ in }))
         wait(for: [audio], timeout: 15)
+    }
+
+    func testControlFINDeliversFinalBytesThenClosesTransport() throws {
+        guard ProcessInfo.processInfo.environment["HEARPORT_QUIC_INTEGRATION"] == "1" else {
+            throw XCTSkip("Requires the loopback QUIC echo server")
+        }
+        let transport = HearPortQuicTransport()
+        let closed = expectation(description: "Control FIN closes the transport")
+        let command = Data("CONTROL_FIN".utf8)
+        let echoed = expectation(description: "Final control frame received")
+        let echo = EchoState()
+        transport.onControlData = { data in
+            do {
+                for (_, payload) in try echo.append(data) {
+                    XCTAssertEqual(payload, command)
+                    echoed.fulfill()
+                }
+            } catch { XCTFail("Invalid final frame: \(error)") }
+        }
+        transport.onStateChange = { state in
+            if state == .ready { try? transport.sendControl(command) }
+            if state == .closed {
+                closed.fulfill()
+            }
+        }
+        defer { transport.cancel(notify: false) }
+        transport.connect(host: "127.0.0.1", port: 44330, tlsPolicy: .pairing(onPeerSPKIHash: { _ in }))
+        wait(for: [echoed, closed], timeout: 15, enforceOrder: true)
+    }
+
+    func testPartialReliablePrefacePermitsReplacementStream() throws {
+        guard ProcessInfo.processInfo.environment["HEARPORT_QUIC_INTEGRATION"] == "1" else {
+            throw XCTSkip("Requires the loopback QUIC echo server")
+        }
+        let transport = HearPortQuicTransport(audioMode: .reliable)
+        let resumed = expectation(description: "Replacement stream delivers audio")
+        transport.onStateChange = { state in
+            if state == .ready {
+                transport.acceptReliableAudio()
+                transport.expectReliableAudio(streamID: 1, latestReceivedSequence: { nil })
+                try? transport.sendControl(Data("RELIABLE_PARTIAL_PREFACE".utf8))
+            }
+            if state == .failed || state == .closed { XCTFail("Audio flow ended the session") }
+        }
+        transport.onReliableAudioGeneration = { streamID, generation in
+            XCTAssertEqual(streamID, 1)
+            XCTAssertEqual(generation, 2)
+            return true
+        }
+        transport.onAudioDatagram = { data in
+            XCTAssertEqual((try? AudioDatagram(encoded: data))?.sequence, 4)
+            resumed.fulfill()
+        }
+        defer { transport.cancel(notify: false) }
+        transport.connect(host: "127.0.0.1", port: 44330, tlsPolicy: .pairing(onPeerSPKIHash: { _ in }))
+        wait(for: [resumed], timeout: 15)
     }
 
     func testReliableAudioCanCycleBeyondInitialStreamLimit() throws {
