@@ -1177,9 +1177,7 @@ class Application {
       next_pcm_refresh_ = Clock::now() + std::chrono::seconds(3);
       RefreshSystemPcm();
     }
-    const bool volume_visible = (main_window_->page() == 0 && IsWindowVisible(hwnd_)) ||
-                                (tray_popup_ && tray_popup_->visible());
-    if (host_ && connected_ && volume_visible && !volume_editing_) {
+    if (host_ && connected_ && !volume_editing_) {
       host_->RequestSystemVolume(std::nullopt);
     }
     if (running_ || pin_expires_) UpdateStatus();
@@ -1296,6 +1294,7 @@ class Application {
         paired_ = hearport::windows::ProtectedCredentialStore{}.Load().has_value();
         if (connected_) {
           pin_expires_.reset();
+          if (host_) host_->RequestSystemVolume(std::nullopt);
         }
         UpdateStatus();
         return 0;
