@@ -1,5 +1,22 @@
 # HearPort 0.1.0 release checklist
 
+## Distribution artifacts
+
+Generate both release packages in GitHub Actions at the same source commit:
+`Windows Release package` → `HearPort-windows-release`, and
+`iOS receiver package tests` → `HearPort-unsigned-ipa`.
+Local build results are development verification, not the distribution source.
+
+## Before distributing
+
+- [ ] Confirm the portable Release ZIP starts and plays on a clean Windows machine without development tools; build and package commands are in the root README.
+- [ ] Install the unsigned IPA using the user's chosen signing tool; confirm first-run permissions, discovery/manual endpoint entry, LAN pairing, and remembered reconnect.
+- [ ] On the iPad, confirm USB pairing, playback, cable loss/reconnect, and fallback to the remembered LAN endpoint with Apple Windows device support installed and the device trusted.
+- [ ] Complete one finite 1–2 hour foreground playback run and check silence/recovery, app background/lock behavior, route interruption, and Windows audio-device reset.
+- [ ] Review a diagnostics export for network details before sharing it.
+
+Use the evidence boundary in [`validation-matrix.md`](validation-matrix.md) when recording results. A CI archive or short manual playback does not complete the installation or soak checks above.
+
 ## WinUI 3 merge (2026-11-16)
 
 - [x] Windows Release and iOS receiver workflows passed on the same merged
@@ -130,20 +147,3 @@
 
 - [x] Both Actions artifacts use commit `35f00d8c5adfdb6e27d724daaff6677b0172abfb`; product version 0.1.0. Download checksums, Windows payload hashes and IPA build identity verified.
 - [x] Started the Windows program from the downloaded ZIP on the development PC; MsQuic and all three VC runtime DLLs loaded from the extracted package. This does not complete clean-PC acceptance.
-
-## Distribution artifacts
-
-Generate both release packages in GitHub Actions at the same source commit:
-`Windows Release package` → `HearPort-windows-release`, and
-`iOS receiver package tests` → `HearPort-unsigned-ipa`.
-Local build results are development verification, not the distribution source.
-
-## Before distributing
-
-- [ ] Confirm the portable Release ZIP starts and plays on a clean Windows machine without development tools; build and package commands are in the root README.
-- [ ] Install the unsigned IPA using the user's chosen signing tool; confirm first-run permissions, discovery/manual endpoint entry, LAN pairing, and remembered reconnect.
-- [ ] On the iPad, confirm USB pairing, playback, cable loss/reconnect, and fallback to the remembered LAN endpoint with Apple Windows device support installed and the device trusted.
-- [ ] Complete one finite 1–2 hour foreground playback run and check silence/recovery, app background/lock behavior, route interruption, and Windows audio-device reset.
-- [ ] Review a diagnostics export for network details before sharing it.
-
-Use the evidence boundary in [`validation-matrix.md`](validation-matrix.md) when recording results. A CI archive or short manual playback does not complete the installation or soak checks above.

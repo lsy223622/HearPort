@@ -70,7 +70,7 @@ add_executable(hearport_sender_gui WIN32
 )
 set(HEARPORT_WINUI_PROJECTION_DIR "" CACHE PATH "C++/WinRT projection for Windows App SDK 2.6.5")
 if(NOT EXISTS "${HEARPORT_WINUI_PROJECTION_DIR}/winrt/Microsoft.UI.Xaml.Controls.h")
-  message(FATAL_ERROR "Set HEARPORT_WINUI_PROJECTION_DIR to the generated WinUI projection. See windows/installer/README.md.")
+  message(FATAL_ERROR "Set HEARPORT_WINUI_PROJECTION_DIR to the generated WinUI projection. See Local development verification in the root README.md.")
 endif()
 target_include_directories(hearport_sender_gui PRIVATE src "${HEARPORT_WINUI_PROJECTION_DIR}")
 target_compile_definitions(hearport_sender_gui PRIVATE UNICODE _UNICODE)
