@@ -18,7 +18,10 @@ def prepare(source, destination):
     text = destination.read_text(encoding='utf-8')
     anchor = '    public func captureTime(sourceFrame: UInt64) -> UInt64? {'
     method = '''    mutating func offlineRestore(_ previous: PlayoutController) {
-        if offlineKeepTarget { targetMilliseconds = previous.targetMilliseconds }
+        if offlineKeepTarget {
+            networkTargetMilliseconds = previous.networkTargetMilliseconds
+            targetMilliseconds = previous.targetMilliseconds
+        }
         if offlineKeepHistory { delays = previous.delays }
         if offlineKeepRate { correction = previous.correction; lastDecisionAt = previous.lastDecisionAt }
         if offlineKeepAnchor { anchor = previous.anchor }
@@ -33,8 +36,6 @@ def prepare(source, destination):
 def prepare_probe(source, destination):
     text = source.read_text(encoding='utf-8')
     changes = [(
-        '        endSourceFrame = sourceFrame + 30 * 48_000',
-        '        endSourceFrame = sourceFrame + offlineSourceFrameCount'), (
         '    mutating func updateUncertainty(_ uncertainty: UInt64) { clockUncertainty = uncertainty }',
         '    var offlineSourceFrame: UInt64 { sourceFrame }\n\n'
         '    mutating func updateUncertainty(_ uncertainty: UInt64) { clockUncertainty = uncertainty }'), (
@@ -74,16 +75,14 @@ def prepare_probe(source, destination):
         '''        offlineProbeAudit.discardedSequences.remove(record.sequence)
         offlineProbeAudit.expiredSequences.remove(record.sequence)
         packets[record.sequence] = Packet(record: record, captured: capturedAt, uncertainty: uncertainty)'''), (
-        '            } else { concealed += count }',
-        '''            } else {
-                concealed += count
+        '                concealed += count',
+        '''                concealed += count
                 if packet != nil { offlineProbeAudit.expiredQueuedFrames += count }
                 else if offlineProbeAudit.discardedSequences.contains(nextSequence) {
                     offlineProbeAudit.discardedMissingFrames += count
                 } else if offlineProbeAudit.expiredSequences.contains(nextSequence) {
                     offlineProbeAudit.lateArrivalFrames += count
-                } else { offlineProbeAudit.networkMissingFrames += count }
-            }''')]
+                } else { offlineProbeAudit.networkMissingFrames += count }''')]
     for before, after in changes:
         if text.count(before) != 1:
             raise ValueError(f'production probe experiment insertion point changed: {before}')

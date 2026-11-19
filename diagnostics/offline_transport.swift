@@ -5,7 +5,6 @@ private let packetInterval: UInt64 = 2_500_000
 private var packetCount = 12_000
 private var totalFrames: Int { packetCount * 120 }
 private var sourceDuration: UInt64 { UInt64(packetCount) * packetInterval }
-var offlineSourceFrameCount: UInt64 { UInt64(totalFrames) }
 var offlineDeadlineGuardMilliseconds = 0.0
 var offlineKeepController = false
 var offlineKeepBuffer = false
@@ -240,7 +239,8 @@ private func simulate(trace: NetworkTrace, scenario: Scenario, seed: UInt64,
     let round = CoordinatedProbePlan.Round(payloadBytes: 992, packetsPerSecond: 400,
         burstPackets: 1, variant: 1, reliable: transport.reliable, repeatIndex: 1,
         controller: policy.controller, repair: 0, correctionPercent: policy.correctionPercent)
-    var consumer = ProbeConsumer(round: round, budget: budget, firstSequence: 0, sourceFrame: 0)
+    var consumer = ProbeConsumer(round: round, budget: budget, firstSequence: 0, sourceFrame: 0,
+                                 sourceFrameLimit: UInt64(totalFrames))
     let deliveries = trace.deliveries(reliable: transport.reliable, sendMegabitsPerSecond: sendMegabitsPerSecond)
     let recovery = transport.recovery ? offline_recovery_create(
         Int32(budget.maximumMilliseconds - budget.outputReserveMilliseconds),
