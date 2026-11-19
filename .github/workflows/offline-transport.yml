@@ -1,6 +1,21 @@
 name: Offline transport simulation
 
 on:
+  pull_request:
+    paths:
+      - ".github/workflows/offline-transport.yml"
+      - "diagnostics/offline_transport.swift"
+      - "diagnostics/prepare_offline_controller.py"
+      - "diagnostics/offline_recovery*"
+      - "windows/include/hearport/windows/reliable_audio_lag.h"
+      - "ios/HearPortReceiver/Sources/HearPortReceiver/CoordinatedProbe.swift"
+      - "ios/HearPortReceiver/Sources/HearPortReceiver/PlayoutController.swift"
+      - "ios/HearPortReceiver/Sources/HearPortReceiver/AudioStreamFormat.swift"
+      - "ios/HearPortReceiver/Sources/HearPortReceiver/AudioDatagram.swift"
+      - "ios/HearPortReceiver/Sources/HearPortReceiver/ReceiverModels.swift"
+      - "ios/HearPortReceiver/Sources/HearPortReceiver/ControlFraming.swift"
+      - "ios/HearPortReceiver/Sources/HearPortReceiver/ControlMessages.swift"
+      - "ios/HearPortReceiver/Sources/HearPortReceiver/RepairWindow.swift"
   workflow_dispatch:
     inputs:
       phase:
@@ -30,6 +45,7 @@ jobs:
             diagnostics/offline_recovery_bridge.cpp -o "$RUNNER_TEMP/recovery-bridge.o"
           swiftc -O \
             "$source_dir/AudioDatagram.swift" \
+            "$source_dir/AudioStreamFormat.swift" \
             "$source_dir/ReceiverModels.swift" \
             "$source_dir/ControlFraming.swift" \
             "$source_dir/ControlMessages.swift" \
@@ -43,6 +59,7 @@ jobs:
           clang++ -std=c++20 -O2 -I windows/include -I core/include \
             diagnostics/offline_recovery.cpp -o "$RUNNER_TEMP/offline-recovery"
       - name: Run deterministic paired scenarios
+        if: github.event_name == 'workflow_dispatch'
         shell: bash
         run: |
           set -euo pipefail
@@ -70,7 +87,7 @@ jobs:
           python3 -m unittest tests.test_offline_transport_analysis -v
           python3 diagnostics/analyze_offline_transport.py "$RUNNER_TEMP/offline-results"
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: always() && github.event_name == 'workflow_dispatch'
         with:
           name: HearPort-offline-transport
           path: ${{ runner.temp }}/offline-results/
