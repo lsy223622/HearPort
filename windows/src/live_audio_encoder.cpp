@@ -2,20 +2,49 @@
 #include "HearPortOpusBridge.h"
 #include <bit>
 #include <stdexcept>
+#include <utility>
 
 namespace hearport::windows {
 LiveAudioEncoder::~LiveAudioEncoder() { if (encoder_) hp_opus_encoder_destroy(encoder_); }
 
+LiveAudioEncoder::LiveAudioEncoder(LiveAudioEncoder&& other) noexcept
+    : encoder_(std::exchange(other.encoder_, nullptr)),
+      frames_(std::exchange(other.frames_, 0)),
+      lookahead_(std::exchange(other.lookahead_, 0)),
+      expected_(std::exchange(other.expected_, 0)),
+      pending_(std::move(other.pending_)),
+      first_queued_at_ns_(std::exchange(other.first_queued_at_ns_, 0)),
+      samples_(std::move(other.samples_)) {}
+
+LiveAudioEncoder& LiveAudioEncoder::operator=(LiveAudioEncoder&& other) noexcept {
+  if (this != &other) {
+    if (encoder_) hp_opus_encoder_destroy(encoder_);
+    encoder_ = std::exchange(other.encoder_, nullptr);
+    frames_ = std::exchange(other.frames_, 0);
+    lookahead_ = std::exchange(other.lookahead_, 0);
+    expected_ = std::exchange(other.expected_, 0);
+    pending_ = std::move(other.pending_);
+    first_queued_at_ns_ = std::exchange(other.first_queued_at_ns_, 0);
+    samples_ = std::move(other.samples_);
+  }
+  return *this;
+}
+
 bool LiveAudioEncoder::Configure(std::uint32_t bitrate, std::uint32_t frames) {
-  if (bitrate != 0 && ((bitrate != 192000 && bitrate != 256000) ||
-      (frames != 120 && frames != 240 && frames != 480))) return false;
+  if (bitrate == 0) {
+    if (frames != 0 && frames != 120) return false;
+  } else if ((bitrate != 192000 && bitrate != 256000) ||
+             (frames != 120 && frames != 240 && frames != 480)) {
+    return false;
+  }
   int error = 0;
   void* replacement = bitrate ? hp_opus_encoder_create(static_cast<int>(bitrate), &error) : nullptr;
   if (bitrate && !replacement) return false;
   if (encoder_) hp_opus_encoder_destroy(encoder_);
   encoder_ = replacement; frames_ = frames;
   lookahead_ = encoder_ ? hp_opus_lookahead(encoder_) : 0;
-  samples_.clear(); samples_.reserve(frames * 2);
+  samples_.clear();
+  if (bitrate != 0) samples_.reserve(frames * 2);
   return true;
 }
 
@@ -40,7 +69,7 @@ std::optional<wire::TimedAudioRecord> LiveAudioEncoder::Push(const wire::AudioDa
     pending_.frame_count = static_cast<std::uint16_t>(frames_);
     pending_.kind = wire::AudioRecordKind::opus;
     const auto delay = std::uint64_t(lookahead_) * 1'000'000'000 / 48'000;
-    pending_.captured_at_ns = captured > delay ? captured - delay : 0;
+    pending_.captured_at_ns = captured > delay ? captured - delay : 1;
   }
   for (std::size_t offset = 0; offset < packet.pcm.size(); offset += 4) {
     std::uint32_t bits = 0;

@@ -68,4 +68,34 @@ int main() {
     auto record = encoder.Push(p, 6'000'000'000 + seq * 2'500'000ull, seq * 120, 1, 0);
     if (record) assert(record->captured_at_ns > 5'900'000'000);
   }
+
+  // Invalid huge frame count in PCM mode must be rejected without reserving.
+  assert(!encoder.Configure(0, 0x40000000u));
+
+  // Clamped captured_at_ns when capture timestamp <= encoder lookahead must stay >= 1.
+  assert(encoder.Configure(256000, 120));
+  hearport::wire::AudioDatagram early{};
+  early.stream_id = 3;
+  early.sequence = 0;
+  auto early_record = encoder.Push(early, 1000, 0, 1, 0);
+  assert(early_record.has_value());
+  assert(early_record->captured_at_ns >= 1);
+  assert(!hearport::wire::EncodeTimedAudioRecord(*early_record).empty());
+
+  // Failed latency check in ConfigureAudioFormat must preserve active Opus encoder.
+  hearport::windows::SenderService preserve_service({});
+  hearport::wire::ControlEnvelope valid_opus{};
+  valid_opus.audio_codec = 1;
+  valid_opus.audio_bitrate = 256000;
+  valid_opus.audio_frame_count = 240;
+  valid_opus.maximum_ms = 150;
+  valid_opus.output_reserve_ms = 11;
+  assert(preserve_service.ConfigureAudioFormat(valid_opus));
+  hearport::wire::ControlEnvelope bad_latency = valid_opus;
+  bad_latency.audio_codec = 0;
+  bad_latency.audio_bitrate = 0;
+  bad_latency.audio_frame_count = 9999;
+  assert(!preserve_service.ConfigureAudioFormat(bad_latency));
+  assert(preserve_service.audio_format().opus);
+  assert(preserve_service.audio_format().frames == 240);
 }

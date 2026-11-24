@@ -119,7 +119,7 @@ bool SenderService::Start() {
     reliable_mode_.store(false);
     {
       std::lock_guard lock(reliable_mutex_);
-      reliable_generation_ = 0;
+      reliable_generation_.store(0);
     }
     {
       std::lock_guard lock(queue_mutex_);
@@ -164,6 +164,7 @@ bool SenderService::Start() {
     std::lock_guard lock(diagnostics_mutex_);
     stop_diagnostics_ = false;
   }
+  stopping_.store(false);
   if (!quic_->Start(options_, std::move(callbacks))) {
     return false;
   }
@@ -174,6 +175,10 @@ bool SenderService::Start() {
 }
 
 void SenderService::Stop() {
+  {
+    std::lock_guard lock(session_mutex_);
+    stopping_.store(true);
+  }
   if (!started_ && !audio_thread_.joinable() && !diagnostics_thread_.joinable() &&
       !probe_thread_.joinable() && !music_thread_.joinable()) {
     return;
@@ -278,9 +283,13 @@ bool SenderService::SendControlPayload(std::span<const std::byte> payload) {
 bool SenderService::BeginStream(
     std::uint32_t stream_id,
     std::span<const std::byte> debug_session_id) {
+  if (stopping_.load()) return false;
+  if (!debug_session_id.empty() && debug_session_id.size() != 16) return false;
+  if (!debug_session_id.empty() && !debug_duration().has_value()) return false;
   if (activation_handler_ && !activation_handler_()) return false;
   {
   std::lock_guard lifecycle(capture_lifecycle_mutex_);
+  if (stopping_.load()) return false;
   if (!network_probe_ && !music_clip_ && !capture_started_) {
     if (!capture_.Start([this](std::span<const std::byte> bytes, const PcmFormat& format, std::uint64_t at) {
           HandleCapturePacket(bytes, format, at);
@@ -289,8 +298,6 @@ bool SenderService::BeginStream(
     capture_started_ = true;
   }
   }
-  if (!debug_session_id.empty() && debug_session_id.size() != 16) return false;
-  if (!debug_session_id.empty() && !debug_duration().has_value()) return false;
   if (music_thread_.joinable()) {
     stop_music_.store(true);
     music_condition_.notify_all();
@@ -298,7 +305,7 @@ bool SenderService::BeginStream(
   }
   std::lock_guard capture_lock(capture_mutex_);
   std::lock_guard session_lock(session_mutex_);
-  if (!session_.BeginStream(stream_id)) {
+  if (stopping_.load() || !session_.BeginStream(stream_id)) {
     return false;
   }
   {
@@ -318,6 +325,7 @@ bool SenderService::BeginStream(
 }
 
 bool SenderService::MarkStartStreamAckWritten(std::uint32_t stream_id) {
+  if (stopping_.load()) return false;
   if (probe_thread_.joinable()) {
     stop_probe_.store(true);
     calibration_condition_.notify_all();
@@ -332,13 +340,17 @@ bool SenderService::MarkStartStreamAckWritten(std::uint32_t stream_id) {
   std::lock_guard capture_lock(capture_mutex_);
   std::lock_guard send_lock(audio_send_mutex_);
   std::lock_guard session_lock(session_mutex_);
-  if (session_.AckWritten(stream_id) != AudioDisposition::accepted) {
+  if (stopping_.load() ||
+      session_.AckWritten(stream_id) != AudioDisposition::accepted) {
     return false;
   }
   if (reliable_mode_.load()) {
-    if (!quic_->StartReliableAudio(stream_id, 1)) return false;
+    if (!quic_->StartReliableAudio(stream_id, 1)) {
+      (void)session_.EndStream(stream_id);
+      return false;
+    }
     std::lock_guard reliable_lock(reliable_mutex_);
-    reliable_generation_ = 1;
+    reliable_generation_.store(1);
     reliable_lag_.Begin(stream_id, 1, ReliableAudioLag::Clock::now(),
         coordinated_audio_.load() ? std::optional(std::chrono::milliseconds(
             maximum_ms_.load() - output_reserve_ms_.load())) : std::nullopt);
@@ -521,8 +533,9 @@ void SenderService::MusicWorker() {
       std::lock_guard reliable_lock(reliable_mutex_);
       { std::lock_guard queue_lock(queue_mutex_); audio_queue_.clear(); }
       quic_->StopReliableAudio();
-      generation = reliable_generation_ == UINT32_MAX ? 1 : reliable_generation_ + 1;
-      reliable_generation_ = generation;
+      const auto current = reliable_generation_.load();
+      generation = current == UINT32_MAX ? 1 : current + 1;
+      reliable_generation_.store(generation);
       reliable_mode_.store(policy.reliable);
       music_policy_.store(policy.profile | (std::uint32_t(policy.repeat) << 8) |
                           (policy.reliable ? 0x10000u : 0));
@@ -731,8 +744,9 @@ void SenderService::CalibrationWorker(std::uint32_t stream_id) {
       std::lock_guard send_lock(audio_send_mutex_);
       std::lock_guard reliable_lock(reliable_mutex_);
       quic_->StopReliableAudio(); reliable_mode_.store(false);
-      reliable_generation_ = reliable_generation_ == UINT32_MAX ? 1 : reliable_generation_ + 1;
-      generation = reliable_generation_;
+      const auto current = reliable_generation_.load();
+      generation = current == UINT32_MAX ? 1 : current + 1;
+      reliable_generation_.store(generation);
     }
     std::optional<CalibrationMessage> round;
     {
@@ -791,10 +805,16 @@ void SenderService::CalibrationWorker(std::uint32_t stream_id) {
         if (!debug_trace_.IsActive() || active_debug_stream_id_ != stream_id || debug_ending_) return;
         ++outstanding_debug_sends_;
       }
-      const auto capture = std::chrono::duration_cast<std::chrono::nanoseconds>(target.time_since_epoch()).count() -
-          (options.goal && round->codec ? std::int64_t(frame_count) * 1'000'000'000 / 48000 : 0);
+      const auto capture = std::max<std::int64_t>(1,
+          std::chrono::duration_cast<std::chrono::nanoseconds>(target.time_since_epoch()).count() -
+          (options.goal && round->codec ? std::int64_t(frame_count) * 1'000'000'000 / 48000 : 0));
       const auto sent_at = MonotonicNanoseconds();
-      wire::TimedAudioRecord record{stream_id,reliable_generation_,sequence,static_cast<std::uint16_t>(frame_count),wire::AudioRecordKind::probe,
+      const auto generation = reliable_generation_.load();
+      if (generation == 0) {
+        CompleteDebugSend(stream_id);
+        return;
+      }
+      wire::TimedAudioRecord record{stream_id,generation,sequence,static_cast<std::uint16_t>(frame_count),wire::AudioRecordKind::probe,
           static_cast<std::uint64_t>(capture),round->first_source_frame + std::uint64_t(packet) * frame_count,
           std::vector<std::byte>(random.begin() + 8,random.end())};
       if (round->reliable) {
@@ -867,7 +887,9 @@ void SenderService::ProbeWorker(std::uint32_t stream_id) {
       if (coordinated_audio_.load()) quic_->ConfigureAudioWindow(
           target_ms_.load(), maximum_ms_.load(), output_reserve_ms_.load());
       reliable_mode_.store(reliable);
-      reliable_generation_ = reliable_generation_ == UINT32_MAX ? 1 : reliable_generation_ + 1;
+      const auto current = reliable_generation_.load();
+      const auto next_generation = current == UINT32_MAX ? 1 : current + 1;
+      reliable_generation_.store(next_generation);
       probe_repair_window_.Reset();
       probe_repair_mode_.store(round.repair);
       probe_repair_sent_bytes_.store(0);
@@ -875,10 +897,10 @@ void SenderService::ProbeWorker(std::uint32_t stream_id) {
       repair_pressure_ = false; last_buffered_ms_ = 0;
       if (!reliable) quic_->StopReliableAudio();
       if (reliable) {
-        if (!quic_->StartReliableAudio(stream_id, reliable_generation_)) {
+        if (!quic_->StartReliableAudio(stream_id, next_generation)) {
           LogDiagnostic("network_probe_reliable_stream_start_failed"); return;
         }
-        reliable_lag_.Begin(stream_id, reliable_generation_, Clock::now(),
+        reliable_lag_.Begin(stream_id, next_generation, Clock::now(),
             coordinated_audio_.load() ? std::optional(std::chrono::milliseconds(
                 maximum_ms_.load() - output_reserve_ms_.load())) : std::nullopt);
       }
@@ -935,13 +957,18 @@ void SenderService::ProbeWorker(std::uint32_t stream_id) {
       }
       if (!trace) return;
       const auto sent_at = MonotonicNanoseconds();
-      const auto captured_at = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      const auto captured_at = std::max<std::int64_t>(1, std::chrono::duration_cast<std::chrono::nanoseconds>(
           (round_start + std::chrono::nanoseconds(std::uint64_t(packet) * 1'000'000'000ull /
-                                                round.packets_per_second)).time_since_epoch()).count();
+                                                round.packets_per_second)).time_since_epoch()).count());
       wire::TimedAudioRecord record;
       const auto frames = static_cast<std::uint16_t>(48000 / round.packets_per_second);
       if (coordinated_audio_.load()) {
-        record = {stream_id, reliable_generation_, sequence, frames, wire::AudioRecordKind::probe,
+        const auto generation = reliable_generation_.load();
+        if (generation == 0) {
+          CompleteDebugSend(stream_id);
+          return;
+        }
+        record = {stream_id, generation, sequence, frames, wire::AudioRecordKind::probe,
                   static_cast<std::uint64_t>(captured_at), source_frame,
                   std::vector<std::byte>(datagram.begin() + 8, datagram.end())};
         datagram = wire::EncodeTimedAudioRecord(record);
@@ -1024,7 +1051,7 @@ bool SenderService::HandleRepairRequest(const wire::ControlEnvelope& request) {
   std::lock_guard send_lock(audio_send_mutex_);
   if (!network_probe_ || !coordinated_audio_.load() || reliable_mode_.load() ||
       probe_repair_mode_.load() != 2 || request.stream_id != probe_stream_id_.load() ||
-      request.audio_generation != reliable_generation_) return true;
+      request.audio_generation != reliable_generation_.load()) return true;
   const auto now = static_cast<std::uint64_t>(MonotonicNanoseconds());
   for (const auto sequence : request.repair_sequences) {
     const auto extra = probe_repair_window_.Retry(sequence, now);
@@ -1054,7 +1081,7 @@ void SenderService::ConfigureReliableAudio(bool enabled) {
   std::lock_guard send_lock(audio_send_mutex_);
   reliable_mode_.store(enabled);
   std::lock_guard reliable_lock(reliable_mutex_);
-  reliable_generation_ = 0;
+  reliable_generation_.store(0);
 }
 
 SenderService::AudioFormat SenderService::audio_format() const {
@@ -1094,10 +1121,12 @@ void SenderService::SetSystemPcmResolution(PcmResolution resolution) {
 
 bool SenderService::ConfigureAudioFormat(wire::ControlEnvelope& setup) {
   std::lock_guard lock(audio_send_mutex_);
-  if (!live_encoder_.Configure(setup.audio_codec ? setup.audio_bitrate : 0,
-                                setup.audio_frame_count)) return false;
-  if (setup.audio_codec && (setup.audio_frame_count + live_encoder_.lookahead()) / 48.0 +
+  LiveAudioEncoder candidate;
+  if (!candidate.Configure(setup.audio_codec ? setup.audio_bitrate : 0,
+                           setup.audio_frame_count)) return false;
+  if (setup.audio_codec && (setup.audio_frame_count + candidate.lookahead()) / 48.0 +
       2 + setup.output_reserve_ms >= setup.maximum_ms) return false;
+  live_encoder_ = std::move(candidate);
   live_opus_.store(setup.audio_codec != 0);
   setup.codec_lookahead_frames = live_encoder_.lookahead();
   negotiated_format_ = {setup.audio_codec != 0, setup.audio_codec ? setup.audio_bitrate : 3072000,
@@ -1138,12 +1167,12 @@ bool SenderService::ObserveAudioProgress(
   if (calibration_options_ && !calibration_round_active_.load()) return true;
   if (music_test() || live_opus_.load()) {
     std::lock_guard reliable_lock(reliable_mutex_);
-    if (generation == reliable_generation_ && latest_received && reliable_mode_.load())
+    if (generation == reliable_generation_.load() && latest_received && reliable_mode_.load())
       quic_->ConfirmReliableReceived(stream_id, generation, *latest_received);
     return true;
   }
   if (network_probe_) {
-    if (stream_id != probe_stream_id_.load() || generation != reliable_generation_) return true;
+    if (stream_id != probe_stream_id_.load() || generation != reliable_generation_.load()) return true;
     const auto stamp = static_cast<std::uint64_t>(MonotonicNanoseconds());
     if (coordinated_audio_.load() && (feedback_at_ns == 0 || feedback_at_ns > stamp + 10'000'000 ||
         (stamp > feedback_at_ns && stamp - feedback_at_ns > 50'000'000))) return true;
@@ -1216,7 +1245,7 @@ bool SenderService::ObserveAudioProgress(
   }
   {
     std::lock_guard reliable_lock(reliable_mutex_);
-    reliable_generation_ = next_generation;
+    reliable_generation_.store(next_generation);
     reliable_lag_.Begin(stream_id, next_generation,
                         ReliableAudioLag::Clock::now(), coordinated_audio_.load() ? std::optional(std::chrono::milliseconds(
                           maximum_ms_.load() - output_reserve_ms_.load())) : std::nullopt);
@@ -1413,9 +1442,9 @@ void SenderService::AudioWorker() {
     std::vector<std::byte> encoded;
     std::optional<wire::TimedAudioRecord> compressed;
     if (live_opus_.load()) {
-      std::uint32_t generation;
-      { std::lock_guard lock(reliable_mutex_);
-        generation = reliable_mode_.load() ? std::max(1u, reliable_generation_) : 1; }
+      const std::uint32_t generation =
+          reliable_mode_.load() ? reliable_generation_.load() : 1u;
+      if (generation == 0) continue;
       try {
         compressed = live_encoder_.Push(queued.packet, queued.captured_at_ns, queued.source_frame,
                                         generation, queued.queued_at_ns);
@@ -1428,14 +1457,13 @@ void SenderService::AudioWorker() {
           compressed->captured_at_ns, static_cast<std::uint64_t>(MonotonicNanoseconds()))) {
         audio_metrics_.record_dropped(false); continue;
       }
+      if (compressed->generation == 0 || compressed->captured_at_ns == 0) continue;
       encoded = wire::EncodeTimedAudioRecord(*compressed);
     } else
     if (coordinated_audio_.load()) {
-      std::uint32_t generation = 1;
-      if (reliable_mode_.load() || music_clip_) {
-        std::lock_guard reliable_lock(reliable_mutex_);
-        generation = reliable_generation_;
-      }
+      const std::uint32_t generation =
+          (reliable_mode_.load() || music_clip_) ? reliable_generation_.load() : 1u;
+      if (generation == 0 || queued.captured_at_ns <= 0) continue;
       wire::TimedAudioRecord record;
       record.stream_id = queued.packet.stream_id;
       record.generation = generation;
@@ -1707,11 +1735,7 @@ void SenderService::LogAudioSummary() {
           now - diagnostics_last_summary_);
   diagnostics_last_summary_ = now;
   const auto snapshot = audio_metrics_.exchange_interval();
-  std::uint32_t reliable_generation = 0;
-  {
-    std::lock_guard lock(reliable_mutex_);
-    reliable_generation = reliable_generation_;
-  }
+  const std::uint32_t reliable_generation = reliable_generation_.load();
   std::ostringstream line;
   line << "quic_audio_summary interval_ms=" << elapsed_ms.count()
        << " audio_mode=" << (reliable_mode_.load() ? "reliable" : "datagram")

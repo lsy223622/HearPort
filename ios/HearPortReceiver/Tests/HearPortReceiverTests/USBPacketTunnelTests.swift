@@ -200,5 +200,73 @@ extension USBPacketTunnelTests {
         let stopped = expectation(description: "USB tunnel stopped")
         tunnel.stop { stopped.fulfill() }; wait(for: [stopped], timeout: 3)
     }
+
+    func testEarlyTCPPacketsAreFlushedWhenLocalUDPPeerConnects() throws {
+        var tcpListener: NWListener?
+        let listenerReady = expectation(description: "TCP listener ready")
+        let tunnel = USBPacketTunnel(diagnostics: .shared, makeTCPListener: { _ in
+            let options = NWProtocolTCP.Options(); options.noDelay = true
+            let parameters = NWParameters(tls: nil, tcp: options)
+            parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
+            let listener = try NWListener(using: parameters)
+            tcpListener = listener
+            return listener
+        })
+        let udpAvailable = expectation(description: "UDP listener ready")
+        var udpPort: UInt16 = 0
+        tunnel.onAvailable = { port in
+            udpPort = port
+            udpAvailable.fulfill()
+        }
+        tunnel.start()
+        let deadline = Date().addingTimeInterval(3)
+        while tcpListener?.state != .ready && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        guard let tcpPort = tcpListener?.port else {
+            XCTFail("TCP listener did not bind"); return
+        }
+        listenerReady.fulfill()
+        wait(for: [listenerReady], timeout: 1)
+
+        let payload = Data([1, 2, 3, 4])
+        let framed = try encodeUSBPacket(payload)
+        let tcpClient = NWConnection(host: "127.0.0.1", port: tcpPort, using: .tcp)
+        let sentOverTCP = expectation(description: "Sent early framed packet over TCP")
+        tcpClient.stateUpdateHandler = { state in
+            if case .ready = state {
+                tcpClient.send(content: framed, completion: .contentProcessed { error in
+                    XCTAssertNil(error)
+                    sentOverTCP.fulfill()
+                })
+            }
+        }
+        let clientQueue = DispatchQueue(label: "usb-early-packet-test")
+        tcpClient.start(queue: clientQueue)
+        wait(for: [udpAvailable, sentOverTCP], timeout: 5)
+
+        Thread.sleep(forTimeInterval: 0.05)
+
+        let udpPeer = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: udpPort)!, using: .udp)
+        let receivedEarlyPacket = expectation(description: "UDP peer receives queued early packet")
+        udpPeer.stateUpdateHandler = { state in
+            if case .ready = state {
+                udpPeer.receiveMessage { data, _, _, error in
+                    XCTAssertNil(error)
+                    XCTAssertEqual(data, payload)
+                    receivedEarlyPacket.fulfill()
+                }
+                udpPeer.send(content: Data([0]), completion: .contentProcessed { _ in })
+            }
+        }
+        udpPeer.start(queue: clientQueue)
+        wait(for: [receivedEarlyPacket], timeout: 3)
+
+        tcpClient.cancel()
+        udpPeer.cancel()
+        let stopped = expectation(description: "Stopped")
+        tunnel.stop { stopped.fulfill() }
+        wait(for: [stopped], timeout: 3)
+    }
 }
 #endif

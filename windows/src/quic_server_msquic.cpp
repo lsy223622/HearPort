@@ -553,6 +553,8 @@ class MsQuicServer final : public QuicServer {
                                     reinterpret_cast<void*>(StreamCallback),
                                     server);
           } else {
+            api->SetCallbackHandler(
+                stream, reinterpret_cast<void*>(RejectedStreamCallback), server);
             api->StreamShutdown(stream, QUIC_STREAM_SHUTDOWN_FLAG_ABORT, 0);
           }
         }
@@ -728,6 +730,22 @@ class MsQuicServer final : public QuicServer {
     return QUIC_STATUS_SUCCESS;
   }
 
+  static QUIC_STATUS QUIC_API RejectedStreamCallback(
+      HQUIC stream, void* context, QUIC_STREAM_EVENT* event) {
+    if (event->Type == QUIC_STREAM_EVENT_SHUTDOWN_COMPLETE) {
+      auto* server = static_cast<MsQuicServer*>(context);
+      const QUIC_API_TABLE* api = nullptr;
+      {
+        std::lock_guard lock(server->mutex_);
+        api = server->api_;
+      }
+      if (api != nullptr) {
+        api->StreamClose(stream);
+      }
+    }
+    return QUIC_STATUS_SUCCESS;
+  }
+
   static QUIC_STATUS QUIC_API AudioStreamCallback(
       HQUIC stream, void* context, QUIC_STREAM_EVENT* event) {
     auto* server = static_cast<MsQuicServer*>(context);
@@ -735,7 +753,9 @@ class MsQuicServer final : public QuicServer {
     HQUIC connection = nullptr;
     if (server->options_.network_probe) {
       std::lock_guard lock(server->mutex_);
-      connection = server->connection_;
+      if (stream == server->audio_stream_) {
+        connection = server->connection_;
+      }
     }
     if (connection) server->LogProbeStatistics(connection, stream);
     switch (event->Type) {
@@ -882,8 +902,11 @@ class MsQuicServer final : public QuicServer {
     started_ = false;
     shutdown_condition_.wait(lock, [this] { return !closing_; });
     if (listener_ != nullptr && api_ != nullptr) {
-      api_->ListenerClose(listener_);
+      const auto listener = listener_;
       listener_ = nullptr;
+      lock.unlock();
+      api_->ListenerClose(listener);
+      lock.lock();
     }
     if (connection_ != nullptr && api_ != nullptr) {
       const auto connection = connection_;
@@ -896,8 +919,11 @@ class MsQuicServer final : public QuicServer {
       audio_stream_ = nullptr;
     }
     if (configuration_ != nullptr && api_ != nullptr) {
-      api_->ConfigurationClose(configuration_);
+      const auto configuration = configuration_;
       configuration_ = nullptr;
+      lock.unlock();
+      api_->ConfigurationClose(configuration);
+      lock.lock();
     }
     if (registration_ != nullptr && api_ != nullptr) {
       const auto registration = registration_;

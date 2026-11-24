@@ -1295,6 +1295,8 @@ import AppIntents
                         return
                     }
                     control?.cancel(); control = nil
+                    try? audioOutput?.stop(); audioOutput = nil
+                    connectionEstablished = false; audioOutputState = nil
                     connectionManager.stop(); connectionID = UUID()
                     isConnecting = false; connectionError = nil
                     sendingReport = false; testRunning = false

@@ -188,6 +188,7 @@ public final class USBPacketTunnel {
             local.newConnectionHandler = { [weak self] peer in
                 guard let self, self.generation == id, self.udp == nil else { peer.cancel(); return }
                 self.udp = peer; peer.start(queue: self.queue); self.receiveUDP(peer, id)
+                if !self.toUDP.packets.isEmpty { self.sendUDP(id) }
             }
             local.start(queue: queue)
             connection.stateUpdateHandler = { [weak self] state in

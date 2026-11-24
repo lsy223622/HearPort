@@ -7,7 +7,12 @@
 namespace hearport::windows {
 class LiveAudioEncoder {
  public:
+  LiveAudioEncoder() = default;
   ~LiveAudioEncoder();
+  LiveAudioEncoder(const LiveAudioEncoder&) = delete;
+  LiveAudioEncoder& operator=(const LiveAudioEncoder&) = delete;
+  LiveAudioEncoder(LiveAudioEncoder&& other) noexcept;
+  LiveAudioEncoder& operator=(LiveAudioEncoder&& other) noexcept;
   bool Configure(std::uint32_t bitrate, std::uint32_t frames);
   std::uint32_t lookahead() const noexcept { return lookahead_; }
   std::int64_t first_queued_at_ns() const noexcept { return first_queued_at_ns_; }

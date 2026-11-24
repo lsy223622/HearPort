@@ -215,7 +215,7 @@ class SenderService {
   std::atomic<std::uint32_t> target_ms_ = 50;
   std::atomic<std::uint32_t> maximum_ms_ = 100;
   std::atomic<std::uint32_t> output_reserve_ms_ = 10;
-  std::uint32_t reliable_generation_ = 0;
+  std::atomic<std::uint32_t> reliable_generation_ = 0;
   DebugSessionTrace debug_trace_;
   mutable std::mutex debug_mutex_;
   std::condition_variable debug_condition_;
@@ -277,6 +277,7 @@ class SenderService {
   std::chrono::steady_clock::time_point diagnostics_last_summary_ =
       std::chrono::steady_clock::now();
   bool started_ = false;
+  std::atomic<bool> stopping_ = false;
   wire::ControlFrameDecoder control_decoder_;
 };
 
