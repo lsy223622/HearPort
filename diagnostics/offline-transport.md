@@ -1,89 +1,59 @@
-# 可重复的离线传输实验
+# Reproducible Offline Transport Simulation
 
-运行 GitHub Actions 的 **Offline transport simulation** 工作流，通过 `phase` 选择实验，
-下载 `HearPort-offline-transport` 工件。常规每组为 30 秒虚拟源数据，持续验证为 120 秒，
-不读取音频文件。
+This CI suite replays synthetic network impairments and feedback loops to evaluate playout buffering, dynamic time-stretch, and Reliable replay policies reproducibly.
 
-| phase | 对照内容 | 种子 | 组数 |
-|---|---|---|---:|
-| decomposition | 原始策略基线，以及控制器、接收缓冲、重放的独立和组合消融 | 1～8 | 2400＋768 |
-| components | 只保留缓冲目标、到达历史、变速状态或时钟锚点 | 1～8 | 336 |
-| sensitivity | 25／50 ms 反馈，0／10／25 ms 新流启动延迟 | 9～16 | 1440 |
-| timing | 恢复提前 0／15／30／45 ms，保持重放新鲜度预算不变 | 17～24 | 1440 |
-| capacity | 不限制或按 3.5／6 Mbps 序列化发送，反馈 25 ms、启动延迟 10 ms | 25～32 | 2160 |
-| replay | 不重放、仅过滤预测过期重放、再按剩余发送能力限制批次；另有单次丢包定位 | 25～32；定位用 1 | 1800＋15 |
-| projection | 由两次播放反馈估计消费速度，过滤预计已消费的重放；发送能力估计另设 ±25% 偏差 | 33～40 | 2160 |
-| endurance | 120 秒持续验证；容量估计先取 75% 保守值，再施加 ±25% 误差 | 41～44 | 600 |
+## Running & Experiment Phases
 
-JSON 保留逐组数据。消融、组件、敏感性、容量和重放实验另输出 `.paired.csv`，
-按相同场景、传输、延迟预算、反馈周期、启动延迟、提前量、发送容量和种子配对。
-基线另有 `summary.md`、`paired.csv` 及 C++ 快照审核 `recovery.json`。
+Trigger the **Offline transport simulation** workflow manually in GitHub Actions, choose a `phase`, and download the `HearPort-offline-transport` artifact. Runs use **30-second** synthetic source timelines without audio files (`endurance` uses **120 seconds**):
 
-## 比较方式
+| `phase` | Comparison Scope | Seeds | Runs |
+| --- | --- | --- | ---: |
+| `decomposition` | Baseline policies plus single/combined controller, buffer, and replay ablations | `1–8` | 2400 + 768 |
+| `components` | Isolate buffer target, arrival history, time-stretch state, or clock anchor | `1–8` | 336 |
+| `sensitivity` | `25` / `50` ms feedback period; `0` / `10` / `25` ms new-stream startup delay | `9–16` | 1440 |
+| `timing` | Recovery lead `0` / `15` / `30` / `45` ms with fixed replay freshness budget | `17–24` | 1440 |
+| `capacity` | Unbounded or `3.5` / `6` Mbps serialized send capacity (`25` ms feedback, `10` ms startup delay) | `25–32` | 2160 |
+| `replay` | No replay, predicted-expiry filtering only, and capacity-capped batches, plus single-loss isolation | `25–32` (isolation: `1`) | 1800 + 15 |
+| `projection` | Consumption-rate estimation across two playout feedbacks with ±25% capacity estimation error | `33–40` | 2160 |
+| `endurance` | 120-second runs using 75% conservative capacity estimate with ±25% error | `41–44` | 600 |
 
-固定随机种子 1～8，生成健康链路、抖动、独立丢包、弱 Wi-Fi 型停顿与丢包、长时间中断
-五类合成输入。每个输入包含 30 秒、400 包/秒、120 帧/包的虚拟源数据。
-同一输入分别经过四种传输模型、三档延迟预算和五种消费策略，共 2400 组。
+- Every phase outputs per-run JSON; `decomposition` ablations, `components`, `sensitivity`, `capacity`, and `replay` also emit `.paired.csv` paired by scenario, transport, delay budget, feedback period, startup delay, lead time, send capacity, and seed.
+- Baseline runs additionally write `summary.md`, `paired.csv`, and the C++ snapshot audit `recovery.json`.
 
-- 传输模型：Datagram 独立交付；Reliable 模型假设丢包重传一次成功，并保持有序交付。
-  Reliable 分为不恢复、旧反馈判定闭环、当前反馈判定闭环三个对照。
-- 预算：目标/上限分别为 50/100、80/160、120/240 ms；输出预留统一为 11 ms。
-- 消费策略：固定、自适应缓冲、仅动态变速、缓冲与变速组合。动态变速幅度为 ±5%。
-  第五种在组合策略上限制减速：距离准备截止时间不足 15 ms 时逐渐收窄负修正，
-  剩余 5 ms 时禁止减速。此规则只注入离线编译的临时副本，正式代码不变。
-- 同一场景与种子的网络输入指纹相同；策略比较先按种子配对，再汇总差异。
-- 对八个合成种子计算的 bootstrap 区间表示模型内波动，不是现实无线环境总体的置信区间。
+---
 
-Swift 驱动编译正式的 `PlayoutController`、`ProbeConsumer` 及其协议依赖。
-状态消融、测量和恢复提前量仅注入编译目录中的临时 Swift／C++ 副本，正式程序不变。
-每组检查源帧守恒与播放截止时间；健康链路、完全无输入和重复运行作为基础校验。
-所有健康链路对照还检查零源帧缺失、零重启。
+## Baseline Experimental Design
 
-## 结果的适用范围
+- **Synthetic network traces**: Fixed seeds `1–8` generate 5 network profiles (healthy, jitter, independent loss, weak Wi-Fi stalls + loss, and long outage) over 30 s at 400 packets/s and 120 frames/packet (identical input fingerprints per scenario/seed).
+- **Sweep matrix (2,400 baseline runs)**:
+  - **4 transport models**: Datagram (independent delivery) and Reliable (assumes single successful retransmission with ordered delivery) across 3 recovery modes: none, legacy feedback loop, and current feedback loop.
+  - **3 delay budgets**: target/maximum of `50/100`, `80/160`, and `120/240 ms` with a fixed `11 ms` output reserve.
+  - **5 playout policies**: fixed buffer, adaptive buffer, dynamic time-stretch only (±5%), combined buffer + stretch, and a 5th policy adding a deceleration guard (linearly tapers negative rate correction under 15 ms remaining preparation margin and blocks deceleration below 5 ms).
+- **Driver implementation**: The Swift harness compiles the production `PlayoutController`, `ProbeConsumer`, and protocol modules; ablations, extra instrumentation, and the deceleration guard are injected only into temporary build copies without altering production code. Every run checks source-frame conservation and deadlines; healthy runs also assert zero missing source frames and zero restarts.
+- **Pairing & intervals**: Policy differences are paired per seed before aggregation; bootstrap intervals over the 8 synthetic seeds capture variation within this model, not real-world wireless confidence intervals.
 
-消费路径是网络诊断使用的虚拟消费者，音乐播放的音频环形缓冲、WOLA 变速处理与
-硬件输出没有加入模型。时钟映射理想且没有回调 CPU 争用。
+---
 
-- 源数据不可用比例统计补偿、跳过与未消费的源帧；未消费量取实际源游标，
-  不以可能落后的播放反馈游标代替。
-- 补偿帧分别记录为网络尚未交付、已入队后过期、换代丢弃后未补回、入队前已过期。
-  已消费后才到达的包另行计数；这些到达统计与源帧统计不能相加。
-- 输出缺口比例另计起播后的重新缓冲等待，并按修正速度折算补偿输出时长；
-  源跳过单独保留。等待只统计至所有源数据的截止时间，排除起播预缓冲。
-  它不是实际声卡录音或音乐音质评分，连续缺口的时序分辨率仍为 5 ms。
-  从未起播时比例和播放年龄为空，不能当作零缺口；源不可用比例仍为 100%。
-- 另记录有效入队重放数量及最大发送队列等待。单次丢包定位只丢第 400 包，
-  其重传延迟固定 120 ms，重放不再丢包；记录前 20 次恢复的反馈、队列和消费状态。
+## Metrics, Closed-Loop Model & Limitations
 
-Reliable 闭环通过 C 接口调用正式 C++ `ReliableAudioLag`，基线每 50 ms 采集反馈；
-25 ms 对照与正式协调音频的反馈周期一致。
-反馈回程有 20～40 ms 基础延迟、与正向相同的停顿窗口，并保持控制流有序交付。
-重启取消尚未交付的旧代数据；正式算法筛选出的新鲜重放包重新经过网络停顿、
-抖动、丢包和有序阻塞。重放随机量由种子、源序号和尝试次数确定，不因策略运行顺序改变。
-旧判定对照仅不增加反馈年龄到落后阈值，双方保留相同的过旧反馈过滤。
+### Metric Definitions
 
-启动延迟实验会推迟新代所有发送；容量实验按 992 字节计算原发和重放的发送服务时间。
-取消未发送旧流工作时保留至多一个已开始记录的服务成本。发送服务与网络停顿阶段独立，
-重传等待已加入交付延迟，但不另模拟自动重传的发送服务占用。
+- **Source unavailable ratio**: Counts concealed, skipped, and unconsumed source frames (measured against the true source cursor rather than a potentially lagging feedback cursor). Concealed frames are broken down into not delivered by network, expired after queueing, dropped on generation restart without recovery, and expired before queueing. Packets arriving after consumption are tracked separately and **never added** to source-frame metrics.
+- **Output gap ratio**: Counts rebuffer waits after initial start, scaled by active rate correction (source skips remain separate). Tracking ends at all source deadlines, excludes initial pre-buffering, and quantizes continuous gaps at **5 ms** resolution. Runs that never start playback report null gap ratio and playout age (never zero gaps) and `100%` source unavailable ratio.
+- **Replay & single-loss isolation**: Tracks effective queued replays and peak send-queue wait. Single-loss isolation drops only packet `#400` with a fixed 120 ms retransmission delay and lossless replay, recording feedback, queue, and consumer state for the first 20 recoveries.
 
-重放预算实验假设单向交付预留 12 ms：先排除预计到达时已过期的包；
-容量限制版本还用模型中已知的剩余发送能力计算可重放上限，优先保留较新的候选。
-该实验用于验证队列成本，不代表正式程序已能准确估计实际链路容量。
-`production` 对照直接调用正式重放筛选函数；仍使用模型提供的容量和交付预留，
-不验证 MsQuic ACK 采样能否准确估计实际无线链路。历史基线通过临时副本恢复换代重置行为。
-消费进度预测由反馈中的源游标增量计算，速度上限与 ±5% 变速一致；
-没有连续有效游标时不外推。该预测仍可能受重缓冲和跳过影响，需要与不预测的版本配对比较。
+### Reliable Closed-Loop & Replay Modeling
 
-未模拟 MsQuic 的拥塞控制、ACK/PTO、真实无线竞争、重启失败或设备回调调度。
-取消假设即时生效；实际在途数据、驱动／路由器排队和控制流可能有额外成本。
-容量参数是发送序列化模型，不是对实际 Wi-Fi 物理速率的拟合。
-结果不能确定真实两种传输方式的优劣。
+- **Feedback & recovery triggers**: Calls the production C++ `ReliableAudioLag` over C FFI. Baseline polls feedback every 50 ms (the 25 ms variant matches production coordinated audio). The return path models 20–40 ms base latency, matching forward stalls, and ordered control delivery. Restarts cancel undelivered older generations; selected fresh replays re-traverse network jitter, loss, stalls, and head-of-line blocking (random draws depend deterministically on seed, sequence, and attempt count).
+- **Serialization capacity & replay projection**:
+  - Startup-delay experiments defer all sends on a new generation; capacity experiments charge 992 bytes of serialization service time for both primary and replay packets (cancelling an older stream retains at most one in-progress record cost; automatic transport retransmission service time is not modeled separately).
+  - Replay-budget experiments assume a 12 ms one-way delivery reserve: candidates already expired at expected arrival are dropped first, and capacity-limited variants retain newer candidates within remaining model capacity (`production` calls the real replay filter directly). Consumption-rate projection extrapolates within the ±5% stretch range across consecutive valid cursors (disabled when discontinuities break cursor continuity, and always paired against no-projection runs).
+- **Snapshot audit (`recovery.json`)**: Evaluates `ReliableAudioLag` over a grid of source lag and feedback age to compare direct sequence diffs against time-compensated recovery alignment (restart counts in closed-loop runs remain model outputs, not physical predictions).
 
-恢复判定另用正式 C++ `ReliableAudioLag` 审核：在已知源落后量与反馈年龄的网格上，
-比较原来的直接序号差与当前时间补偿后的判定。它验证判定是否与反馈生成时刻对齐，
-该快照审核与上述闭环实验分别记录；闭环中的重启次数仍是模型输出，不是实机预测。
+### Model Limitations
 
-汇总另外给出减速限制相对于组合策略、当前恢复相对于旧判定的配对差异，
-以及重启、重放、取消数量，避免把同时改变消费策略和恢复机制的结果混在一起。
+- Does **not** simulate the music audio ring buffer, WOLA time-stretch, hardware audio output, callback CPU contention, MsQuic congestion control / ACK / PTO, real Wi-Fi air-time contention, failed restarts, or driver/router queues.
+- Cancellation is modeled as instantaneous, and capacity parameters represent serialization pacing rather than physical Wi-Fi PHY rates.
 
-这套实验用于定位确定的算法行为和检查假设；实机验证仍用于确认最终听感与现实条件下的收益。
+> [!WARNING]
+> Use these simulations to isolate deterministic controller behavior and test assumptions — never to declare one transport universally superior over real Wi-Fi. Final acoustic quality and real-network gains always require physical device testing.

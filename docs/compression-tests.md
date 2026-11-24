@@ -1,88 +1,84 @@
-# 压缩与传输对比测试
+# Audio Encoding Settings & Compression Benchmarks
 
-## 日常播放设置
+## Daily Playback Encoding Settings
 
-iPad「设置 → 播放」分别保存「网络音频」和「USB 音频」：网络默认
-Opus 256 kb/s、5 ms，USB 默认 Float32 PCM、2.5 ms。两条路径均可改为
-PCM 或 Opus；Opus 可选 192/256 kb/s 和 2.5/5/10 ms。更改在下一次连接
-生效，连接详情显示实际协商结果。PCM 保持现有包尺寸以适应网络 MTU。
+In iPad **Settings → Playback**, **Network audio** and **USB audio** store independent transport, codec, and delay profiles:
 
-每包收集时间、Opus 前瞻、编解码和输出均消耗现有总延迟预算；设置不会
-另加一套缓冲。压缩减少应用数据量，不保证任意网络条件下都无缺口。
-自动推荐目前仍选择传输及缓冲参数，保留用户的编码设置；编码和帧长的
-自动选择需要相应的配对验证。
+| Route | Default Transport | Default Codec & Frame Duration | Supported Options |
+| --- | --- | --- | --- |
+| **Network audio** | Datagram | Opus 256 kbps · 5 ms | PCM or Opus (`192` / `256` kbps at `2.5` / `5` / `10` ms) |
+| **USB audio** | Reliable | Float32 PCM · 2.5 ms | PCM or Opus (`192` / `256` kbps at `2.5` / `5` / `10` ms) |
 
-诊断测试使用下述独立矩阵，不受正常播放编码选择影响。连接路径仍遵循
-USB 优先；音乐测试如需验证 Wi-Fi，应确认连接详情为网络路径。
+- Changes take effect on the **next connection**; connection details show the active negotiated parameters.
+- Packet collection, Opus lookahead, encode/decode time, and output reserve all share your existing **total delay budget** — enabling compression does not add a separate buffer.
+- Compression lowers application payload bandwidth, which does not guarantee gap-free playback under every wireless condition. Automatic tuning currently picks transport and delay budgets while preserving your chosen codec settings.
+- The diagnostic suites below run their own fixed matrices independent of your daily playback settings (routing still prefers authenticated USB, so verify connection details show the LAN route when benchmarking Wi-Fi).
 
-## 两个入口
+---
 
-在电脑端“诊断”页启动，iPad 连接一次后自动切换所有组合并回传报告。
-使用同一版本的两端程序。旧版 iPad 会收到更新提示。
+## Diagnostic Benchmark Entry Points
 
-1. **网络测试 → 压缩传输负载对比**：随机数据，不运行编码器、不播放音频。
-   10 种负载 × Datagram/Reliable × 两次重复，每组 30 秒，组间 5 秒，
-   最后留出 10 秒，共约 **23 分 25 秒**。
-2. **音乐压缩对比测试**：选择本地文件、起点和每组时长。
-   Float32、PCM16、Opus 192/256 kbps（各 2.5/5/10 ms）共 8 种格式，
-   两种传输、两次重复，共 **32 组**，每组重播同一片段。
-   默认每组 120 秒，传输及间隔约 **66 分 45 秒**；改成 60 秒约 **34 分 45 秒**。
-   另需协商和报告回传时间；每组可选 60–300 秒。
+Make sure Windows and iPad run **matching versions** (older iPad builds prompt for an update). Launch either test from the Windows **Diagnostics** tab — iPad connects once, sweeps all profiles automatically, and uploads the report back to Windows:
 
-这两个入口使用 iPad 当前协商的播放预算。网络设置中的“自动推荐”上限和
-每组时长用于自动推荐流程；压缩负载对比固定每组 30 秒。
+1. **Network test → Compression traffic comparison (40 rounds)**  
+   Sends paced random test payloads with **no audio encoder and no audio output**. Runs 10 payload profiles × Datagram / Reliable × 2 repeats, 30 s per round with 5 s gaps and a 10 s tail (~**23 min 25 s** total).
+2. **Music compression test**  
+   Selects a local audio file, start offset, and round duration (`60–300` s) for **live end-to-end encode/decode playback** across 8 formats × 2 transports × 2 repeats = **32 rounds** replaying the same excerpt:
+   - Default `120` s/round: ~**66 min 45 s** (plus negotiation & report upload)
+   - `60` s/round: ~**34 min 45 s**
 
-## 测试矩阵
+> [!NOTE]
+> Both suites use iPad's currently negotiated playout budget. The ceiling and round-duration controls under Network Settings apply to automatic tuning; synthetic compression traffic runs fixed 30 s rounds.
 
-字节数含 32 字节 timed header，不含 QUIC、TLS、UDP/IP 或确认开销。
-Reliable 每条另有 2 字节长度；真实重传流量要结合传输统计判断。
+---
 
-| 随机负载 | 每包字节 | 每秒包数 | 隔离的因素 |
-|---|---:|---:|---|
-| Float32 对照 | 992 | 400 | 当前原始音频负载 |
-| PCM16 对照 | 512 | 400 | 同频率降低数据量 |
-| Opus 256 等效 | 112 / 192 / 352 | 400 / 200 / 100 | 保持音频码率，改变帧长和频率 |
-| Opus 192 等效 | 92 / 152 / 272 | 400 / 200 / 100 | 更低码率 |
-| 频率对照 | 112 / 112 | 200 / 100 | 保持单包大小，降低频率 |
+## Benchmark Matrix & Encoder Parameters
 
-音乐测试实际编码和解码，并非把预编码文件按节奏发送。
-固定使用官方 libopus 1.6.1、48 kHz 双声道、restricted-low-delay、
-music、复杂度 5、CBR，不使用 DTX 或 FEC。
-帧收集、API 查询到的 codec lookahead、计算和排队都计入原来的源音频年龄预算。
-收到乱序包时按序解码；缺包到达最晚解码时刻前仍可采用原包。
-丢失时推进解码器状态所需的 PLC 不算作原始音频成功交付。
+### Synthetic Load Matrix (40 Rounds)
 
-## 比较方法
+Payload sizes below include the 32-byte timed header and exclude QUIC, TLS, UDP/IP, and ACK overhead (Reliable streams add a 2-byte length prefix per record):
 
-测试以连接的 stream ID 生成可重现顺序，第二遍反序，传输交错。
-保持 iPad 位置、前后台状态、播放预算和电脑负载一致；实际路径写入本地报告。
-USB 和 Wi-Fi 的结果分别看。所有参数在同一轮自动完成，可以减少人为换组时的差异。
+| Traffic Profile | Bytes / Packet | Packets / Second | Factor Isolated |
+| --- | ---: | ---: | --- |
+| Float32 baseline | 992 | 400 | Baseline raw PCM payload |
+| PCM16 baseline | 512 | 400 | Half payload size at identical packet rate |
+| Opus 256 equivalent | 112 / 192 / 352 | 400 / 200 / 100 | Constant bitrate across `2.5` / `5` / `10` ms packetization |
+| Opus 192 equivalent | 92 / 152 / 272 | 400 / 200 / 100 | Lower target bitrate across frame durations |
+| Packet-rate control | 112 / 112 | 200 / 100 | Fixed packet size while lowering packet rate |
 
-分析首先检查轮次是否完整，再配对同一路径、预算、传输、重复编号的数据。
-分别看源音频缺失时长、迟到、输出过期、发送拒绝和编解码耗时，
-不能只看收到包的比例，也不能把缓冲增加的延迟当作稳定性收益。
-与 PCM 基线的差异需同时列出两次重复；方向相反时不能判断压缩改善了网络。
-即使方向一致，两次重复也不提供统计显著性或未来网络稳定性保证。
+### Music Compression Live Codec Profile
 
-真实音乐摘要的 `missing_frames` 是未能准备进入输出链的源帧数，
-标记为 `missing_measurement_source=source_preparation`；
-后续 `playout_expired_output_frames` 属于输出帧（变速后），单独比较，
-不能直接相加当作同一单位的缺失率。准备成功也不等于已经做过声学测量。
+Music benchmarks decode the chosen excerpt via Media Foundation and encode/decode in real time (not pre-encoded files):
 
-## 本地报告
+- **Codec settings**: Official `libopus 1.6.1`, 48 kHz stereo, `restricted-low-delay`, `music` signal hint, complexity `5`, CBR, with DTX and in-band FEC disabled.
+- **Format sweep**: Float32 PCM (`2.5` ms), PCM16 (`2.5` ms), and Opus `192` / `256` kbps at `2.5` / `5` / `10` ms each.
+- **Timing & loss handling**: Frame accumulation, queried codec lookahead, compute, and queueing all count against the source-age budget. Out-of-order packets decode in sequence order; missing packets that arrive before their latest decode deadline still replace concealment; PLC advances decoder state on lost packets and does **not** count as original audio delivered.
 
-音乐测试每轮摘要单独保存，避免长测试把早期日志轮转掉：
+---
 
-- 电脑会话目录：`compression-summary.jsonl`、`sender-trace.jsonl`、`sender.log`。
-- iPad 回传报告：包含 `compression_summary_json_v1` 摘要区段。
-- 原始逐包轨迹使用报告中标明的 `sequence_stride`（电脑）／`trace_sequence_stride`（iPad）对全程有界采样。
-  采样间隔内没有记录不表示丢包；完整计数来自每轮摘要。
+## Analysis Rules & Local Reports
 
-开发分析命令（输入为本地路径，不上传到仓库）：
+### Interpretation Boundaries
+
+- **Order randomization & pairing**: Round order is seeded deterministically from the stream ID, reversed in repeat 2, and interleaved across transports to reduce drift bias. Keep iPad placement, foreground/background state, delay budgets, and PC load constant, and analyze USB vs. Wi-Fi runs separately.
+- **Separate frame axes**: In music summaries, `missing_frames` (`missing_measurement_source=source_preparation`) counts **source frames** that failed to reach the output chain, whereas `playout_expired_output_frames` counts time-stretched **output frames** — never add these two metrics together as one percentage. Evaluate missing source duration, late rate, playout expiry, sender rejections, and codec timings together rather than packet delivery rate alone.
+- **Two-repeat limits**: Compare every profile against the PCM baseline across **both** repeats. Opposing directions across repeats cannot establish a compression improvement, and even consistent direction across two repeats does not prove statistical significance or future network behavior.
+
+### Local Output Files & Analysis Command
+
+To keep long runs from rotating early evidence out of disk logs, music tests write dedicated per-round summaries:
+
+- **Windows session directory**: `compression-summary.jsonl`, `sender-trace.jsonl`, `sender.log`
+- **iPad report**: Contains the `compression_summary_json_v1` summary block
+- **Bounded packet traces**: Detailed per-packet traces are sampled using the reported `sequence_stride` (sender) / `trace_sequence_stride` (iPad). Unsampled gaps are **not** packet loss; authoritative totals always come from per-round summaries.
+
+Run the local analyzer (keep raw logs and reports local — never commit them to a public repository):
 
 ```powershell
-python diagnostics/analyze_compression_test.py <会话目录>/compression-summary.jsonl <会话目录>/ipad-report.txt > out/compression-analysis.json
+python diagnostics/analyze_compression_test.py <session-dir>/compression-summary.jsonl <session-dir>/ipad-report.txt > out/compression-analysis.json
 ```
 
-随机负载测试可输入该次 `sender.log` 和 `ipad-report.txt`。
-编译和桌面往返测试验证实现；只有真实 iPad 测试的耗时和播放结果可用于判断 iPad 能否满足预算。
+For synthetic compression traffic runs, pass that run's `sender.log` and `ipad-report.txt` instead.
+
+> [!NOTE]
+> Compilation and desktop loopback tests verify implementation correctness; only real-device iPad runs establish whether codec CPU cost fits inside your latency budget on hardware.

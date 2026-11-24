@@ -1,218 +1,11 @@
-# HearPort 0.1.0 validation matrix
+# HearPort 0.1.0 Validation Matrix
 
-## WinUI 3 desktop and variable PCM (2026-11-16)
+> [!NOTE]
+> **Evidence boundary:** Automated tests and CI builds do not prove physical-device playback, background behavior, or long-session reliability. User-observed runs are recorded separately from repeatable test evidence, and signed-install or soak acceptance is never inferred from an unsigned archive or short spot check.
 
-- Merged source `4b0ec90fd6e46092f525d04a9b2793d27f89c558` uses a WinUI 3
-  main window and tray flyout. Windows [Release CI](https://github.com/lsy223622/HearPort/actions/runs/43739678400)
-  passed the portable package checks and the GUI smoke test covering navigation,
-  capture-source selection, and opening and dismissing the disconnected flyout.
-  A separate local Release run passed all 26 CTest checks.
-- The matching [iOS CI](https://github.com/lsy223622/HearPort/actions/runs/43739678393)
-  passed the receiver package tests and unsigned archive workflow. Protocol tests
-  cover variable PCM and mixed fixed/variable records on reliable streams.
-- On the development PC, the user confirmed Windows could change the iPad
-  system volume during playback and after locking the iPad. The user also
-  checked light mode and Windows display scaling. These are interaction
-  observations on development builds.
+---
 
-## Background playback recovery and system media controls (2026-11-07)
-
-- Application source `39ce86132fbe4b439d47fe3882d3f4c35a1bce61` adds a single, nonrenewing background recovery allowance capped at 20 seconds after eligible playback transport loss; recovery success, explicit disconnect, authentication rejection, diagnostics/calibration and system expiry end the allowance. Audio interruption recovery respects `shouldResume`; media-service reset recreates audio objects and requires an explicit playback request. Now Playing presents live PC audio with play/pause/stop controls; play uses the saved route and remembered authentication, and stop pauses automatic recovery. Diagnostic sessions disable media commands.
-- Delivery source `161fa3f12a55ef5b221f0ccf4332bfcb68f5764a` moves the two iOS jobs to `macos-15`. The preceding run was cancelled before any steps because GitHub rejected the retired `macos-14` runner configuration; it was not a source/test failure.
-- iOS Actions [42263118206](https://github.com/lsy223622/HearPort/actions/runs/42263118206) passed all 227 Swift/QUIC tests, including five new recovery regressions, and the unsigned iPad archive with Xcode 16.4 (build 196). Existing shortcut/automation-analysis checks also passed locally (4 tests). CodeQL [42263117529](https://github.com/lsy223622/HearPort/actions/runs/42263117529) passed.
-- Downloaded IPA metadata matches build 196, delivery source and run identity; its SHA-256 matches the archive record: `55f2b856acc7f3151d96f851dc96fce52051c4e37d5dcf4ced8508df397b9a45`. The packaged app retains `UIBackgroundModes = audio`; no provisioning profile, code-signature directory or Mach-O code-signature command is present.
-- Device acceptance pending: locked playback through a brief LAN/USB outage on permitted routes; manual stop during recovery; lock-screen/Control Center/headset play and stop using the saved mode; interruption resume permission and explicit playback after a media-service reset. CI verifies state policies and iPadOS compilation, not actual scheduling time, remote-command delivery or background survival on a physical iPad. The build 193 UI-refresh and build 194 connection-mode acceptance checks remain pending unless separately confirmed.
-
-## Connection modes and shortcut acceptance (2026-11-05)
-
-- Device observations: audio playback intents connected and played without presenting the app, including when it had no existing app-switcher card; the foreground intent opened the app. Network-only playback stayed on LAN when USB became available; USB-only playback waited after unplugging even with LAN available. These observations do not establish locked-device or reboot-trigger behavior.
-- Source `3526f3246e23d8b622dfd0eb968586cd85ef2772` shares a persisted Automatic / Network only / USB only selection between playback settings, manual/recovery connections and accepted connection shortcuts. Changing the selection in settings restarts an active/pending connection, while an idle selection only saves preferences. Network calibration retains its explicit network sampling policy without overwriting the playback preference. Recovery messages follow the effective search route.
-- iOS Actions [42002798864](https://github.com/lsy223622/HearPort/actions/runs/42002798864) passed all 222 Swift/QUIC tests, including saved-route defaults/selections, and archived unsigned build 194. Archive metadata verified seven distinct intents/shortcuts, three route parameters and foreground/audio protocol declarations. Local shortcut/analyzer/document checks: 7 passed; English/Chinese localization keys match without duplicates.
-- Windows Actions [42002798733](https://github.com/lsy223622/HearPort/actions/runs/42002798733) and CodeQL [42002798328](https://github.com/lsy223622/HearPort/actions/runs/42002798328) passed.
-- Downloaded IPA source/build identity, unsigned packaging and SHA-256 verified: `9fde16f93a7f8724df14b3a63b72c30ea5e0a6ed8656400bffeecf67711dcd20`. Device acceptance pending for the new settings picker, route persistence after relaunch, mode-specific recovery text and the seven-action Shortcuts catalog. Usage and result interpretation: [connection-automation.md](connection-automation.md).
-
-## Live home-canvas observation (2026-11-05)
-
-- Build 192 device logs recorded authenticated sessions and started audio output while the reported home screen still showed available connections; `ui_disconnected` was recorded at 08:21:09 UTC despite the reported playback screen remaining visible. Foreground transitions caused the stale presentation to refresh.
-- Source `32333ff12d82341af539567689e666926c4c4002` gives the content inside the deferred `GeometryReader` its own SwiftUI view observing both `ReceiverRuntime` and `ReceiverConnectionCoordinator`. Layout size and existing stage transitions are retained; runtime changes no longer depend on the geometry closure being re-evaluated.
-- iOS Actions [41995708805](https://github.com/lsy223622/HearPort/actions/runs/41995708805) passed all 221 Swift/QUIC tests and the unsigned iOS archive (build 193); CodeQL [41995707864](https://github.com/lsy223622/HearPort/actions/runs/41995707864) passed. These checks cover compilation and existing behavior, not the live SwiftUI refresh regression on a physical iPad.
-- Downloaded build 193 was verified against archive metadata: matching source/build identity, IPA SHA-256 and unsigned packaging. SHA-256: `42676125f6b531b646eaee06421ae0bc5f46f9d2adc0d88d93bcb292d1b9b69b`.
-- Device acceptance pending: connect and manually disconnect without leaving the foreground, then check automatic reconnect and LAN/USB route/status changes. The screen should reflect each transition without switching apps or rotating the device. Private diagnostic logs remain local.
-
-## Rust cryptographic dependency security update (2026-10-26)
-
-- Delivery source `d8d6e78f22cf3b950056e03d70a683256eaa3b47`: only `crypto-bigint` 0.7.5 to 0.7.9 and `ctutils` 0.4.2 to 0.4.5 changed in the 47-package lockfile. Dependency constraints, SPAKE2/P-256, KDF, protocol and FFI declarations remain unchanged. The repaired dependencies require Rust 1.87; the manifest and development instructions now state that minimum.
-- Before/after `cargo tree --locked -e features -i` and normal/build-only feature graphs confirmed production reachability through `pakery-crypto`/P-256 and retained existing features. See [security-implementation.md](security-implementation.md#dependency-security-and-reproducible-builds) for the advisory references, reachability limits and native-library provenance.
-- `cargo audit` 0.22.2, RustSec database commit `21d909e4c8bd4e14c7aea58bf980c881a0053ab1`: the old lockfile produced exactly RUSTSEC-2026-0385 and RUSTSEC-2026-0387 (exit 1); the updated lockfile produced zero vulnerabilities and no warnings (exit 0), with no ignored advisories.
-- Local `cargo +1.87.0 test --locked --manifest-path security/spake2-provider/Cargo.toml --all-targets`: all three provider tests passed, including the RFC 9382 point/key/confirmation vector. `cargo +1.87.0 build --locked --release` and the current-toolchain Release library build passed; `cargo fmt -- --check` passed. Rust 1.85 correctly rejected the new dependencies' 1.87 requirements.
-- Existing Python security vectors: 5/5 passed. Native C++ tests now also exercise both FFI roles with matching and wrong PINs and a corrupted confirmation. All 26 local CTest checks passed. Separately rebuilt old and new Windows DLLs passed eight old/old, old/new, new/old and new/new FFI exchange cases covering matching/wrong PINs, matching session keys and confirmation rejection. This is version/protocol interoperability evidence, not a physical cross-device exchange.
-- Windows Actions [40250312957](https://github.com/lsy223622/HearPort/actions/runs/40250312957): Rust 1.87 provider tests, clean native Release build, 26 CTest checks, 5 Python security vectors, 29 existing Python checks, packaged app-local DLL loading and GUI startup/paint checks passed. The local full-GUI relink had encountered an in-use development executable; the successful clean CI build supplies final executable evidence without stopping that process.
-- iOS Actions [40250312902](https://github.com/lsy223622/HearPort/actions/runs/40250312902): Rust 1.87 provider tests and native FFI passed on macOS arm64; 221 Swift tests including QUIC interoperability passed; `cargo build --locked --release --target aarch64-apple-ios` and the unsigned Xcode Release archive succeeded (IPA build 192). The two release build logs explicitly compile the updated crate versions. CodeQL [40250312835](https://github.com/lsy223622/HearPort/actions/runs/40250312835) passed.
-- Downloaded ZIP/source hashes, all 100 Windows runtime-file hashes, IPA hash/source/build identity, both packaged Rust dependency inventories and the source ZIP lockfile were verified. No old provider static library is tracked or restored by CI. Physical iPad installation/pairing and target-specific constant-time machine-code analysis were not performed; automated functional tests do not establish absence of all timing leakage. Running applications were not replaced.
-
-## Chinese UI font selection (2026-10-25)
-
-- In the user's running Windows Sandbox, the native UI language was Simplified Chinese and Microsoft YaHei UI was installed, but Segoe UI's GDI font-link entries were absent. Direct glyph queries returned missing glyphs for Segoe UI and valid glyphs for Microsoft YaHei UI.
-- Chinese UI now uses Microsoft YaHei UI directly; English retains Segoe UI and existing DPI sizing. No system font or registry changes are required.
-- The native glyph regression failed with the old font-selection logic and passed after correction. Local 26 CTest and 29 Python checks passed. The same Sandbox passed the native Chinese glyph/DPI test and existing window layout/repaint checks. CI reports the font test as skipped if the required Chinese font is absent; that result is not Chinese rendering evidence.
-- Delivery source `caf35c4fd39efdf994e4e198a4688d18b983e8ec`: Windows Actions [40196291192](https://github.com/lsy223622/HearPort/actions/runs/40196291192) passed all 26 CTest, including the Chinese glyph test without skipping, 29 Python checks, app-local DLL checks and GUI startup/paint checks; CodeQL [40196290928](https://github.com/lsy223622/HearPort/actions/runs/40196290928) passed. Download hashes and all 100 runtime files verified. The Actions package was started and passed layout/repaint checks in the user's same Sandbox; no font-link registry entries were changed.
-
-## Portable runtime loading regression (2026-10-22)
-
-- Reproduced the portable package failure in a fresh Windows Sandbox without a System32 `vcruntime140.dll`: the application-local file existed, but the old GUI exited with `0xC0000135`. A CRT-free probe failed to load MsQuic with error 126; preloading the same local runtime made the probe succeed.
-- The pinned `msquic.dll` has `DependentLoadFlags=0x0800`, restricting its imports to System32. Both sender executables now delay-load MsQuic after their own VC runtime initializes; no system runtime installation or third-party DLL modification is involved.
-- The rebuilt GUI remained responsive in the same Sandbox, loaded MsQuic and all three VC runtime DLLs from its own directory and bound UDP 52137. System32 still contained no VC runtime. This validates loading/startup, not end-to-end audio in Sandbox.
-- Packaging rejects an executable whose PE delay-import table does not contain MsQuic. CI startup verification checks the actual loaded path of every bundled DLL, preventing system-installed runtime files from silently satisfying the check. Local checks: 25 CTest and 33 combined Python tests passed.
-- Delivery source `5a1e5a2fe763ef2a52fafc2e5413649636a1e788`: Windows Actions [39788168226](https://github.com/lsy223622/HearPort/actions/runs/39788168226) passed 25 CTest, 29 Python tests, application-local DLL path checks and GUI startup/paint checks; CodeQL [39788187759](https://github.com/lsy223622/HearPort/actions/runs/39788187759) passed. Download hashes and all 100 runtime files verified. The unmodified Actions package repeated the successful no-system-CRT Sandbox startup/module-path/UDP check. iPad application source is unchanged.
-
-## Connection automation verification (2026-10-22)
-
-- Source `8ba6d9ab9e7335f72a5122b166d66d320f1e0493`: Windows Actions [39748549052](https://github.com/lsy223622/HearPort/actions/runs/39748549052), iPad Actions [39748549005](https://github.com/lsy223622/HearPort/actions/runs/39748549005), CodeQL [39748548777](https://github.com/lsy223622/HearPort/actions/runs/39748548777) passed. Windows: 25 CTest, 28 package checks and GUI startup/paint verification. Swift: 221 tests including recovery intent, fixed-route exclusion and stale-session stop rejection; four Python shortcut/trace-analysis checks also passed in iPad CI.
-- Unsigned iPad build 191 contains ten distinct intent/shortcut entry points. Archive checks validate route parameters, foreground flags, AudioStarting conformance, URL registration and the audio background mode. Audio entry points require iPadOS 17.2 in this SDK's metadata; ordinary intents retain iPadOS 16 compatibility.
-- Downloaded archive hashes, all 100 Windows runtime files, embedded source/build IDs and unsigned packaging verified; the matching Actions Windows package responded and bound UDP 52137 locally. These checks do not exercise iPad OS scheduling or physical audio output.
-- Five foreground URL shortcut sources were generated. Actual macOS signing attempts failed for missing iCloud login. Ten built-in App Shortcuts supply usable native entry points without requiring file import; on-device indexing and execution remain pending.
-- Physical matrix and local analyzer: [connection-automation.md](connection-automation.md). Background, lock-screen, force-quit, Wi-Fi/charger trigger behavior and final audible output are **pending device execution**, not inferred from compilation, metadata or desktop timing.
-
-
-Automated tests and successful builds do not establish real-device playback,
-background behavior, or long-session reliability. User-observed runs are listed
-separately from repeatable test evidence; signed installation and soak results
-are not inferred from an unsigned archive or short playback.
-
-**User-observed manual runs:** playback on an iPad Pro 11-inch (2020) over USB,
-including cable disconnect and reconnect; repeated playback/tests on weak
-2.4 GHz Wi-Fi. These observations do not establish a timed soak, lock-screen
-behavior across all output routes, a clean-machine install, or final Release acceptance.
-
-**Additional user observation (2026-10-21):** the installed app was left idle
-with the iPad locked for several hours. Later Windows audio still played through
-the iPad without lighting its screen. The exact build, physical path and elapsed
-time were not supplied for this observation. It records successful locked-idle
-continuation/resumption; it is not a monitored continuous-music soak.
-
-## Pairing safety and interaction recovery (2026-10-21)
-
-- Matching source `e59628ab0f34fd6a8f9a8293d5c5d20e4ed03078`: Windows Actions [39593250742](https://github.com/lsy223622/HearPort/actions/runs/39593250742) passed 24 CTest, 28 Python checks and packaged startup/paint checks; iPad Actions [39593250802](https://github.com/lsy223622/HearPort/actions/runs/39593250802) passed 216 Swift tests and archived unsigned build 184; CodeQL [39593251795](https://github.com/lsy223622/HearPort/actions/runs/39593251795) passed. Downloaded hashes, all 100 Windows files, matching embedded build identities and unsigned IPA packaging verified. The Actions Windows executable was launched locally, responded and listened on UDP 52137.
-- An explicit remembered-authentication rejection received through pinned TLS stops receiver retries and offers pairing recovery, while retaining the saved credential. Transport errors, timeouts and ordinary session ends cannot delete credentials.
-- SessionEnd reason 3 is an authenticated unpair notice. Both endpoints compare the session credential against the currently saved peer ID, secret and server identity before deletion, preserving newer pairings. Offline cancellation remains local; the next explicit authentication rejection stops the other endpoint's retries.
-- Deliberate iPad disconnects keep the closing session alive until ACK or 500 ms. Connection-generation guards prevent its completion from stopping a new attempt. Windows local unpair closes the old host on a worker, retains logging through shutdown and joins before restart or exit.
-- Manual address edits clear the old endpoint selection. Numeric delay edits update their binding before test startup. The recommendation page can select a discovered network-capable PC without losing goal/duration/delay choices. Audio engine interruption/recovery/failure is reflected in the main canvas; failed playback offers retry.
-- Local Windows Release build, all 24 CTest cases and 28 Python checks passed. A focused codec check first rejected the unpair vector, then passed after the protocol change. Cross-language vectors cover reason 3 and reject unknown reasons. Swift pairing-policy checks include unauthenticated notices, normal ends, missing credentials and changed peer/secret/server identity.
-- Device acceptance pending: both directions of connected unpair and re-pair; one-sided offline unpair followed by explicit rejection with credential retention; ordinary USB/network interruption without lost pairing; edited manual address; typed delay followed immediately by Start; in-page PC selection; output-recovery failure/retry feedback when reproducible.
-
-## Independent network and USB latency settings (2026-10-21)
-
-- Menu summary follow-up: source `1e15f44e2d502afb27a9374a24ba5fc29c41bbb2`, iPad Actions [39586833423](https://github.com/lsy223622/HearPort/actions/runs/39586833423), 214 Swift tests and unsigned build 183 passed; CodeQL [39586833653](https://github.com/lsy223622/HearPort/actions/runs/39586833653) passed. IPA hash, embedded identity and unsigned packaging verified. Each route menu row now shows encoding plus its own target/maximum in a second, localized line. Device appearance remains to be checked.
-- Source `3370ee2c55083328c1d0d3c66ebc111a674e7af1`: iPad Actions [39583024058](https://github.com/lsy223622/HearPort/actions/runs/39583024058) passed 214 Swift tests and archived unsigned build 182. CodeQL [39583022167](https://github.com/lsy223622/HearPort/actions/runs/39583022167) passed. Downloaded IPA SHA-256, embedded source/build identity and unsigned packaging were verified.
-- Network audio and USB audio each contain their own normal target and maximum total delay. Connections and route changes read the actual route's saved budget; USB tunnel queue expiry follows its USB maximum. Active playback continues using its negotiated snapshot until the next connection.
-- Upgrade migration preserves the previous shared delay values for network playback; USB starts at the original 50/100 ms defaults. Existing separate route values are preserved on repeated migration.
-- Both adaptive quick recommendations and full diagnostic calibration application update network latency only. Regression coverage checks factory defaults, migration persistence and preservation of custom USB budgets in both application paths.
-- Physical acceptance pending: install the new IPA, confirm the existing network recommendation is retained, edit both route budgets independently, and check the active values after USB insertion/removal and after applying a network recommendation.
-
-## iPad row actions, launch layout and connection address (2026-10-21)
-
-- iPad executable source `2bebb701a278d94fbbc6876b6397777021e18c50`: Actions [39544315416](https://github.com/lsy223622/HearPort/actions/runs/39544315416) passed 211 Swift tests and archived unsigned IPA build 181. CodeQL [39544315151](https://github.com/lsy223622/HearPort/actions/runs/39544315151) passed. Downloaded IPA SHA-256, source/build identity and unsigned packaging were verified.
-- Blue Connect, Start automatic test and Apply parameters actions use native Form/List row buttons with expanded hit shapes. With no active or selected connection, the disabled start action reads No connection selected.
-- Initial canvas transactions disable animations until the first UIKit appearance completes. Subsequent presentation-stage changes keep their existing animation; reduced-motion handling remains in effect.
-- Connection details read the connected QUIC control stream's numeric remote endpoint and port, including path updates. Pre-authentication address callbacks are retained until that session is promoted; stale-session callbacks cannot replace the active address. Tests cover IPv4/IPv6 formatting and an actual loopback QUIC connection's address.
-- User acceptance update (2026-10-21): the user confirmed startup layout now appears in place. Five supplied dark-mode screenshots show the compact remembered/pairing forms, recommendation label/value rows, the disabled No connection selected action, settings and network-audio controls without visible clipping. The screenshots are retained locally. Full-row tap behavior, numeric LAN endpoint display and light-mode appearance remain separate acceptance items; static screenshots do not establish touch behavior.
-
-## Automatic-test startup and diagnostic size display (2026-10-21)
-
-- Matching executable source `ea1683110ccd80181d6205716bc35b163c8e95c4`: Windows Actions [39478078837](https://github.com/lsy223622/HearPort/actions/runs/39478078837) passed 24 CTest, 28 Python checks and packaged GUI checks. iPad Actions [39478078798](https://github.com/lsy223622/HearPort/actions/runs/39478078798) passed 209 Swift tests and archived unsigned build 180. CodeQL [39478077872](https://github.com/lsy223622/HearPort/actions/runs/39478077872) passed.
-- Downloaded archive/IPA hashes, both source identities, IPA build/unsigned status and all 100 Windows packaged-file hashes verified. The downloaded Windows package passed the local startup/window checks and was launched for use.
-- The supplied build 179 device export contains over 500,000 records. Its 2,000-entry count describes the bounded in-memory preview, not file retention. The diagnostics page now labels that count explicitly, sums active and rotated file sizes and refreshes while open. Retention limits remain approximately 4 MiB normally and 128 MiB with detailed logging.
-- Normal audio readiness previously notified the UI after writing `ReceiverReady`, before an accepted `StartStreamAck` established the active stream ID required by a calibration request. Readiness now waits for both writes, in either order, and notifies once. Probe sessions do not require an audio stream acknowledgement. New gate tests cover both completion orders, probe readiness and reset for another connection; request outcomes are recorded in runtime logs.
-- Pairing uses the same narrow form presenter as settings/details, with a blue text Connect action. Windows uses one pairing action in the original right-hand position, selecting pair or unpair according to its saved credential.
-- Local Windows Release build, 24 CTest, 28 Python checks and real-window startup/clipping/order/unchanged-status checks passed. Physical acceptance remains pending installation of build 180: home-started tests, ordinary music startup, retained-report recovery, pairing form width/color and live diagnostic totals. The readiness tests exercise the shared gate; the iOS control-session path is archive-compiled, not a device handshake test.
-
-## Connection actions and Windows painting (2026-10-21)
-
-- Windows executable source `3e8543a8bcea881d7bfb066a5080c6f9932af8c0`: Actions [39473183485](https://github.com/lsy223622/HearPort/actions/runs/39473183485), 24 CTest and 28 Python checks passed. The extracted release package also passed GUI startup, clipping, background order and unchanged-status invalidation checks.
-- Final iPad source `9f45c551e44456996aaf242d425d32f28a11e1f2`: Actions [39473786709](https://github.com/lsy223622/HearPort/actions/runs/39473786709), 205 Swift tests and unsigned IPA build 179 passed. CodeQL [39473788094](https://github.com/lsy223622/HearPort/actions/runs/39473788094) passed. The downloaded IPA hash, source/build identity and unsigned packaging were verified; the follow-up commit only changes iPad pending-test cleanup.
-- The same window check fails on the previous package: the parent can erase child pixels, and overlapping group/tab backgrounds have incorrect sibling clipping/order. Backgrounds now own their regions, groups fill their background, unchanged status text does not invalidate controls, and selecting the current page does not repeat visibility changes. Timer-driven full-window invalidation is absent.
-- Downloaded archive hashes, source identity and all 100 Windows packaged-file hashes verified. The Actions executable passed the local GUI check, remained responsive and listened on UDP 52137. Its connected status displayed the negotiated PCM/Opus format rather than a preset name.
-- The iPad changes add available-computer context actions for testing and local unpairing, PIN-first test startup, foreground keep-awake control, automatic ordinary reconnection after quick testing, and preservation of results across that reconnection. A policy regression checks reconnect intent, USB promotion, stale test closure and explicit stop. Terminal pairing errors and ordinary connection selection discard a pending test.
-- Physical acceptance remains pending installation of build 179: long-press actions, incorrect-PIN recovery without a stale test, unpair/re-pair on both endpoints, test completion followed by ordinary playback, keep-awake behavior, and light/dark layout/colors. Runtime window checks do not establish every device interaction or prolonged visual behavior during calibration.
-
-## iPad menu presentation (2026-10-20)
-
-- iPad executable source `d8977fa9d6b3bb9946baa1f1724cac3b1cbc28ec`.
-- Actions [39440168724](https://github.com/lsy223622/HearPort/actions/runs/39440168724): 204 Swift tests passed and unsigned IPA build 177 archived. CodeQL [39440168151](https://github.com/lsy223622/HearPort/actions/runs/39440168151) passed.
-- Downloaded IPA SHA-256, source identity, build number and unsigned packaging verified.
-- Recommendation rows use label/value pairs with a visible test timestamp. Test ceiling and segment duration are visible together; action rows use blue text. The native segmented control uses a 44-point height and body-size titles. Settings/details use a form presentation with a preferred 600-point width.
-- Stable network status uses the icon asset's RGB (30,210,167); stable USB status uses system blue across the connection symbol, status text and details. Other stability levels keep their existing colors.
-- Physical acceptance remains pending installation: compact sheet width, presentation/dismissal, navigation and confirmation dialogs, enlarged segments, blue action rows and system light/dark appearance. A successful archive does not establish screenshot appearance or touch interaction.
-- Current Windows Actions package remains the validated `2571b1b` server; this revision changes iPad presentation.
-
-## Transport comparison and route settings (2026-10-20)
-
-- Executable source `2571b1b29a160617d71a087b8c48018687269c3a`.
-- Windows Actions [39425040006](https://github.com/lsy223622/HearPort/actions/runs/39425040006): Release package, 24 CTest and 28 Python checks passed. The extracted distribution also passed a four-second GUI startup check before upload.
-- iPad Actions [39425055397](https://github.com/lsy223622/HearPort/actions/runs/39425055397): 204 Swift checks passed and unsigned IPA build 176 archived. CodeQL [39425038251](https://github.com/lsy223622/HearPort/actions/runs/39425038251) passed.
-- Regression Actions [39422781309](https://github.com/lsy223622/HearPort/actions/runs/39422781309) reproduced the last-round adjustment bias, missing transport comparisons at changed settings and sensitivity to small latency differences. Passing coverage includes two observations per transport at every load/budget, either configured preference retained on close results, a material difference overriding preference, independent route preferences, detailed measurement export and retention downgrade.
-- Each candidate uses an ABBA block. Comparison tolerances include observed repeat variation and a fixed floor; they are selection heuristics, not confidence intervals. Similar transport results are disclosed. Final longer repeats verify the selected candidate; this does not establish a causal transport advantage or future rare-loss rate.
-- Logs retain approximately 4 MiB normally or 128 MiB with detailed logging enabled. Disabling detailed logging prunes excess files and oversized retained files. The Windows detailed-event filter preserves failures; iPad detailed logs include per-round parameter/measurement JSON and selection outcome. Quick tests do not automatically upload a report.
-- Download hashes, all 100 Windows packaged-file hashes, matching Windows/IPA source identities and unsigned IPA packaging verified. The final Actions Windows executable remained running and bound UDP 52137. Its ordinary runtime files were each at most 1 MiB with only three backups retained.
-- Physical acceptance remains pending installation of build 176: independent USB/network transport changes and handover, direct delay input, light/dark action buttons, and a fresh recommendation with detailed logs. Build/automated evidence does not establish device UI appearance or comparative network performance.
-
-## USB recovery and extended diagnostics (2026-10-20)
-
-- Matching executable source `82bdaee35a7d32a72a6edfabc3abe56491e40bd8`.
-- Windows Actions [39417771470](https://github.com/lsy223622/HearPort/actions/runs/39417771470): Release package, 24 CTest and 28 Python checks passed.
-- iPad Actions [39417768450](https://github.com/lsy223622/HearPort/actions/runs/39417768450): 197 Swift checks passed and unsigned IPA build 173 archived. Coverage includes listener recreation, USB cooldown retry while LAN is active, preservation of an accepted tunnel, larger default log retention and Unicode streaming export.
-- CodeQL [39417768290](https://github.com/lsy223622/HearPort/actions/runs/39417768290) passed. Both archive hashes/source identities and all 100 Windows packaged-file hashes verified. The Actions Windows package started and bound UDP 52137.
-- Build 170 physical evidence showed continued LAN playback and usbmux Connect result 3 on the USB entrance. Startup listener events had rotated out; the original lifecycle transition remains unproven. Old-behavior regressions reproduced two recovery gaps; final fixtures use isolated ports to avoid the live CI QUIC bridge.
-- That candidate used 16 MiB per file plus seven backups on each endpoint (approximately 128 MiB). iPad export copies a fixed-length descriptor snapshot outside the writer lock on a background queue and records current USB states.
-- Physical long-running acceptance remains pending installation of build 173; automated lifecycle simulations do not prove the cause or recovery of the original device failure.
-
-## Adaptive client recommendations (2026-10-20)
-
-- Final executable source: `4de8694f96a76537d518556dccff93f849acd149`.
-- Windows Actions [39399070518](https://github.com/lsy223622/HearPort/actions/runs/39399070518): Release package, 24 CTest and 28 Python checks passed.
-- iPad Actions [39399056345](https://github.com/lsy223622/HearPort/actions/runs/39399056345): 194 Swift checks passed, including adaptive search, shared v5 fixtures, dynamic frame sizes, invalid-clock rejection, preference application and progress estimates; unsigned IPA build 170 archived.
-- CodeQL [39399055960](https://github.com/lsy223622/HearPort/actions/runs/39399055960) passed.
-- Download checksums, all 100 packaged Windows file hashes, matching Windows/IPA source identities, IPA build 170 and unsigned packaging verified. Downloaded Windows Actions executable started and listened on UDP 52137.
-- Quick tests choose one goal, repeat settings, adjust network format/bitrate/frame duration and budget, and verify one candidate with two longer windows. Results are local; the completion acknowledgement contains no report. Full Windows diagnostic calibration retains the existing v4 path.
-- Stability first selects the best observed continuity within the budget; nonzero gaps remain visible. Low latency and Balanced require their selection targets in both verification windows before application. These are finite observations, not established future loss rates or causal proof against network variation.
-- Physical acceptance remains pending: USB unplug/insert with authoritative negotiated-format display; 5 ms latency controls; quick-test progress, local completion and application; normal audio after reconnection. Random CBR-shaped traffic reserves codec preparation time but does not verify decoder throughput or acoustic latency.
-
-## Live compression development (2026-10-20)
-
-### Capture-silence recovery regression
-
-- Build 165 can keep advancing the coordinated playback cursor after capture stops,
-  causing resumed source packets to be classified late indefinitely.
-- Regression Actions [39391950466](https://github.com/lsy223622/HearPort/actions/runs/39391950466)
-  reproduced it: 20 resumed packets rejected as late and no resumed audio on the
-  same stream. The other 186 tests passed. Decoder-only silence coverage had not
-  exercised the playback pump interaction.
-- The pump now advances source gaps only while a buffered packet establishes the
-  future timeline; staged audio drains into the existing silent-rebuffer path.
-- Fixed Actions [39392343378](https://github.com/lsy223622/HearPort/actions/runs/39392343378): all 187 Swift tests passed, including resumed playback on the original stream; unsigned IPA archived. CodeQL [39392343011](https://github.com/lsy223622/HearPort/actions/runs/39392343011) passed. Physical switching-track acceptance remains pending installation.
-
-- Network/USB encoding preferences, negotiated live Opus and PCM, bitrate/frame duration settings implemented.
-- Local Release build: 24/24 CTest checks; focused Python: 17 analyzer and 4 package checks passed.
-- Matching source `21b3848312e16aa652c55704991839502698feee`: Windows Actions [39386364549](https://github.com/lsy223622/HearPort/actions/runs/39386364549) passed 24 CTest and 28 Python checks; iPad Actions [39386215008](https://github.com/lsy223622/HearPort/actions/runs/39386215008) passed 186 Swift tests and archived unsigned IPA build 165; CodeQL [39386214238](https://github.com/lsy223622/HearPort/actions/runs/39386214238) passed.
-- Download hashes, all 100 Windows file hashes, IPA build identity and bundled Opus notices verified. Downloaded Windows Release started, loaded its runtime DLLs locally, and listened on network and tunnel endpoints.
-- New live-path iPad listening, silence/resume and route-switch acceptance remain pending installation on the device.
-
-## Compression test candidate evidence (2026-10-20)
-
-- Source commit: `53de0cd7eefa0afd9e63f549b50439c023172b51`, product version 0.1.0.
-- Windows Actions [39360465692](https://github.com/lsy223622/HearPort/actions/runs/39360465692): Release build, 23 CTest checks and 28 Python checks passed; portable ZIP, matching source ZIP and SHA-256 manifest uploaded.
-- iPad Actions [39360464729](https://github.com/lsy223622/HearPort/actions/runs/39360464729): 179 Swift tests passed, including real QUIC framing/mode-switch integration; unsigned Release IPA build 162 archived with Opus and Rust license notices.
-- CodeQL [39360464054](https://github.com/lsy223622/HearPort/actions/runs/39360464054) passed.
-- Download hashes, Windows per-file manifest, IPA commit/build metadata and bundled Opus license checked. The downloaded Windows package started, loaded its four runtime DLLs locally and listened on UDP 52137 plus the USB tunnel's loopback endpoint.
-- Physical build 162 tests completed: 32 USB music rounds and 32 network music rounds at target 225 ms / maximum 300 ms, 60 seconds per round. All music rounds have complete durable summaries and zero decode failures. Network results vary across repeats; startup trimming and transport pressure prevent declaring a universal winning profile. iPad Opus per-group decode p99 stayed below 0.50 ms. Raw reports and music remain local. Procedure: [compression-tests.md](compression-tests.md).
-
-## Previous release candidate evidence (2026-10-18)
-
-- Source commit: `35f00d8c5adfdb6e27d724daaff6677b0172abfb`, product version 0.1.0.
-- Windows Actions [39052133439](https://github.com/lsy223622/HearPort/actions/runs/39052133439): Release build, 22 CTest checks and 6 package/document checks passed; portable ZIP, source ZIP and SHA-256 manifest uploaded.
-- iPad Actions [39052135647](https://github.com/lsy223622/HearPort/actions/runs/39052135647): 156 Swift tests passed; unsigned Release IPA build 158 archived with bundled license notices.
-- Download hashes, Windows per-file manifest and IPA commit/version metadata checked. The extracted Windows package started on the development PC and loaded all four runtime DLLs from its own folder.
-- Clean-PC playback and final signed-on-device lifecycle/soak acceptance remain pending. Existing LAN/USB observations remain valid evidence, distinct from acceptance of this package.
+## Requirement Matrix
 
 | ID | Requirement | Evidence type | Evidence | Status |
 |---|---|---|---|---|
@@ -234,3 +27,115 @@ continuation/resumption; it is not a monitored continuous-music soak.
 | background-lock-screen | Audio session behavior after lock/background transition | real-device | No signed-release lock-screen or background result is recorded | pending device run |
 | route-interruption | Route change and audio interruption return to live rebuffer | real-device | No measured headphones/Bluetooth route-change or interruption result is recorded | pending device run |
 | capture-reset | WASAPI endpoint reset starts a new stream without replaying stale audio | real-device | No connected-iPad endpoint-reset result is recorded | pending device run |
+
+---
+
+## User-Observed Manual Runs
+
+- **iPad Pro 11-inch (2020) over USB & weak Wi-Fi**: User observed live playback over USB (including cable unplug/replug recovery) and repeated playback/diagnostic tests over weak 2.4 GHz Wi-Fi. Does not replace a timed 2-hour soak, all-route lock-screen check, clean-machine install, or final Release acceptance.
+- **Locked-idle continuation (2026-10-21)**: Installed app remained idle on a locked iPad for several hours and later played Windows audio without waking the screen (exact build, route, and duration unrecorded; not a continuous-music soak).
+
+---
+
+## WinUI 3 desktop and variable PCM (2026-11-16)
+
+- Merged source `4b0ec90fd6e46092f525d04a9b2793d27f89c558` introduces the WinUI 3 main window and tray flyout.
+- **CI & local tests**: Windows [Release CI](https://github.com/lsy223622/HearPort/actions/runs/43739678400) passed portable packaging and GUI smoke checks (navigation, capture-source selection, flyout open/dismiss); local Release run passed 26/26 CTest. Matching [iOS CI](https://github.com/lsy223622/HearPort/actions/runs/43739678393) passed receiver package tests (including variable PCM and mixed fixed/variable reliable stream framing) and archived the unsigned IPA.
+- **Development observations**: User confirmed Windows controlled iPad system volume during playback and while locked, and checked light mode and Windows display scaling.
+
+## Background playback recovery and system media controls (2026-11-07)
+
+- Source `39ce86132fbe4b439d47fe3882d3f4c35a1bce61` adds a non-renewing background recovery window capped at **20 seconds** on eligible playback disconnects (ends on recovery, manual stop, auth rejection, diagnostics/calibration, or OS expiry), interruption recovery via `shouldResume`, media-service reset rebuild, and Now Playing play/pause/stop controls (disabled during diagnostics).
+- Delivery commit `161fa3f12a55ef5b221f0ccf4332bfcb68f5764a` migrates iOS jobs from retired `macos-14` to `macos-15`.
+- **CI**: iOS Actions [42263118206](https://github.com/lsy223622/HearPort/actions/runs/42263118206) passed 227 Swift/QUIC tests and archived unsigned build **196** (Xcode 16.4; `UIBackgroundModes = audio`; no signature/profile; SHA-256 `55f2b856acc7f3151d96f851dc96fce52051c4e37d5dcf4ced8508df397b9a45`); 4 local shortcut/analysis checks and CodeQL [42263117529](https://github.com/lsy223622/HearPort/actions/runs/42263117529) passed.
+- **Pending device checks**: Locked playback across brief outages, manual stop during recovery, lock-screen/Control Center/headset play & stop, interruption resume, and post-media-reset playback.
+
+## Connection modes and shortcut acceptance (2026-11-05)
+
+- Source `3526f3246e23d8b622dfd0eb968586cd85ef2772` shares persisted `Automatic` / `Network only` / `USB only` routing across playback settings, manual/recovery connects, and connection shortcuts (route change while active restarts connection; calibration stays LAN-only without overwriting playback mode).
+- **CI**: iOS Actions [42002798864](https://github.com/lsy223622/HearPort/actions/runs/42002798864) passed 222 Swift/QUIC tests and archived unsigned build **194** (7 intents/shortcuts, 3 routes, IPA SHA-256 `9fde16f93a7f8724df14b3a63b72c30ea5e0a6ed8656400bffeecf67711dcd20`); Windows Actions [42002798733](https://github.com/lsy223622/HearPort/actions/runs/42002798733) & CodeQL [42002798328](https://github.com/lsy223622/HearPort/actions/runs/42002798328) passed; 7 local shortcut/analyzer/doc checks passed.
+- **Device observations**: Audio playback intents connected without presenting the UI (even with no app-switcher card), foreground intent opened the app, Network-only stayed on LAN on USB plug-in, and USB-only waited on unplug. Full acceptance guide: [connection-automation.md](connection-automation.md).
+
+---
+
+<details>
+<summary><strong>Historical verification logs (2026-10-18 – 2026-11-05)</strong></summary>
+
+### Live home-canvas observation (2026-11-05)
+
+- Build 192 device logs recorded `ui_disconnected` at `08:21:09 UTC` while audio played until foreground transitions refreshed the UI. Source `32333ff12d82341af539567689e666926c4c4002` gives deferred `GeometryReader` content its own view observing `ReceiverRuntime` and `ReceiverConnectionCoordinator`.
+- iOS Actions [41995708805](https://github.com/lsy223622/HearPort/actions/runs/41995708805) (221 Swift tests, unsigned build **193**, SHA-256 `42676125f6b531b646eaee06421ae0bc5f46f9d2adc0d88d93bcb292d1b9b69b`) & CodeQL [41995707864](https://github.com/lsy223622/HearPort/actions/runs/41995707864) passed. Pending device check: live foreground connect/disconnect/LAN-USB transitions without app-switching.
+
+### Rust cryptographic dependency security update (2026-10-26)
+
+- Source `d8d6e78f22cf3b950056e03d70a683256eaa3b47` updates `crypto-bigint` `0.7.5` → `0.7.9` and `ctutils` `0.4.2` → `0.4.5` in the 47-package `Cargo.lock` (MSRV Rust 1.87). See [security-implementation.md](security-implementation.md#dependency-security-and-reproducible-builds) for reachability details and limits.
+- `cargo audit` 0.22.2 (`21d909e4c8bd4e14c7aea58bf980c881a0053ab1`): old lockfile reported RUSTSEC-2026-0385 and RUSTSEC-2026-0387 (exit 1); updated lockfile reported zero vulnerabilities (exit 0).
+- `cargo +1.87.0 test --locked` passed all 3 provider tests (including RFC 9382 vector); 5/5 Python security vectors, 26/26 CTest, and 8 old/new Windows DLL FFI interop cases passed.
+- Windows Actions [40250312957](https://github.com/lsy223622/HearPort/actions/runs/40250312957), iOS Actions [40250312902](https://github.com/lsy223622/HearPort/actions/runs/40250312902) (221 Swift tests, IPA build **192**), and CodeQL [40250312835](https://github.com/lsy223622/HearPort/actions/runs/40250312835) passed. No machine-code constant-time proof is claimed.
+
+### Chinese UI font selection (2026-10-25)
+
+- Sandbox GDI font-link entries for Segoe UI were missing; Simplified Chinese UI now selects Microsoft YaHei UI directly (English keeps Segoe UI).
+- Source `caf35c4fd39efdf994e4e198a4688d18b983e8ec`: Windows Actions [40196291192](https://github.com/lsy223622/HearPort/actions/runs/40196291192) (26 CTest including non-skipped Chinese glyph test, 29 Python checks, app-local DLL & GUI paint checks) & CodeQL [40196290928](https://github.com/lsy223622/HearPort/actions/runs/40196290928) passed; verified in the user's Sandbox.
+
+### Portable runtime loading regression (2026-10-22)
+
+- Pinned `msquic.dll` sets `DependentLoadFlags=0x0800` (System32-only imports), causing `0xC0000135` without a System32 CRT; sender executables now `/DELAYLOAD:msquic.dll` after loading the app-local CRT.
+- Source `5a1e5a2fe763ef2a52fafc2e5413649636a1e788`: Windows Actions [39788168226](https://github.com/lsy223622/HearPort/actions/runs/39788168226) (25 CTest, 29 Python, DLL path & GUI checks) & CodeQL [39788187759](https://github.com/lsy223622/HearPort/actions/runs/39788187759) passed; repeated no-system-CRT Sandbox startup & UDP `52137` check passed.
+
+### Connection automation verification (2026-10-22)
+
+- Source `8ba6d9ab9e7335f72a5122b166d66d320f1e0493`: Windows Actions [39748549052](https://github.com/lsy223622/HearPort/actions/runs/39748549052) (25 CTest, 28 Python, GUI), iPad Actions [39748549005](https://github.com/lsy223622/HearPort/actions/runs/39748549005) (221 Swift, 4 Python shortcut checks, unsigned build **191** with 10 intent/shortcut entry points; audio entries require iPadOS 17.2), & CodeQL [39748548777](https://github.com/lsy223622/HearPort/actions/runs/39748548777) passed.
+- 5 generated URL shortcut sources failed macOS CI signing for missing iCloud login; built-in App Shortcuts do not need file import ([connection-automation.md](connection-automation.md)).
+
+### Pairing safety & interaction recovery (2026-10-21)
+
+- Source `e59628ab0f34fd6a8f9a8293d5c5d20e4ed03078`: Windows [39593250742](https://github.com/lsy223622/HearPort/actions/runs/39593250742) (24 CTest, 28 Python, GUI), iPad [39593250802](https://github.com/lsy223622/HearPort/actions/runs/39593250802) (216 Swift, build **184**), CodeQL [39593251795](https://github.com/lsy223622/HearPort/actions/runs/39593251795) passed. Added explicit auth rejection pause without credential deletion, authenticated `SessionEnd` reason 3 unpair notice, and 500 ms close grace.
+
+### Independent network & USB latency settings (2026-10-21)
+
+- Menu summary `1e15f44e2d502afb27a9374a24ba5fc29c41bbb2` ([39586833423](https://github.com/lsy223622/HearPort/actions/runs/39586833423), 214 Swift, build **183**) and route budgets `3370ee2c55083328c1d0d3c66ebc111a674e7af1` ([39583024058](https://github.com/lsy223622/HearPort/actions/runs/39583024058), 214 Swift, build **182**) & CodeQL passed. Preserves upgraded shared budgets on Network audio; USB starts at 50/100 ms; recommendations update Network only.
+
+### iPad row actions, launch layout & connection address (2026-10-21)
+
+- Source `2bebb701a278d94fbbc6876b6397777021e18c50`: iPad [39544315416](https://github.com/lsy223622/HearPort/actions/runs/39544315416) (211 Swift, build **181**) & CodeQL passed; 5 user-supplied dark-mode screenshots confirmed startup form/layout without clipping.
+
+### Automatic-test startup & diagnostic size display (2026-10-21)
+
+- Source `ea1683110ccd80181d6205716bc35b163c8e95c4`: Windows [39478078837](https://github.com/lsy223622/HearPort/actions/runs/39478078837) (24 CTest, 28 Python, GUI) & iPad [39478078798](https://github.com/lsy223622/HearPort/actions/runs/39478078798) (209 Swift, build **180**) & CodeQL passed. Clarified 2,000-entry preview vs ~4/128 MiB disk logs and gated readiness on both `ReceiverReady` and `StartStreamAck`.
+
+### Connection actions & Windows painting (2026-10-21)
+
+- Windows `3e8543a8bcea881d7bfb066a5080c6f9932af8c0` ([39473183485](https://github.com/lsy223622/HearPort/actions/runs/39473183485)), iPad `9f45c551e44456996aaf242d425d32f28a11e1f2` ([39473786709](https://github.com/lsy223622/HearPort/actions/runs/39473786709), 205 Swift, build **179**), & CodeQL passed. Fixed child clipping/paint order and added context-menu test/unpair actions.
+
+### iPad menu presentation (2026-10-20)
+
+- Source `d8977fa9d6b3bb9946baa1f1724cac3b1cbc28ec`: Actions [39440168724](https://github.com/lsy223622/HearPort/actions/runs/39440168724) (204 Swift, build **177**) & CodeQL passed.
+
+### Transport comparison & route settings (2026-10-20)
+
+- Source `2571b1b29a160617d71a087b8c48018687269c3a`: Windows [39425040006](https://github.com/lsy223622/HearPort/actions/runs/39425040006) (24 CTest, 28 Python, GUI smoke), iPad [39425055397](https://github.com/lsy223622/HearPort/actions/runs/39425055397) (204 Swift, build **176**), regression [39422781309](https://github.com/lsy223622/HearPort/actions/runs/39422781309), & CodeQL passed. Added ABBA transport comparisons with repeat-variation tolerances and ~4/128 MiB log retention.
+
+### USB recovery & extended diagnostics (2026-10-20)
+
+- Source `82bdaee35a7d32a72a6edfabc3abe56491e40bd8`: Windows [39417771470](https://github.com/lsy223622/HearPort/actions/runs/39417771470), iPad [39417768450](https://github.com/lsy223622/HearPort/actions/runs/39417768450) (197 Swift, build **173**), & CodeQL passed.
+
+### Adaptive client recommendations (2026-10-20)
+
+- Source `4de8694f96a76537d518556dccff93f849acd149`: Windows [39399070518](https://github.com/lsy223622/HearPort/actions/runs/39399070518), iPad [39399056345](https://github.com/lsy223622/HearPort/actions/runs/39399056345) (194 Swift, build **170**), & CodeQL passed.
+
+### Live compression & capture-silence recovery (2026-10-20)
+
+- Capture-silence fix: regression [39391950466](https://github.com/lsy223622/HearPort/actions/runs/39391950466) → fixed Actions [39392343378](https://github.com/lsy223622/HearPort/actions/runs/39392343378) (187 Swift) & CodeQL passed.
+- Configurable live compression `21b3848312e16aa652c55704991839502698feee`: Windows [39386364549](https://github.com/lsy223622/HearPort/actions/runs/39386364549), iPad [39386215008](https://github.com/lsy223622/HearPort/actions/runs/39386215008) (186 Swift, build **165**), & CodeQL passed.
+
+### Compression test candidate evidence (2026-10-20)
+
+- Source `53de0cd7eefa0afd9e63f549b50439c023172b51`: Windows [39360465692](https://github.com/lsy223622/HearPort/actions/runs/39360465692) (23 CTest, 28 Python), iPad [39360464729](https://github.com/lsy223622/HearPort/actions/runs/39360464729) (179 Swift, build **162**), & CodeQL passed.
+- Physical build 162 completed 32 USB + 32 LAN music rounds (target 225 ms / max 300 ms, 60 s/round, zero decode failures, iPad Opus p99 decode <0.50 ms; raw reports remain local; procedure: [compression-tests.md](compression-tests.md)).
+
+### Baseline release candidate (2026-10-18)
+
+- Source `35f00d8c5adfdb6e27d724daaff6677b0172abfb`: Windows [39052133439](https://github.com/lsy223622/HearPort/actions/runs/39052133439) (22 CTest, 6 package checks) & iPad [39052135647](https://github.com/lsy223622/HearPort/actions/runs/39052135647) (156 Swift, unsigned build **158**) passed; extracted Windows package loaded all 4 runtime DLLs locally on the dev PC.
+
+</details>

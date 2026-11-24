@@ -1,65 +1,64 @@
-# Windows onboarding and firewall guidance
+# Windows Setup & Troubleshooting
 
-The WinUI 3 desktop app requires Windows 11 and
-[Windows App Runtime 2.6.5 (x64)](https://aka.ms/windowsappsdk/2.6/2.6.5/windowsappruntimeinstall-x64.exe)
-or later. Unpack the portable Release ZIP and start `HearPort.exe`. Keep the
-executable and its bundled DLLs together. The [main README](https://github.com/lsy223622/HearPort/blob/main/README.md)
-has first-use and iPad installation steps.
+> [!IMPORTANT]
+> **Prerequisites:** HearPort requires **Windows 11 (x64)** and [Windows App Runtime 2.6.5 (x64)](https://aka.ms/windowsappsdk/2.6/2.6.5/windowsappruntimeinstall-x64.exe) or later. When extracting the portable Release ZIP, keep `HearPort.exe` and all bundled DLLs (including `msquic.dll` and the VC++ runtime DLLs) in the **same folder**.
 
-Click the tray icon to open the controls, double-click to open **Overview**,
-or right-click for the **Open HearPort** and **Exit** menu. When an iPad reports
-its system volume, you can adjust it from the tray or **Overview**.
+For iPad installation, quick start, and source build instructions, see the [Main README](https://github.com/lsy223622/HearPort/blob/main/README.md) or [Building from Source](https://github.com/lsy223622/HearPort/blob/main/README.md#local-development-verification).
 
-For a local build, follow the [Windows build steps](https://github.com/lsy223622/HearPort/blob/main/README.md#local-development-verification).
+---
 
-HearPort advertises its network endpoint through Windows DNS-SD; iPad browses
-`_hearport._udp`. Select the discovered PC in the iPad app. If discovery or
-Local Network access is unavailable, enter the PC hostname or IP address
-manually.
+## Discovery & First-Time Pairing
 
-For first pairing, choose **Pair new iPad** in the Windows app and enter the
-shown temporary PIN on iPad using **Pair and remember**. Pairing over LAN or
-USB uses the same certificate pinning and authentication. A one-time
-connection does not create a remembered credential.
+1. **Discover your PC**  
+   HearPort advertises itself on the local network over Windows DNS-SD (`_hearport._udp`). Open HearPort on your iPad and pick your PC from the list. If discovery or Local Network permission is unavailable, enter the PC's hostname or IP address manually.
 
-## USB connection
+2. **Pair with a PIN**  
+   On the Windows **Overview** tab, click **Pair new iPad** to show a temporary 6-digit PIN. On your iPad, choose **Pair and remember** and enter the PIN.
+   - Pairing works identically over **LAN** or **USB** and enforces the same certificate pinning and SPAKE2 authentication.
+   - Choosing a one-time connection does not save credentials on either device.
 
-Install Apple's Windows device support, connect a data cable, unlock the iPad,
-and accept the iPad's trust prompt if shown. Open the ordinary HearPort app on
-iPad. It listens only on loopback TCP `52138` for usbmux; no inbound LAN TCP
-firewall rule is needed. USB forwards encrypted QUIC packets to a separate
-loopback sender entrance and does not bypass certificate pinning or pairing.
+3. **Identity & Certificate Reuse**  
+   The GUI automatically generates and reuses a local TLS certificate. Replacing or deleting that certificate changes the PC's cryptographic identity and requires re-pairing your iPad.
 
-In Automatic connection mode, an authenticated USB connection to a remembered
-PC takes priority over network playback. Switching rebuilds the audio stream
-and clock mapping and may pause briefly. When USB disconnects, the iPad
-reconnects to the known network endpoint. Stopping playback manually suppresses
-automatic playback. Both apps show the physical path separately from the audio
-transport mode. If Apple device support or system trust is unavailable,
-playback and pairing can use the LAN route.
+---
 
-## Network and firewall
+## System Tray Controls
 
-The sender listens on UDP `52137` by default, or the explicitly configured
-port. If Windows Firewall blocks the connection, allow the HearPort executable
-on that UDP port for the applicable local network profile. Do not open a broad
-TCP range, and do not treat a firewall rule as authentication.
+- **Left-click**: Open quick status, sender controls, and the iPad volume slider (shown whenever the connected iPad reports its system volume; scroll to step by 5%, or click the speaker icon to mute).
+- **Double-click**: Jump straight to the **Overview** window.
+- **Right-click**: Open the context menu (**Open HearPort** / **Exit**).
 
-Network tests and automatic parameter recommendations use the network path only. Music
-tests and timed diagnostics keep their starting path while reports are
-collected; a lost route interrupts the run. Ordinary playback considers both
-paths in Automatic mode and prefers authenticated USB when it is available.
+---
 
-The GUI creates and reuses its local connection certificate automatically.
-Replacing its certificate changes its identity and requires pairing again.
+## USB Audio Setup
 
-Diagnostics are stored locally. Logs and exported reports can include network
-details such as a hostname, IP address, or port. Review an export before
-sharing it.
+To stream over a USB cable:
 
-Ordinary Windows logs retain approximately 4 MiB total (1 MiB per file and
-three backups). Detailed logging raises that to approximately 128 MiB
-(16 MiB per file and seven backups).
-Explicit diagnostic sessions retain separate local reports; remove reports you
-no longer need from the report folder. The ZIP includes the required VC runtime
-DLLs; Apple device support remains a separate prerequisite for USB.
+1. Install **Apple's Windows device support** (bundled with iTunes or the Apple Devices app — installed separately from HearPort).
+2. Connect a data-capable USB cable, unlock your iPad, and accept the **Trust This Computer** prompt if shown.
+3. Open the normal **HearPort** app on your iPad.
+
+### How USB Mode Behaves
+
+- **Loopback forwarding**: The iPad app listens only on `127.0.0.1:52138` for `usbmux` traffic and forwards encrypted QUIC packets to a dedicated loopback sender entrance on Windows. No inbound LAN TCP firewall rule is required, and USB does not bypass certificate pinning or pairing.
+- **Automatic route switching**: In **Automatic** connection mode, an authenticated USB connection to a remembered PC automatically takes priority over LAN. Switching routes rebuilds the audio stream and clock mapping, so a brief pause is normal.
+- **Fallback & manual stop**: Unplugging USB automatically falls back to your remembered LAN endpoint. Manually stopping playback pauses automatic reconnect until you start again.
+- **If Apple device support isn't available**: Pairing and daily playback work fine over LAN without installing Apple's drivers.
+
+> [!NOTE]
+> Network benchmarks and automatic parameter recommendations always run over LAN only. Music tests and timed diagnostics stay pinned to whichever route they started on (losing that route interrupts the test).
+
+---
+
+## Network & Firewall
+
+- **Default port**: HearPort listens on **UDP `52137`** by default (or whichever custom port you configure in **Settings**).
+- **Firewall rule**: If Windows Firewall blocks discovery or streaming, allow `HearPort.exe` on that UDP port for your local network profile (Private). Do **not** open a broad TCP port range, and remember that a firewall rule is never a substitute for authentication.
+
+---
+
+## Logs & Privacy
+
+- **Retention limits**: Ordinary logs keep ~4 MiB on disk (1 MiB active + 3 backups). Turning on detailed logging expands this to ~128 MiB (16 MiB active + 7 backups).
+- **Diagnostic exports**: Explicit diagnostic sessions write separate reports to the local report folder — clean up old report folders manually when you no longer need them.
+- **Before sharing**: Logs and reports stay local, but they can contain local hostnames, IP addresses, and port numbers. Review them before posting publicly.

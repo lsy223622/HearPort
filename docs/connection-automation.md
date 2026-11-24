@@ -1,100 +1,132 @@
-# 自动连接与 iPad 快捷指令验证
+# Connection Automation & iPad Shortcuts Guide
 
-## 日常使用
+This guide covers HearPort's daily auto-reconnect behavior, built-in iPadOS App Shortcuts, recommended Personal Automations, and on-device troubleshooting.
 
-Windows 设置中启用“登录后自动启动”，程序在当前用户登录后启动到托盘并开启发送服务。已经启用时，手动运行移动后的 HearPort 会把本应用的旧启动路径修复为当前路径。关闭的启动项不会被自动启用；Windows 任务管理器中的“启动应用”禁用状态仍由系统管理。
+---
 
-iPad 设置中“自动恢复连接”使用已配对电脑。网络或 USB 恢复、回到前台、电脑停止后重新可用时继续尝试。手动断开暂停当前进程中的自动恢复；点击连接或运行连接快捷动作重新启用。已验证电脑明确拒绝凭据时停止自动重试，凭据保留供用户手动处理。
+## Daily Auto-Connection Behavior
 
-未播放音频的 iPad App 可能被系统挂起。恢复发现依赖系统给 App 执行机会；快捷指令是尝试获取执行机会的入口，不是无限后台服务。iPad 重启后首次解锁、局域网权限、USB 信任/有线配件权限仍适用。
+- **Windows auto-start at sign-in**: Enabling auto-start in Windows **Settings** launches HearPort silently to the system tray and starts the sender. If you move the portable folder while auto-start is enabled, manually launching `HearPort.exe` once from the new location repairs HearPort's own startup path (an item disabled in Windows Task Manager stays OS-managed).
+- **iPad automatic reconnect**: With **Automatically reconnect** enabled in iPad **Settings**, HearPort reconnects to your paired PC when Wi-Fi or USB comes back, when the app returns to the foreground, or when the PC restarts. Manually disconnecting pauses auto-reconnect for the current app process until you tap connect or run a connection shortcut again.
+- **Background recovery & media controls**:
+  - During ordinary playback, an eligible transport disconnect requests a single, non-renewing background recovery window of up to **20 seconds** (the OS may revoke it early; it ends on recovery, manual disconnect, auth rejection, or diagnostics/calibration, and only starting playback again grants another window).
+  - Lock-screen, Control Center, and headphone media controls (**PC audio**) support play, pause, and stop: play uses the saved route mode and paired PC; pause/stop acts as a manual disconnect and pauses auto-reconnect. Media controls are disabled during diagnostics/calibration, and scrubbing/track-skipping do not apply to a live stream.
+  - Audio interruptions resume only when iPadOS permits (`shouldResume`) and playback intent is still active. If media services reset, HearPort rebuilds its audio objects and waits for an explicit play tap, shortcut trigger, or in-app retry (foregrounding or route changes alone will not bypass that wait).
+- **Credential protection on rejection**: If an authenticated PC explicitly rejects saved credentials, automatic retries stop without deleting stored credentials so you can retry or re-pair manually.
 
-普通播放过程中发生可恢复的断线时，App 会申请一次最多 20 秒的后台恢复时间，系统可以提前收回。恢复播放、手动断开、认证拒绝或进入诊断/校准后结束申请；连续失败不会续期，只有重新成功启动播放才允许下一次恢复窗口。
+> [!NOTE]
+> An idle iPad app that isn't playing audio can be suspended by iPadOS at any time. Shortcuts provide an entry point to request execution time when an event happens — not an unlimited background daemon. First unlock after reboot, Local Network permission, and USB accessory trust still apply.
 
-播放后可在锁屏、控制中心或耳机媒体按键中使用播放、暂停和停止。播放沿用已保存的连接模式与已配对电脑；暂停/停止按手动断开处理并暂停自动恢复。诊断/校准期间禁用这些控制。音频是实时流，不提供进度拖动或切歌。
+---
 
-其他音频中断结束后，仅在系统允许恢复且播放意图仍有效时自动重启输出。媒体服务重置后重建音频对象并等待再次点击播放、运行播放快捷动作或在 App 中重试；回前台或音频路线变化不会越过该限制。
+## Built-in App Shortcuts
 
-## 内置动作
+After installing a new build, open HearPort once and pair your PC. You will find **7 built-in App Shortcuts** under **Shortcuts → Apps → HearPort** (or via **Settings → Shortcuts and automation** inside the app) — covering automatic, network-only, and USB-only audio playback plus foreground connect, disconnect, status, and trigger logging. Because they ship inside the app bundle, no `.shortcut` file import or iCloud signing is needed.
 
-安装新版本后先打开一次 HearPort 并完成配对，然后在“快捷指令 → App → HearPort”查找动作。
-
-| 动作 | 执行方式 | 用途 |
+| Shortcut | Execution Mode | Purpose |
 | --- | --- | --- |
-| 播放电脑音频 | `AudioPlaybackIntent`，本 SDK 元数据标为 iPadOS 17.2 起 | 优先验证的无界面播放入口 |
-| 打开并连接 | 前台 AppIntent | 解锁/打开 App 可接受时的明确入口 |
-| 断开电脑音频 | 音频动作，iPadOS 17.2 起 | 停止播放并暂停本进程自动恢复 |
-| 读取连接状态 | 后台动作 | 返回 JSON 状态，并记录诊断 |
-| 记录自动化触发 | 后台动作 | 在链式快捷指令起点插入诊断标记 |
+| **Play PC audio** | `AudioPlaybackIntent` (metadata marks iPadOS 17.2+) | Primary headless playback entry point; accepts route parameter (**Automatic**, **Network only**, **USB only**) |
+| **Play via network** / **Play via USB** | `AudioPlaybackIntent` (iPadOS 17.2+) | Dedicated route-locked audio playback shortcuts |
+| **Open and connect** | Foreground `AppIntent` | Explicit entry point when unlocking and opening the app is acceptable |
+| **Disconnect PC audio** | Audio intent (iPadOS 17.2+) | Stops playback and pauses auto-reconnect for the current process |
+| **Read connection status** | Background intent | Returns a JSON status payload and logs a diagnostic event |
+| **Record automation trigger** | Background intent | Writes an automation marker (`automation_stage` / `trigger_marker`) at the start of a chained shortcut |
 
-“播放电脑音频”和“打开并连接”可选择“自动（USB 优先）”“仅网络”“仅 USB”。仅 USB 不回退 Wi-Fi；仅网络不升级 USB。重复执行同一路线动作复用正在建立/已建立的连接。其他路线已工作、诊断测试进行中时返回原因，不抢占。
+### Route Selection & Non-Preemption Rules
 
-本版本内置七个 App Shortcuts：自动/网络/USB 三个音频入口，另有前台连接、断开、状态和触发标记。它们随 App 安装，不依赖 `.shortcut` 文件签名。设置 → 快捷指令与自动化中的系统按钮可打开本 App 的快捷指令页。
+- **Settings → Playback → Connection mode** persists **Automatic (USB preferred)**, **Network only**, or **USB only**, shared across manual connects, auto-reconnect, and accepted connection shortcuts.
+- **Strict route locks**: **USB only** never falls back to Wi-Fi; **Network only** never upgrades to USB. Changing the mode in Settings while connected or connecting re-routes the active session (causing a brief audio pause); changing it while idle only saves the preference. Network calibration always samples LAN without overwriting your playback mode.
+- **Reuse without preemption**: Re-triggering the same route reuses an active or pending connection without rebuilding the audio engine. If an incompatible route is active or a diagnostic test is running, the shortcut returns a reason code instead of interrupting.
 
-设置 → 播放 → 连接模式保存“自动（USB 优先）／仅网络／仅 USB”。手动连接和自动恢复均使用该模式；连接快捷动作接受后也保存其模式。已连接时在设置中更改模式会重新选路，可能短暂中断播放；空闲时只保存选择。网络校准仍按其测试流程采样网络，不改写播放模式。
+---
 
-“读取连接状态”返回 JSON；要在快捷指令里看见结果，在后面接“快速查看”或“显示结果”。也可接“从输入中获取词典”，读取 `result` 判断 `waiting`、`engine_started`、`received_audio_rendered`、`disconnected`，读取 `route` 判断线路。`received_audio_rendered` 表示收到的音频已进入渲染，不保证音源本身有声音。
+## Recommended Personal Automations
 
-“记录自动化触发”只写入 `automation_stage` / `trigger_marker`，返回 `trigger_recorded` 和 `request_id`。它适合确认 Wi-Fi／充电自动化是否执行到 HearPort；要确认实际结果，后续仍须连接动作或状态动作。导出诊断后可按 `request_id` 或时间查找标记。冷启动验证不要把标记动作放在播放动作前面。
+Create two reusable shortcuts in the **Shortcuts** app (or invoke the built-in route actions directly):
 
-### 建议配置的原生快捷指令
+1. **HearPort Wi-Fi**: `Play PC audio` with route set to **Network only**
+2. **HearPort USB**: `Play PC audio` with route set to **USB only**
 
-在“快捷指令”中新建下列两个快捷指令（也可直接运行 App 自动提供的动作）：
+Then wire them under **Shortcuts → Automation** (enable **Run Immediately** when supported by your iPadOS version):
+- **Wi-Fi** (joining your home/office SSID) → run **HearPort Wi-Fi**
+- **Charger** (when connected) → run **HearPort USB** *(note that regular wall chargers also trigger this event, and USB data enumeration can lag a few seconds behind power connection, so an initial `waiting` return does not mean failure)*
 
-1. **HearPort Wi-Fi**：播放电脑音频（仅网络）。
-2. **HearPort USB**：播放电脑音频（仅 USB）。
+If your PC's USB data handshake consistently trails charger power, keep a separate **HearPort USB Delayed Retry** shortcut for comparison:
 
-另外用“打开并连接”作为前台对照。首次冷启动验证直接运行待测连接动作；不要在前面加“记录自动化触发”，因为前置动作可能先唤醒 App，改变冷启动条件。诊断标记应单独作为触发对照；运行后可另读连接状态。验证时保持电脑播放同一段可听音频，避免把音源静音当成启动失败。
+```text
+Repeat 6 times
+  ├─ Play via USB
+  └─ Wait 5 seconds
+```
 
-在“自动化”中分别设置“加入指定 Wi-Fi”和“充电器已连接”触发上述指令；选择“立即运行”（系统版本允许时）。充电触发也会响应普通充电器，而且可能早于电脑 USB 数据连接就绪，所以 USB 动作返回等待并不代表失败。触发器必须在 iPad 上由用户配置和授权，App 无法代建个人自动化。
+Because repeated calls reuse an already-established connection, it will not restart the audio engine once connected. Each attempt waits up to ~8 seconds, giving ~78 seconds worst-case. Test the direct USB shortcut first so you know whether retries are actually needed; iOS automation scheduling limits still apply.
 
-若 USB 数据识别比充电晚很多，可另外制作 **HearPort USB 延后重试**：“重复 6 次 → 通过 USB 播放 → 等待 5 秒”。它复用已有连接，不会反复重建音频引擎；每次动作等待连接最多约 8 秒，所以最慢约 78 秒。把它作为单独对照，先测一次直接 USB 动作，才能看出是否确实需要重试。系统仍可能限制自动化执行；该编排不是后台保活。
+> [!TIP]
+> **Cold-start testing tip:** When verifying cold-start execution, do **not** put **Record automation trigger** ahead of **Play PC audio** — the marker action wakes the process first and skews cold-start conditions. Keep audible audio playing on your PC during testing so silence isn't mistaken for startup failure.
 
-## URL 前台对照包
+---
 
-Actions 的 `HearPort-shortcuts` artifact 包含五个固定 URL 快捷指令、源文件和 `signing-results.json`。仅根目录签名成功的 `.shortcut` 才标为可导入；`sources/` 是未签名生成源。
+## URL Scheme Foreground Kit
 
-2026-10-22 首次 CI 实测：五个文件的签名都被系统以“必须登录 iCloud”拒绝。GitHub 运行器没有个人 iCloud 账户，因此当前包中的生成源不能直接当成可导入文件。内置 App Shortcuts 可直接使用；URL 对照也可以在 iPad 上新建“URL → 打开 URL”两步指令，不需要 Mac。
+HearPort also registers foreground URLs (succeeding on an unlocked device does not prove background audio shortcuts will succeed; URLs reject host, PIN, credential, and callback parameters):
 
-| URL | 操作 |
+| URL | Action |
 | --- | --- |
-| `hearport://connect` | 自动路线连接 |
-| `hearport://connect?route=network` | 仅网络连接 |
-| `hearport://connect?route=usb` | 仅 USB 连接 |
-| `hearport://disconnect` | 断开并暂停自动恢复 |
-| `hearport://status` | 打开连接详情 |
+| `hearport://connect` | Connect using Automatic route |
+| `hearport://connect?route=network` | Connect over Network only |
+| `hearport://connect?route=usb` | Connect over USB only |
+| `hearport://disconnect` | Disconnect and pause auto-reconnect |
+| `hearport://status` | Open connection details |
 
-URL 打开 App 属于前台路径。它在解锁设备上成功不能证明后台音频动作也能成功。URL 不接受主机、PIN、凭据和回调参数。
+> [!NOTE]
+> The `HearPort-shortcuts` CI artifact includes 5 generated URL shortcut sources (`sources/`) and `signing-results.json`. In the 2026-10-22 macOS CI run, Apple's signing step rejected all 5 because the runner isn't signed into iCloud, so those generated files aren't directly importable. Use the built-in **App Shortcuts** for daily automation, or build a 2-step `URL → Open URLs` shortcut directly on iPad if you want a foreground URL baseline.
 
-## 一次集中实机验证
+---
 
-每个场景先断开，再运行一个连接入口。依次比较音频动作、前台动作、URL；前台动作可能要求解锁，这本身就是结果。
+## On-Device Verification & Log Analysis
 
-| 场景 | 重点记录 |
+After running your test scenarios, export diagnostics once from iPad and summarize stages and timings locally (never commit raw logs containing local network info):
+
+```powershell
+python diagnostics/analyze_automation.py <exported-log-path>
+```
+
+> [!IMPORTANT]
+> An empty summary simply means no automation records were captured — it cannot distinguish whether iPadOS failed to trigger vs. denied scheduling. `received_audio_rendered` means received audio entered the render path (valid PC silence also counts), so always confirm `audible_sound` on the actual device.
+
+<details>
+<summary><strong>13-Scenario On-Device Verification Matrix</strong></summary>
+
+Disconnect before each case and test **AudioPlaybackIntent**, **Open and connect**, and **URL** separately, recording trigger method, foreground/lock state, OS prompts, audible sound, and approximate elapsed time:
+
+| Scenario | What to Verify |
 | --- | --- |
-| App 前台、电脑可用 | 所有入口能否连接并出声 |
-| 回桌面但不强退，随后锁屏 | 音频动作是否无需解锁出声 |
-| 手动强退后触发 | 系统是否实际调用动作/启动进程，不能由前两项推断 |
-| iPad 重启且已首次解锁 | 进程冷启动和 Keychain 可用性 |
-| 重启后尚未首次解锁 | 是否被系统/凭据权限阻挡，不据此删除配对 |
-| Wi-Fi 自动化触发，电脑随后开启 | 等待能否在执行机会仍存在时恢复 |
-| USB 插入、普通充电器插入 | 数据路线与充电触发分别验证 |
-| 已连接时反复触发 | 不重建、不短暂断音、不重复引擎 |
-| 手动断开后网络波动 | 不立即自动连接；明确快捷动作可以恢复 |
-| 电脑临时停止/重启 | 可用后恢复；诊断正常完成不擅自重开 |
-| 锁屏播放后短暂断网或拔 USB | 允许的线路恢复后能否在有限窗口中继续播放；日志记录恢复申请及结束原因 |
-| 锁屏/控制中心/耳机播放、暂停、停止 | 播放沿用保存的模式；停止后网络变化不自行恢复；重复播放不重复建连接 |
-| 其他 App 音频中断、媒体服务重置 | 按系统恢复提示处理；重置后等明确播放操作，诊断期间不抢占 |
+| App in foreground, PC ready | All entry points connect and produce audio |
+| Backgrounded (not force-quit), then locked | Audio intents connect and play without unlocking |
+| Triggered after manual force-quit | Whether iPadOS launches the process and runs the action (cannot be inferred from non-quit runs) |
+| After iPad reboot & first unlock | Cold start and Keychain credential access |
+| After reboot before first unlock | System/Keychain restriction is handled without deleting saved pairing |
+| Wi-Fi automation fires before PC turns on | Waiting state recovers while the execution window remains active |
+| PC USB cable vs. plain wall charger | Separate data-route behavior from power-only triggers |
+| Re-triggering while already connected | Reuses connection with no drop-out or duplicate audio engine |
+| Network fluctuation after manual disconnect | No unsolicited auto-reconnect; explicit shortcut restores playback |
+| Temporary PC stop / restart | Reconnects once PC returns; normal diagnostic completion does not auto-reopen |
+| Brief network drop or USB unplug while locked | Recovers within the 20 s background window on allowed routes; log shows allowance & end reason |
+| Lock screen / Control Center / headset controls | Play uses saved mode; stop suppresses auto-recovery; repeated Play doesn't recreate connection |
+| Audio interruption & media-services reset | Follows OS `shouldResume`; reset requires explicit playback action and never preempts diagnostics |
 
-每项记录：触发方式、前后台/锁屏状态、系统是否提示、实际出声、约耗时。全部完成后导出 iPad 诊断即可，不需要每项都回传一次。
+</details>
 
-## 分阶段结果解释
+<details>
+<summary><strong>Shortcut JSON Results & Log Stage Reference</strong></summary>
 
-动作返回 JSON 中 `result` 可以是：`received_audio_rendered`（收到音频并进入渲染）、`engine_started`（引擎已启动）、`waiting`、`pair_in_app`、`credential_unavailable`、`authentication_rejected`、`audio_failed`、`another_route_active`、`another_request_active`、`test_running`、`cancelled`、`disconnected`。
+- **Shortcut JSON output**: Read via **Quick Look** / **Show Result** or **Get Dictionary from Input** (`result` & `route`). Possible `result` values: `received_audio_rendered`, `engine_started`, `waiting`, `pair_in_app`, `credential_unavailable`, `authentication_rejected`, `audio_failed`, `another_route_active`, `another_request_active`, `test_running`, `cancelled`, `disconnected`.
+- **`automation_stage` log events**: Include request ID, PID, OS/build, UI appearance flag, app state, and elapsed durations across `action_entered` → `connection_attempt` → `peer_authenticated` → `session_ready` → `audio_engine_started` → `received_audio_rendered` → `action_returned`.
 
-日志 `automation_stage` 含请求 ID、进程 ID、系统/构建、界面是否已出现、App 状态、进程和动作耗时。阶段包括 `action_entered`、`connection_attempt`、`peer_authenticated`、`session_ready`、`audio_engine_started`、`received_audio_rendered`、`action_returned`。没有收到的音频不会凭引擎启动被标为出声；真实静音也可能已经渲染，但听感仍需实机确认。
+</details>
 
-若触发后完全没有新进程/动作记录，只能确认 App 没有记录到执行，不能据此区分系统未触发、未获调度或签名/权限问题。若已有 `action_entered`，则继续按认证、会话、输出阶段定位。CI 编译和快捷指令签名分别只证明构建与分发，均不证明 iPad 锁屏执行通过。
+### Apple Documentation
 
-导出后可在本地执行 `python diagnostics/analyze_automation.py <导出的日志>`，按请求汇总阶段和耗时。空结果表示没有可分析记录，不会自动判定系统触发失败；`audible_sound` 始终留给实机确认。不要把原始日志提交公开仓库。
-
-Apple 参考：[App Shortcuts](https://developer.apple.com/documentation/appintents/app-shortcuts)、[AudioPlaybackIntent](https://developer.apple.com/documentation/appintents/audioplaybackintent)、[个人自动化设置触发器](https://support.apple.com/guide/shortcuts/apde31e9638b/ios)、[无需确认的自动化](https://support.apple.com/guide/shortcuts/apd602971e63/ios)、[快捷指令签名](https://support.apple.com/guide/shortcuts-mac/apd455c82f02/mac)、[USB 配件访问](https://support.apple.com/en-us/111806)。
+- [App Shortcuts](https://developer.apple.com/documentation/appintents/app-shortcuts) · [AudioPlaybackIntent](https://developer.apple.com/documentation/appintents/audioplaybackintent)
+- [Personal automations on iPhone or iPad](https://support.apple.com/guide/shortcuts/apde31e9638b/ios) · [Enable or disable a personal automation without asking](https://support.apple.com/guide/shortcuts/apd602971e63/ios)
+- [Sign a shortcut on Mac](https://support.apple.com/guide/shortcuts-mac/apd455c82f02/mac) · [Allow USB accessories on iPad](https://support.apple.com/en-us/111806)

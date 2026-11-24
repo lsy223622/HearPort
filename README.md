@@ -1,152 +1,160 @@
-# HearPort 0.1.0
+<div align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="ios/HearPortApp/Resources/Assets.xcassets/HearPortSymbol.imageset/HearPortSymbol-Dark.png" />
+    <source media="(prefers-color-scheme: light)" srcset="ios/HearPortApp/Resources/Assets.xcassets/HearPortSymbol.imageset/HearPortSymbol-Light.png" />
+    <img src="ios/HearPortApp/Resources/Assets.xcassets/HearPortSymbol.imageset/HearPortSymbol-Light.png" alt="HearPort" width="96" />
+  </picture>
 
-HearPort sends Windows PC audio to an iPad over your local network. A USB data
-cable is also supported when Apple's Windows device support is installed. In
-Automatic connection mode, a paired iPad prefers USB when available and returns
-to the remembered network connection when USB disconnects.
+  <h1>HearPort</h1>
 
-The portable WinUI 3 app requires Windows 11 and
-[Windows App Runtime 2.6.5 (x64)](https://aka.ms/windowsappsdk/2.6/2.6.5/windowsappruntimeinstall-x64.exe)
-or later. Keep all files in the Windows ZIP together. The iPad app is distributed
-as an unsigned IPA. Sign and install the IPA with an Apple-compatible signing
-tool before iPadOS can run it. Signing options have different account, device,
-and renewal limits.
+  <p>
+    <strong>Stream Windows PC audio to your iPad over Wi-Fi or USB — low-latency, encrypted, and open source.</strong>
+  </p>
 
-## First use
+  <p>
+    <a href="https://github.com/lsy223622/HearPort/actions/workflows/windows-release.yml">
+      <img src="https://github.com/lsy223622/HearPort/actions/workflows/windows-release.yml/badge.svg" alt="Windows Release package" />
+    </a>
+    <a href="https://github.com/lsy223622/HearPort/actions/workflows/ios-receiver.yml">
+      <img src="https://github.com/lsy223622/HearPort/actions/workflows/ios-receiver.yml/badge.svg" alt="iOS receiver package tests" />
+    </a>
+    <a href="LICENSE">
+      <img src="https://img.shields.io/badge/License-GPL--3.0-blue.svg" alt="License: GPL-3.0" />
+    </a>
+    <img src="https://img.shields.io/badge/Windows-11%20x64-0078D6.svg" alt="Windows 11 x64" />
+    <img src="https://img.shields.io/badge/iPadOS-16.0%2B-000000.svg" alt="iPadOS 16.0+" />
+  </p>
 
-1. Unpack the Windows ZIP and start `HearPort.exe`.
-2. Open HearPort on iPad and select the discovered PC. If discovery is
-   unavailable, enter its hostname or IP address in connection setup.
-3. On the Windows **Overview** page, choose **Pair new iPad** to show a temporary
-   PIN. On iPad, choose **Pair and remember** and enter that PIN. The PC
-   credential is stored in Windows Credential Manager and the iPad credential
-   in Keychain.
-4. For USB, install Apple's Windows device support, connect a data cable,
-   unlock the iPad, and accept the system trust prompt if shown. Pairing can
-   also be completed over USB. If Apple device support or trust is unavailable,
-   use the LAN connection instead.
+  <p>
+    <a href="#features">Features</a> ·
+    <a href="#quick-start">Quick Start</a> ·
+    <a href="#how-it-works">How It Works</a> ·
+    <a href="#local-development-verification">Building from Source</a> ·
+    <a href="#documentation">Docs</a>
+  </p>
 
-Windows discovery and audio use the local network; the sender listens on UDP
-52137 by default. An administrator may need to allow that UDP port through
-Windows Firewall. USB uses Apple's device service and loopback forwarding, so
-it does not require an inbound LAN TCP rule. See `INSTALL.md` in the Windows ZIP
-or the [Windows onboarding guide](https://github.com/lsy223622/HearPort/blob/main/windows/installer/README.md)
-for connection and firewall details.
+  <p>
+    <strong>English</strong> | <a href="README.zh-CN.md">简体中文</a>
+  </p>
+</div>
 
-Daily reconnect behavior, iPad App Shortcuts, the foreground URL shortcut kit
-and the on-device automation verification matrix are documented in
-the [connection automation guide](https://github.com/lsy223622/HearPort/blob/main/docs/connection-automation.md).
+HearPort turns your iPad into a low-latency wireless or wired audio output for your Windows 11 PC. Pair once, stream over your local network or a USB cable with automatic route switching, and keep everything offline with zero cloud accounts or telemetry.
 
-## Windows tray
+## Features
 
-Click the tray icon for connection status, sender controls and shortcuts to
-**Overview** and **Settings**. Double-click it to go straight to **Overview**.
-When the connected iPad reports its system volume, the tray and **Overview**
-show a volume slider. In the tray, click the speaker to toggle mute or scroll
-over the slider to adjust the volume by 5 percentage points per notch.
+- **Automatic LAN ↔ USB Handover**: Streams over your local network by default. Plug in a USB data cable and HearPort automatically upgrades to USB, then falls back to your remembered LAN route when unplugged.
+- **Per-Route Codec & Delay Profiles**: Keep independent settings for **Network audio** (defaults to Opus 256 kbps / 5 ms / Datagram) and **USB audio** (defaults to Float32 PCM / 2.5 ms / Reliable), with configurable PCM sample-rate and bit-depth caps on Windows.
+- **App-Level Audio Capture**: Uses WASAPI Process Loopback by default (excluding HearPort itself), so muting or lowering your PC speakers does not silence the stream — or switch to the default output device in one click.
+- **Private & Encrypted by Default**: Pairs via a 6-digit PIN using RFC 9382 SPAKE2 (P-256) and TLS certificate SPKI pinning. Long-term credentials stay in Windows Credential Manager and iPadOS Keychain.
+- **System Tray & iPadOS Integration**: Control your iPad's volume right from the Windows tray (scroll wheel for 5% steps, click speaker to mute), use lock-screen/headphone media controls, and trigger connections via built-in iPadOS App Shortcuts.
+- **One-Tap Network Auto-Tuning**: Long-press any PC on iPad to run a quick LAN benchmark tailored to **Low latency**, **Balanced**, or **Stability first**, then apply the recommended settings in one tap.
 
-## Playback settings and tests
+## Requirements
 
-The iPad's **Playback** settings contain separate **Network audio** and **USB audio**
-pages for transport, encoding, normal target and maximum total delay. Each route
-keeps its own settings and uses them when connecting or switching routes.
-Both routes initially use a 50 ms target and 100 ms maximum; upgrading preserves
-the previous shared budget for the network route. These are playback budget values,
-not measured speaker latency. They include transport, processing, and output;
-the maximum controls how long an interruption can be tolerated. Changes apply
-on the next connection.
+| Platform | Minimum Requirements | Notes |
+| --- | --- | --- |
+| **Windows (Sender)** | Windows 11 (x64)<br>[Windows App Runtime 2.6.5 (x64)](https://aka.ms/windowsappsdk/2.6/2.6.5/windowsappruntimeinstall-x64.exe)+ | Distributed as a portable ZIP containing VC runtime and `msquic.dll` — keep all extracted files together. USB mode requires Apple's Windows device support. |
+| **iPad (Receiver)** | iPadOS 16.0+<br>*(iPadOS 17.2+ for audio App Shortcuts)* | Distributed as an unsigned `.ipa`. Sign and sideload it using an Apple-compatible signing tool (Xcode, AltStore, SideStore, Sideloadly, etc.). |
 
-**Automatic test and recommendations** first selects one goal: Low latency,
-Balanced, or Stability first. Long-press an available PC on the iPad homepage to
-start; an unpaired PC asks for its pairing PIN first. It pauses playback and tests random traffic over
-LAN, adapting transport, PCM/Opus encoding, bitrate, packet duration and playback
-budget. Each load/budget compares both transports twice in ABBA order; differences
-within a conservative repeat-variation band retain the existing transport preference.
-The final settings receive two longer
-verification windows before one-click application. Progress includes current
-parameters, live gaps, countdown and a changing estimate of remaining steps.
-Normal playback reconnects automatically when testing finishes. Results remain on iPad;
-full diagnostic tests and report collection are available
-from Windows. Random traffic matches the current constant-bitrate packet load,
-reserving codec preparation time; it does not benchmark decoder speed or audio
-quality. Applying a recommendation updates network settings only. Recommendations
-describe the observed network, not future guarantees.
+## Quick Start
 
-The same long-press menu can remove the iPad's saved pairing. Windows provides
-**Unpair iPad** on **Overview**. This removes its saved credential and ends
-the connection. When connected, either action also sends an authenticated,
-best-effort unpair notice to the other endpoint. An offline peer cannot receive
-that notice. Explicit remembered-authentication rejection stops automatic retries
-without deleting saved credentials; timeouts and ordinary connection failures
-also preserve them. The iPad's
-**Keep screen awake** setting applies while HearPort is in the foreground;
-automatic tests also keep the screen awake while running.
+1. **Get the apps**  
+   Download a matched pair (`HearPort-*-windows-x64.zip` and `HearPort-*-unsigned.ipa`) from [GitHub Releases](https://github.com/lsy223622/HearPort/releases), or pull `HearPort-windows-release` and `HearPort-unsigned-ipa` from the **same commit** in [GitHub Actions](https://github.com/lsy223622/HearPort/actions). Extract the Windows ZIP into a folder and keep all files together, then sign and install the IPA on your iPad.
 
-HearPort uses WASAPI Process Loopback by default and excludes its own process
-tree. This captures app audio across output devices before their master volume
-or mute settings. Individual app volume settings still affect the mix. If
-Process Loopback cannot start, HearPort uses the Windows default output device.
-Choose **Settings → Audio capture → Default output device** to use that source
-explicitly. Its captured level can follow Windows output volume, depending on
-the device. Changing the selection restarts the sender. The command-line sender
-accepts `--capture=process` (default) or `--capture=endpoint`.
+2. **Launch & discover**  
+   Run `HearPort.exe` on Windows and open **HearPort** on your iPad. Your PC appears automatically via local DNS-SD (`_hearport._udp`). If auto-discovery is unavailable, enter the PC's hostname or IP address manually.
 
-In Windows **Settings**, the **PCM sample rate limit (Hz)** and **PCM bit depth
-limit** fields show the default output device's format as placeholders. Leave a
-field empty to follow the system value within HearPort's supported range. Enter
-a value to cap that setting. For example, with Windows at 48 kHz and 24 bit, a
-16-bit limit sends 48 kHz / 16-bit stereo PCM. These limits apply to ordinary PCM
-playback with a receiver that supports variable PCM. Opus keeps its own settings,
-and receivers without variable PCM support use the 48 kHz / Float32 format.
+3. **Pair once**  
+   On the Windows **Overview** tab, click **Pair new iPad** to generate a temporary 6-digit PIN. On your iPad, tap **Pair and remember** and enter the PIN. Pairing works over either LAN or USB.
 
-The receiver uses QUIC, local buffering, and audio
-output timing to keep playback responsive through ordinary network variation.
+4. **Start streaming (LAN or USB)**  
+   Tap your paired PC on iPad to connect. For USB audio, install Apple's Windows device support, connect a data cable, unlock your iPad, and tap **Trust** if prompted — **Automatic** mode prefers USB whenever it is ready and returns to LAN when disconnected.
 
-## Diagnostics and evidence
+> [!TIP]
+> **Firewall & ports:** LAN discovery and audio use **UDP `52137`** by default — allow `HearPort.exe` through Windows Firewall on your local network profile if discovery or connection stalls. USB mode forwards encrypted QUIC packets through Apple's device service over loopback **TCP `52138`**, so it needs no inbound LAN TCP firewall rule. See the [Windows onboarding & firewall guide](https://github.com/lsy223622/HearPort/blob/main/windows/installer/README.md) for details.
 
-Both endpoints retain approximately 4 MiB of ordinary runtime logs (1 MiB per
-file, three backups). Detailed logging increases this to approximately 128 MiB
-(16 MiB per file, seven backups); switching it off prunes older and oversized files.
-Detailed iPad logs include each recommendation observation, parameters and selection
-outcome for manual export. iPad export streams a fixed-length file snapshot
-in the background and includes current USB listener/forwarder status.
-The diagnostics page shows the recent in-memory preview count and the total
-size of retained log files. The 2,000-entry preview does not limit file logging
-or export; its displayed statistics refresh while the page is open.
+## Everyday Usage
 
-Diagnostics are stored locally. A log or exported report can contain network
-details such as a hostname, IP address, or port; review it before sharing.
+- **Windows Tray Controls**: Left-click the tray icon for connection status, sender controls, and a live iPad volume slider (scroll over the slider to step by 5%, or click the speaker icon to mute). Double-click to open **Overview**, or right-click for **Open HearPort** / **Exit**.
+- **Auto-Tuning Your Wi-Fi**: Long-press an available PC on the iPad home screen to start **Automatic test and recommendations** (unpaired PCs prompt for a PIN first). Pick **Low latency**, **Balanced**, or **Stability first**. HearPort pauses playback, benchmarks random traffic across Datagram and Reliable QUIC in ABBA order, verifies the winning profile, applies it to **Network audio** only, and reconnects automatically.
+- **Unpairing**: Long-press a PC on iPad to forget it, or click **Unpair iPad** on Windows **Overview**. Both delete the local credential and send a best-effort authenticated unpair notice if connected. Explicit authentication rejections stop automatic retries without deleting saved credentials; ordinary network timeouts keep them intact.
+- **Keep Screen Awake**: Enabling **Keep screen awake** on iPad keeps the display on while HearPort is in the foreground; automated network tests also keep the screen awake while running.
 
-The validation matrix records automated, build, and observed device evidence
-separately. The [release checklist](https://github.com/lsy223622/HearPort/blob/main/docs/release-checklist.md)
-tracks distribution checks. See the [validation matrix](https://github.com/lsy223622/HearPort/blob/main/docs/validation-matrix.md)
-for the underlying results.
+## How It Works
 
-The diagnostic panel also provides synthetic compression-load comparisons and
-real PCM/Opus music comparisons. The matrices, timings and paired analysis are
-documented in the [compression test guide](https://github.com/lsy223622/HearPort/blob/main/docs/compression-tests.md).
+HearPort runs QUIC over both LAN and USB (`usbmux` loopback forwarding), pairing a local WASAPI capture/encoder pipeline on Windows with a lock-free jitter buffer, clock-drift resampler, and CoreAudio output chain on iPad:
 
-## Release builds in GitHub Actions
+```mermaid
+flowchart LR
+  subgraph WIN["Windows 11 PC (Sender)"]
+    CAP["WASAPI Capture (Process Loopback / Endpoint)"] --> ENC["PCM Normalizer / Opus Encoder"]
+    ENC --> QUIC_TX["MsQuic Server (UDP 52137)"]
+    QUIC_TX <--> USB_TX["USB Tunnel (usbmuxd)"]
+  end
 
-The `Windows Release package` workflow builds and tests Release on Windows,
-collects dependency notices and produces `HearPort-windows-release` containing
-the portable ZIP, matching source ZIP and SHA-256 manifest. Its vcpkg revision
-is pinned. The `iOS receiver package tests` workflow builds and tests the iPad
-app and uploads `HearPort-unsigned-ipa`. Run both workflows at the same commit
-when preparing a release; download these artifacts as the distribution files.
-Both workflows also support manual runs from the Actions page.
+  QUIC_TX <-- "QUIC Datagrams & Control (LAN)" --> QUIC_RX
+  USB_TX <-- "HPUQ Encrypted QUIC over USB" --> USB_RX
 
-## Local development verification
+  subgraph IPAD["iPadOS (Receiver)"]
+    USB_RX["USB Loopback Tunnel (TCP 52138)"] <--> QUIC_RX["Network.framework QUIC"]
+    QUIC_RX --> JB["Jitter Buffer & Drift Controller"]
+    JB --> OUT["CoreAudio Output"]
+  end
+```
 
-For implementation details, see the [wire protocol](https://github.com/lsy223622/HearPort/blob/main/protocol/README.md),
-[pairing and authentication](https://github.com/lsy223622/HearPort/blob/main/docs/security-implementation.md), and
-[validation matrix](https://github.com/lsy223622/HearPort/blob/main/docs/validation-matrix.md).
+## Advanced Settings & Diagnostics
 
-Use Python 3.11+, Rust/Cargo 1.87+, CMake and a VS 2022 x64 developer shell.
-Install `msquic:x64-windows` in vcpkg and set `VCPKG_ROOT` to that checkout.
-Install the Windows App Runtime linked above and the Windows SDK C++/WinRT
-tools. With `nuget.exe` available, generate the WinUI projection before
-configuring the Release build.
+<details>
+<summary><strong>Audio capture modes & PCM format limits</strong></summary>
+
+- **Capture source**: HearPort defaults to **WASAPI Process Loopback** (excluding its own process tree), capturing system-wide app audio across output devices before Windows master volume or mute. If Process Loopback fails to start, it falls back to the default output device. You can switch explicitly via **Settings → Audio capture → Default output device** (or `--capture=process` / `--capture=endpoint` on the CLI sender); changing it restarts the sender.
+- **PCM caps**: In Windows **Settings**, **PCM sample rate limit (Hz)** and **PCM bit depth limit** display your default output device's format as placeholders. Leave blank to follow Windows within HearPort's supported range, or enter a value to cap normal PCM output (e.g., capping 48 kHz / 24-bit to 16-bit sends 48 kHz / 16-bit stereo PCM). Opus uses its own settings, and receivers without variable PCM support use 48 kHz / Float32 PCM.
+
+</details>
+
+<details>
+<summary><strong>Playback delay budgets</strong></summary>
+
+- iPad **Playback** settings maintain separate **Network audio** and **USB audio** pages for transport mode, codec, normal target delay, and maximum total delay.
+- Both routes start with a **50 ms** target and **100 ms** maximum budget (upgrades preserve any previous shared budget for the network route).
+- These budgets cover end-to-end playback (transport, processing, and output reserve) rather than measured acoustic latency; the maximum sets how long a transient stall can be absorbed. Changes take effect on the next connection.
+
+</details>
+
+<details>
+<summary><strong>Logs, diagnostics & benchmark tools</strong></summary>
+
+- **Local-only storage**: Both endpoints keep ~4 MiB of ordinary runtime logs (1 MiB × 4 files) or ~128 MiB when detailed logging is enabled (16 MiB × 8 files; turning it off prunes older/oversized files). Detailed iPad logs include each auto-tuning observation, and iPad exports stream a fixed-length snapshot including USB listener/forwarder state.
+- **Diagnostics panel**: Shows up to 2,000 recent in-memory entries (which does not truncate disk logs or exports) and provides synthetic compression-load tests plus real PCM/Opus music benchmarks from Windows.
+- **Privacy note**: Logs and exported diagnostic reports are stored locally only, but can contain local hostnames, IP addresses, and port numbers — review them before sharing publicly.
+
+</details>
+
+## Documentation
+
+| Guide | What it covers |
+| --- | --- |
+| [Windows Onboarding & Firewall](https://github.com/lsy223622/HearPort/blob/main/windows/installer/README.md) | Portable ZIP setup, USB device support, and Windows Firewall rules |
+| [Connection Automation & Shortcuts](https://github.com/lsy223622/HearPort/blob/main/docs/connection-automation.md) | Auto-reconnect rules, built-in iPadOS App Shortcuts, URL kit, and verification matrix |
+| [Compression & Music Benchmarks](https://github.com/lsy223622/HearPort/blob/main/docs/compression-tests.md) | Synthetic load & 32-round PCM/Opus music tests and analysis scripts |
+| [Wire Protocol](https://github.com/lsy223622/HearPort/blob/main/protocol/README.md) | `hearport-v1.proto`, `HPUQ` USB framing, audio datagrams, and format negotiation |
+| [Security Implementation](https://github.com/lsy223622/HearPort/blob/main/docs/security-implementation.md) | RFC 9382 SPAKE2 pairing, TLS SPKI pinning, and Credential Manager / Keychain storage |
+| [Local Diagnostics & PLC](https://github.com/lsy223622/HearPort/blob/main/diagnostics/README.md) & [Offline Transport](https://github.com/lsy223622/HearPort/blob/main/diagnostics/offline-transport.md) | JSONL event schemas, offline music concealment (`music_plc.py`), and transport simulations |
+| [Validation Matrix](https://github.com/lsy223622/HearPort/blob/main/docs/validation-matrix.md) & [Release Checklist](https://github.com/lsy223622/HearPort/blob/main/docs/release-checklist.md) | Automated, native build, and physical device verification records |
+
+<a id="local-development-verification"></a>
+## Building from Source
+
+### Prerequisites (Windows Release Build)
+
+- **Python** 3.11+
+- **Rust / Cargo** 1.87+
+- **CMake** 3.24+ and a **Visual Studio 2022 x64 Developer Shell** (with VC++ redistributables)
+- **vcpkg** with `msquic:x64-windows` installed and `VCPKG_ROOT` pointing to your vcpkg checkout
+- **Windows App Runtime 2.6.5 (x64)** and **Windows SDK C++/WinRT** tools
+- **`nuget.exe`** on `PATH`
+
+### Build, Test & Package (PowerShell)
 
 ```powershell
 nuget install Microsoft.Web.WebView2 -Version 1.0.3719.77 -OutputDirectory out/winui -NonInteractive
@@ -166,11 +174,9 @@ python scripts/package_release.py --build-dir out/build/windows-release --output
   --notices-dir out/release-notices --runtime-dir "$env:VCToolsRedistDir/x64/Microsoft.VC143.CRT"
 ```
 
-Local packages are for development verification. Commit the sources before packaging. Run the existing `iOS receiver
-package tests` GitHub Actions workflow at that commit to create the unsigned
-IPA with its bundled license notices. Add `--ipa <path-to-ipa>` to the package
-command to include that exact commit's IPA in the release output. The script
-creates a portable ZIP, matching source ZIP and `SHA256SUMS.txt`; it rejects
-Debug runtime dependencies, missing runtime DLLs, mismatched versions and
-existing output files. The app-local VC runtime DLLs come from the developer
-shell's redistributable directory, not from the developer machine's System32.
+> [!NOTE]
+> Local packages are for development verification and require a clean committed working tree. To distribute a matched pair, trigger both **Windows Release package** and **iOS receiver package tests** in GitHub Actions on the same commit (or pass `--ipa <path-to-ipa>` from that exact commit's workflow output to `scripts/package_release.py`). `package_release.py` emits a portable Windows ZIP, source archive, and `SHA256SUMS.txt`, rejecting Debug runtimes, missing DLLs, version mismatches, or non-empty target files.
+
+## License
+
+HearPort is licensed under the [GNU General Public License v3.0](LICENSE). See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for bundled third-party components (including Opus 1.6.1, MsQuic, and the Rust SPAKE2 provider dependencies).

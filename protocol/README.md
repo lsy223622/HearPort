@@ -1,87 +1,90 @@
-# HearPort v1 protocol artifacts
+# HearPort v1 Wire Protocol
 
-## Live audio format negotiation
+## Canonical Artifacts & Codecs
 
-Capability bit 512 enables AudioSetup fields 5–8: codec (0 Float32 PCM,
-1 Opus), bitrate (192000/256000), frame count (120/240/480), and codec
-lookahead frames. PCM omits these fields. The receiver requests the format
-before StartStreamAck; the sender creates the encoder and echoes the actual
-lookahead. Peers without the capability retain the existing PCM wire contract.
-Diagnostic matrices negotiate PCM here and select their test format separately.
+- **`hearport-v1.proto`**: Source of truth for control-plane field numbers and message semantics across both endpoints.
+- **`protocol_constants.json`**: Normative v1 wire constants and capability bit assignments verified by `tests/reference/test_protocol_constants.py`.
+- **Schema-shaped codecs**: Both the C++ sender (`core/src/wire/control_message.cpp`) and Swift receiver (`ControlMessages.swift`) implement dependency-free protobuf wire codecs matching `hearport-v1.proto`. Platform builds may only swap in generated protobuf bindings if the serialized byte output remains identical.
 
-Coordinated receivers can advertise bit 4096 in ConnectRequest to accept
-variable PCM during normal playback. Kind 7 retains the 120-frame, 48 kHz
-timeline in the timed header. Its payload starts with a big-endian u16 sample
-rate (8000–48000 Hz) and a u8 valid depth (8–32 bits). Interleaved stereo follows
-as signed little-endian PCM in the smallest whole-byte container, with Float32LE
-at 32 bits. A block at index `source_frame / 120` carries the difference
-between consecutive cumulative sample counts at 400 blocks per second,
-rounded down. Reliable timed streams use this length to parse kind 7 alongside
-fixed-size kind 0 records. Senders can still use kind 0 for 48 kHz stereo
-Float32LE PCM and retain that format for receivers without bit 4096.
+---
 
-Opus uses the existing timed kind 5 records and u16-length Reliable framing.
-Logical sequence numbers still represent 120 source frames, so a 480-frame
-record advances by four units. Capture time includes encoder lookahead in
-the same end-to-end deadline. The receiver splits decoded records into the
-existing 120-frame playback timeline. Reliable Opus keeps codec state across
-bounded pending-window losses rather than replacing the stream at the live edge.
+## Baseline Wire Constants
 
-`hearport-v1.proto` is the canonical control-plane schema for both the C++
-sender and the Swift receiver. It is copied from the normative v1 design
-documents and remains the source of truth for field numbers and message
-semantics. The repository uses a dependency-free, schema-shaped codec in
-`core/src/wire/control_message.cpp` and `ControlMessages.swift` so the reference
-and Windows builds do not silently fall back to ad-hoc JSON or a second wire
-format; platform builds may replace that adapter with generated protobuf
-bindings only when the serialized bytes remain identical.
+| Parameter | Value | Notes |
+| --- | --- | --- |
+| ALPN | `hearport/1` | Negotiated on both LAN and USB QUIC connections |
+| Default UDP Port | `52137` | Configurable in Windows settings / CLI |
+| Fixed Audio Format | 48 kHz stereo `Float32LE` PCM | Baseline `AUDIO` datagram format |
+| Audio Datagram Size | 120 frames · 960 PCM bytes · **968 B** total payload | Application payload size (excludes QUIC `DATAGRAM` and IP headers) |
+| Max Control Message | 64 KiB | Maximum serialized `ControlEnvelope` length |
 
-`protocol_constants.json` lists the negotiated feature bits and the baseline
-v1 wire constants checked by the reference tests:
+---
 
-- `hearport/1` ALPN;
-- UDP port `52137` by default;
-- 48 kHz stereo Float32LE PCM for the fixed-format AUDIO payload;
-- 120 frames and 960 PCM bytes per AUDIO application datagram;
-- 968 bytes for the complete AUDIO application payload;
-- 64 KiB maximum serialized control message.
+## Live Audio Format Negotiation
 
-The 968-byte value is the HearPort application payload size, not the total
-QUIC DATAGRAM frame or IP packet size.
+### Live Opus (`capability bit 512`)
 
-USB carries complete encrypted QUIC packets in `HPUQ` frames: four ASCII magic
-bytes, version `1`, one flag byte, and a two-byte big-endian payload length.
-Flag `0` contains one QUIC packet (1–65535 bytes). On each USB connection the
-Windows sender first sends a flag `1` frame containing exactly 64 ASCII hex
-characters: its certificate SPKI SHA-256, also published as the Bonjour TXT
-`id`. The receiver consumes that discovery frame without forwarding it to UDP.
-Only matching full identities group USB and LAN routes as one computer.
-Discovery metadata is public and unauthenticated; QUIC TLS certificate pinning
-and pairing still establish the peer identity.
+When both peers advertise bit `512`, `AudioSetup` carries fields `5–8`:
+- `codec`: `0` (Float32 PCM) or `1` (Opus)
+- `bitrate`: `192000` or `256000` bps
+- `frame_count`: `120`, `240`, or `480` frames
+- `lookahead`: codec lookahead frames (echoed back by the sender after creating the encoder)
 
-### Receiver-initiated environment calibration
+PCM omits fields `5–8`. The receiver requests its format before `StartStreamAck`, and peers without bit `512` keep the baseline PCM contract. Diagnostic matrices still negotiate baseline PCM here and pick their test format separately.
 
-On an authenticated ordinary audio stream, a receiver may send a ProbeManifest containing calibration version 4, kind 6, the current stream ID (u32 big endian), seconds (u16, 30/60/120), and ceiling milliseconds (u16, 20..2000). The manifest envelope stream ID must match. Diagnostic sessions and duplicate requests are rejected. The GUI schedules a restart into the existing LAN calibration mode; a receiver with saved pairing reconnects and uses the ordinary calibration handshake. A sent request is not a completed calibration.
+- **Wire format**: Uses timed record **kind `5`** and `u16`-length Reliable framing.
+- **Timeline**: Logical sequence numbers still increment per **120 source frames** (so a 480-frame Opus packet advances the sequence by `4`). Capture timestamps include encoder lookahead within the same end-to-end delay budget, and the receiver splits decoded frames back onto the 120-frame playback grid.
+- **State preservation**: Reliable Opus keeps decoder state across bounded pending-window losses instead of replacing the stream at the live edge.
 
-### Compression diagnostics
+### Variable PCM (`capability bit 4096`)
 
-Feature bit `256` negotiates compression tests. Music manifests use version `4`
-and 24 bytes: version/index/count/flags (four bytes), seconds (u16), profile and
-repeat (one byte each), first logical sequence and generation (u32 each), frames,
-bitrate in kbps, codec lookahead frames and reserved zero (u16 each). Integers
-are big endian. Count is 32; flags are 2 (adaptive Datagram) or 3 (adaptive
-Reliable). Profiles 0/1 are Float32/PCM16 at 120 frames; profiles 2–4 and 5–7
-are Opus 192/256 kbps at 120/240/480 frames respectively. Each profile/transport
-occurs once in each of two repetitions.
+Coordinated receivers can advertise bit `4096` in `ConnectRequest` to accept variable sample-rate/bit-depth PCM during ordinary playback:
 
-Timed records retain their 32-byte header. Kinds 5 and 6 identify Opus and
-PCM16. Opus has 120/240/480 frames and a variable payload up to 992 bytes;
-PCM16 is 120 stereo frames in 480 little-endian bytes. The sequence coordinate
-is still 120 frames: a 480-frame packet advances it by four. Reliable music
-v4 uses the stream/generation preface followed by u16 length-prefixed timed
-records. It does not use ordinary fixed-size reliable audio records.
+- **Wire format**: Uses timed record **kind `7`** while preserving the 120-frame / 48 kHz timeline in the timed header.
+- **Payload layout**: Big-endian `u16` sample rate (`8000–48000 Hz`) + `u8` valid bit depth (`8–32` bits) + interleaved signed little-endian stereo PCM in the smallest whole-byte container (`Float32LE` when 32-bit).
+- **Block sizing**: Block `source_frame / 120` carries the difference between consecutive cumulative sample counts at 400 blocks/s, rounded down.
+- **Coexistence**: Reliable timed streams parse kind `7` alongside fixed-size kind `0`. Senders may still emit kind `0` for 48 kHz stereo `Float32LE` and keep it for peers without bit `4096`.
 
-Synthetic compression manifests use version 3, 40 rounds and the exact
-payload/rate profiles in `network_probe.h` and `CoordinatedProbePlan`.
-`DiagnosticsStart` permits 60–86400 seconds so long finite comparisons fit.
-Neither extension changes ordinary PCM playback defaults.
+---
+
+## USB Framing (`HPUQ`)
+
+Over USB (`usbmux`), encrypted QUIC packets are wrapped in `HPUQ` frames with an 8-byte header:
+
+| Offset | Size | Field | Description |
+| --- | ---: | --- | --- |
+| `0` | 4 B | Magic | ASCII `HPUQ` |
+| `4` | 1 B | Version | `1` |
+| `5` | 1 B | Flags | `0` = QUIC packet · `1` = Peer SPKI discovery frame |
+| `6` | 2 B | Payload Length | Big-endian `u16` (`1–65535` bytes) |
+
+- **Flag `0`**: Carries one complete encrypted QUIC packet (`1–65535` bytes).
+- **Flag `1`**: Sent first by the Windows sender on every new USB connection. Contains **64 ASCII hex characters** representing its certificate SPKI SHA-256 (matching Bonjour TXT `id`). The receiver consumes this frame locally without forwarding it to UDP and uses full identity matching to group USB and LAN routes under one PC.
+- **Trust boundary**: Discovery metadata is public and unauthenticated; QUIC TLS certificate pinning and application pairing/HMAC remain authoritative for identity.
+
+---
+
+## Calibration & Compression Diagnostics Extensions
+
+### Receiver-Initiated Environment Calibration
+
+On an authenticated ordinary audio stream, the receiver may send a `ProbeManifest` requesting LAN calibration:
+- **Payload**: Calibration version `4`, kind `6`, matching stream ID (`u32` BE), duration (`u16`: `30`, `60`, or `120` seconds), and ceiling (`u16`: `20..2000` ms).
+- **Rules**: The manifest envelope's stream ID must match; active diagnostic sessions and duplicate requests are rejected. When accepted, the Windows GUI schedules a restart into LAN calibration mode, and a remembered receiver reconnects using the calibration handshake. Sending a request does not guarantee calibration completes.
+
+### Compression Diagnostics (`capability bit 256`)
+
+Feature bit `256` enables synthetic load and real-music compression comparison sessions (`DiagnosticsStart` allows `60–86400` seconds; neither extension changes ordinary PCM defaults):
+
+- **Music manifests (version `4`, 24 bytes big-endian)**:
+
+| Offset | Field | Encoding / Notes |
+| --- | --- | --- |
+| `0–3` | `version`, `index`, `count`, `flags` | 4 × `u8` (`version = 4`, `count = 32`, `flags = 2` adaptive Datagram or `3` adaptive Reliable) |
+| `4–5` | `seconds` | `u16` |
+| `6–7` | `profile`, `repeat` | 2 × `u8` (`0`/`1` = Float32/PCM16 @ 120f; `2–4` = Opus 192 kbps @ 120/240/480f; `5–7` = Opus 256 kbps @ 120/240/480f; 2 repeats) |
+| `8–15` | `first_sequence`, `generation` | 2 × `u32` |
+| `16–23` | `frames`, `bitrate_kbps`, `lookahead`, `reserved` | 4 × `u16` (`reserved = 0`) |
+
+- **Timed audio records**: Keep the 32-byte timed header; kind `5` identifies Opus (`120`/`240`/`480` frames, payload up to 992 bytes) and kind `6` identifies PCM16 (`120` stereo frames in 480 LE bytes). Sequence coordinates remain 120 frames (480-frame packets advance by `4`). Reliable music v4 uses the stream/generation preface followed by `u16` length-prefixed timed records rather than ordinary fixed-size reliable records.
+- **Synthetic manifests (version `3`)**: Run 40 rounds using the exact payload/rate profiles defined in `network_probe.h` and `CoordinatedProbePlan`.

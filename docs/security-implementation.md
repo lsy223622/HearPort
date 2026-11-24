@@ -1,74 +1,21 @@
-# HearPort v1 security implementation
+# HearPort v1 Security Architecture
 
-The security boundary is split into a small platform-independent policy layer
-and one maintained RFC 9382 provider:
+HearPort keeps its cryptographic surface compact by separating platform-independent policy from a single maintained RFC 9382 SPAKE2 provider:
 
-- `security/spake2-provider/` is a Rust FFI library built from
-  `pakery-crypto`/`pakery-spake2` 0.4.0 with the P-256, SHA-256, HKDF and HMAC
-  suite enabled. It is the only implementation in this repository that does
-  P-256 group arithmetic. The C++ and Swift layers do not contain curve
-  formulas.
-- `security/include/hearport/security/pairing.h` contains PIN validation,
-  SPKI identity construction, constant-time comparison, the explicit two-minute
-  pairing window and the SPAKE2 provider wrapper.
-- `security/include/hearport/security/remembered_auth.h` contains the
-  remembered-authentication HMAC challenge state and staged trust material.
-- `windows/src/credential_store.cpp` stores the fixed credential record as a
-  DPAPI-protected Windows Credential Manager blob. The pair secret is never
-  written as a normal configuration value.
-- `ios/HearPortReceiver/Sources/HearPortReceiver/KeychainStore.swift` stores
-  `{windows_spki_sha256, peer_id, pair_secret}` as one Keychain item using
-  `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`.
+| Layer | Location | Responsibility |
+| --- | --- | --- |
+| **SPAKE2 Provider** | `security/spake2-provider/` | Rust FFI library (`pakery-crypto` / `pakery-spake2` `0.4.0`) handling all P-256 group arithmetic, SHA-256, HKDF, and HMAC. Neither C++ nor Swift implements elliptic-curve formulas. |
+| **Pairing Policy** | `security/include/hearport/security/pairing.h` | PIN format validation, SPKI identity construction, constant-time comparison, 2-minute pairing window, and SPAKE2 wrapper. |
+| **Remembered Auth** | `security/include/hearport/security/remembered_auth.h` | Nonce-based HMAC challenge state and staged trust material. |
+| **Windows Storage** | `windows/src/credential_store.cpp` | Stores the fixed credential record as a DPAPI-protected blob in Windows Credential Manager (never in plain config files). |
+| **iPad Storage** | `ios/HearPortReceiver/Sources/HearPortReceiver/KeychainStore.swift` | Stores `{windows_spki_sha256, peer_id, pair_secret}` as a single Keychain item with `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`. |
 
-The provider build is added by `security/CMakeLists.txt` when `cargo` is
-available. If it is unavailable, the C++ security API returns failure and the
-native security test verifies that behavior. There is no hash-only, plain-PIN,
-or “trust all certificates” fallback. The Swift default is
-`UnavailableSpake2Provider`; a release iPad application must link the same
-Rust provider as an Apple-platform static library/XCFramework and compile the
-`HEARPORT_SPAKE2_PROVIDER` bridge before enabling pairing.
+> [!IMPORTANT]
+> **Fail-closed build rule:** `security/CMakeLists.txt` compiles the Rust provider whenever `cargo` is available; if missing, the C++ security API fails closed (verified by `hearport_security_tests`). On Swift, the default is `UnavailableSpake2Provider` — release iPad builds must link the Rust provider static library and compile with `HEARPORT_SPAKE2_PROVIDER` enabled. There is **no** plain-PIN, hash-only, or "trust all certificates" fallback.
 
-## Dependency security and reproducible builds
+---
 
-The 2026-10-26 security update changes only `crypto-bigint` 0.7.5 to 0.7.9
-and `ctutils` 0.4.2 to 0.4.5 in the 47-package lockfile. These satisfy
-[RUSTSEC-2026-0387](https://rustsec.org/advisories/RUSTSEC-2026-0387.html)
-(`crypto-bigint >=0.7.6`) and
-[RUSTSEC-2026-0385](https://rustsec.org/advisories/RUSTSEC-2026-0385.html)
-(`ctutils >=0.4.4`). Version 0.7.6 was already yanked when checked; the selected
-non-yanked releases require Rust 1.87, including the minimum `crypto-bigint`
-security release. The provider therefore declares Rust 1.87 and both native
-release workflows test its existing vectors with that toolchain.
-
-`cargo tree --locked -e features -i crypto-bigint` confirms the production path
-through `pakery-crypto` 0.4.0, `p256` 0.14.0 and `elliptic-curve` 0.14.1;
-`primefield` also consumes the same integer implementation. The enabled
-`crypto-bigint` features are `hybrid-array`, `rand_core`, `subtle`, and `zeroize`.
-`ctutils` is reached through `crypto-bigint`, `digest`, and `sec1`, with `subtle`
-enabled. `pakery-crypto` keeps `p256`, `spake2`, and `std`; `pakery-spake2` keeps
-its existing normal dependency path and development-only `test-utils` feature.
-No curve, protocol, KDF, or FFI signature changes are involved.
-
-This is an actual arithmetic dependency: P-256 field/scalar operations use
-`primefield` Montgomery arithmetic and `crypto-bigint`/`ctutils` operations.
-The selected x64 Windows and arm64 iOS targets do not exercise the advisory's
-32-bit-only `u128` comparison case. Package presence and source-level arithmetic
-reachability do not prove that every affected function executes, nor demonstrate
-a practical timing exploit on either target. No machine-code constant-time
-proof is claimed by the functional tests.
-
-CMake builds the provider static library with `cargo build --locked --release`
-and tracks both `Cargo.toml` and `Cargo.lock` as inputs, so a dependency update
-invalidates the native library. The iOS workflow independently builds with
-`--locked --release --target aarch64-apple-ios`, copies that output into the
-app's link directory, and force-loads it during the Xcode archive. Neither
-workflow restores Rust build outputs or uses a tracked precompiled provider;
-the Windows cache contains vcpkg dependencies only. Release dependency notices
-are generated from the locked graph for the platform being packaged.
-
-## Profile details
-
-The provider and the Python/Swift vectors implement the exact v1 profile:
+## Cryptographic Profile (v1)
 
 ```text
 digest = SHA256(ASCII("HearPort-SPAKE2-v1") || 0x00 || ASCII(PIN))
@@ -81,39 +28,34 @@ HMAC-SHA256(pair_secret,
             ASCII("HearPort-Auth-v1") || nonce32 || windows_spki_sha256)
 ```
 
-The provider sends and validates 65-byte SEC1 uncompressed points, rejects
-invalid/identity points, generates fresh ephemeral scalars from the OS-backed
-RNG, and verifies both RFC 9382 confirmation MACs before the caller can treat
-the exchange as authenticated. The Rust tests include the RFC 9382 P-256
-Appendix B vector and a malformed-point failure case.
+- Points are exchanged as **65-byte SEC1 uncompressed P-256 points**, rejecting invalid or identity points.
+- Ephemeral scalars come from the OS-backed RNG, and **both RFC 9382 confirmation MACs** are verified before treating pairing as authenticated.
+- Rust unit tests cover the RFC 9382 P-256 Appendix B vector and malformed-point rejection.
 
-## TLS policy
+---
 
-The iPad QUIC transport requires an explicit `TLSIdentityPolicy` at connect
-time. `.pairing` is a user-selected provisional flow: it extracts the leaf
-certificate's DER SubjectPublicKeyInfo, reports its SHA-256 to the pairing
-state, and allows the TLS channel only for that explicit PAKE attempt. It does
-not persist the hash by itself. `.remembered` compares the current SPKI hash
-to the Keychain pin and fails the TLS handshake on mismatch. TLS resumption and
-TLS tickets are disabled for this v1 transport, so application authentication
-never relies on 0-RTT data.
+## TLS & Session Gating Policy
 
-The Windows MsQuic server disables server resumption and only exposes the one
-client-initiated bidirectional control stream plus QUIC DATAGRAM capability.
-Audio remains gated by `SessionState::MarkAuthenticated()` and a matching
-`StartStreamAck`; no authenticated state is inferred from a successful TLS
-handshake alone.
+- **Explicit TLS identity policy**: The iPad QUIC transport requires `TLSIdentityPolicy` at connect time:
+  - `.pairing` — User-initiated provisional flow. Extracts the leaf certificate's DER SPKI SHA-256 for that explicit PAKE attempt only; never persists the hash by itself.
+  - `.remembered` — Compares the peer's SPKI SHA-256 against the Keychain-pinned hash and aborts the TLS handshake on mismatch.
+- **No 0-RTT or resumption**: Both iPad and Windows MsQuic disable TLS session resumption and session tickets.
+- **Stream boundaries & audio gating**: The MsQuic server allows only one client-initiated bidirectional control stream plus QUIC `DATAGRAM` frames. Audio remains gated behind `SessionState::MarkAuthenticated()` and a matching `StartStreamAck` — a successful TLS handshake alone never unlocks audio.
 
-## Failure and persistence rules
+---
 
-- A PIN is six ASCII decimal bytes; leading zeroes are valid.
-- One shared `PairingWindow` allows five failures. The fifth failure closes the
-  window immediately, so a sixth attempt is rejected until the user opens a
-  new window.
-- A remembered nonce is consumed on every verification attempt, including a
-  failed attempt. Peer-id mismatch, wrong secret, wrong MAC and replay all
-  return authentication failure and do not start a new pairing flow.
-- Credentials are staged in memory until PAKE confirmation succeeds. A failed
-  pairing clears staged material; a one-time flow never commits it.
-- The TLS SPKI is a pin, not a display name, mDNS name, certificate serial, or
-  IP address. A changed SPKI requires explicit re-pairing.
+## Rate Limiting, Replay & Persistence Rules
+
+- **PIN format**: Exactly 6 ASCII decimal digits (leading zeroes are valid).
+- **Pairing window**: A single shared `PairingWindow` remains open for ~2 minutes and allows at most **5 failed attempts** — the 5th failure closes the window immediately until the user explicitly opens a new one.
+- **One-shot challenges**: Remembered nonces are consumed on **every** verification attempt, including failures. Peer-ID mismatches, wrong secrets, bad MACs, and replays all fail authentication without falling back into pairing.
+- **Staged trust**: Credentials stay staged in memory until PAKE confirmation succeeds. Failed pairing wipes staged material; one-time connections never persist trust.
+- **Key-pinned identity**: Trust is pinned to the TLS certificate's SPKI SHA-256 — not display name, Bonjour name, serial number, or IP address. Changing the PC certificate requires re-pairing.
+
+---
+
+## Dependency security and reproducible builds
+
+- **2026-10-26 advisory patch**: Updated `crypto-bigint` (`0.7.5` → `0.7.9`, addressing [RUSTSEC-2026-0387](https://rustsec.org/advisories/RUSTSEC-2026-0387.html)) and `ctutils` (`0.4.2` → `0.4.5`, addressing [RUSTSEC-2026-0385](https://rustsec.org/advisories/RUSTSEC-2026-0385.html)) in the 47-package `Cargo.lock` (`0.7.6` was yanked; the patched releases set the provider MSRV to **Rust 1.87**). No curve, protocol, KDF, or FFI signatures changed.
+- **Reachability & scope**: `cargo tree --locked -e features -i crypto-bigint` confirms production reachability via `pakery-crypto` (`0.4.0`), `p256` (`0.14.0`), `elliptic-curve` (`0.14.1`), and `primefield` (with `hybrid-array`, `rand_core`, `subtle`, `zeroize` enabled on `crypto-bigint`, and `subtle` on `ctutils`). Neither x64 Windows nor arm64 iOS exercises the advisory's 32-bit-only `u128` case, and functional tests do not claim machine-code constant-time proof.
+- **Reproducible CI builds**: CMake invokes `cargo build --locked --release` tracking both `Cargo.toml` and `Cargo.lock`. The iOS workflow builds `--locked --release --target aarch64-apple-ios` and `-force_load`s the resulting static archive. Neither workflow caches or commits prebuilt Rust artifacts (Windows caches vcpkg only), and third-party dependency notices are generated directly from the locked target graph.
