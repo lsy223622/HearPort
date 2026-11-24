@@ -19,7 +19,7 @@ class SenderHost {
   SystemVolumeState SystemVolume();
   bool RequestSystemVolume(std::optional<std::uint32_t> percent);
   bool WaitForDebugCompletion(std::chrono::milliseconds timeout);
-  void SetConnectionHandler(ConnectionHandler handler) { handler_=std::move(handler); }
+  void SetConnectionHandler(ConnectionHandler handler) { std::lock_guard lock(mutex_); handler_=std::move(handler); }
   void SetCalibrationRequestHandler(std::function<void(CalibrationOptions)> handler);
   std::string usb_status() const;
  private:

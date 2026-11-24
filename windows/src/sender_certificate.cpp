@@ -161,6 +161,9 @@ PCCERT_CONTEXT CreateCertificate() {
         GetSystemTime(&start);
         SYSTEMTIME end = start;
         end.wYear += 5;
+        if (end.wMonth == 2 && end.wDay == 29) {
+          end.wDay = 28;
+        }
 
         char* server_auth = const_cast<char*>(szOID_PKIX_KP_SERVER_AUTH);
         CERT_ENHKEY_USAGE server_usage{1, &server_auth};

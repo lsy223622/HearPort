@@ -31,8 +31,8 @@ void SenderHost::Configure(const std::function<void(SenderService&)>& configure)
 }
 bool SenderHost::Start() {
   if(started_) return false;
-  stopping_=false;
-  if(!services_[0]->Start()) { stopping_=true; return false; }
+  { std::lock_guard lock(mutex_); stopping_=false; }
+  if(!services_[0]->Start()) { std::lock_guard lock(mutex_); stopping_=true; return false; }
   started_=true;
   if(services_[0]->network_probe()) {
     std::lock_guard lock(mutex_); usb_status_="Network test uses network connection";
@@ -75,7 +75,7 @@ void SenderHost::Connected(unsigned index,bool connected,bool reliable) {
 }
 void SenderHost::Stop(std::uint32_t reason) {
   if(!started_) return;
-  stopping_=true;
+  { std::lock_guard lock(mutex_); stopping_=true; }
   selected_condition_.notify_all();
   for(auto& service:services_) service->NotifyUserStop(reason);
   tunnel_.Stop(); discovery_.Stop();

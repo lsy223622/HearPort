@@ -799,17 +799,21 @@ class Application {
     main_window_->SetStatus(heading, detail, audio_label, port_text);
     if (pin_expires_ && Clock::now() >= *pin_expires_) pin_expires_.reset();
     if (pin_expires_) {
-      const auto seconds = std::chrono::ceil<std::chrono::seconds>(
-          *pin_expires_ - Clock::now()).count();
-      const std::string pin = host_->pairing_pin();
-      const std::wstring digits(pin.begin(), pin.end());
-      const std::wstring countdown = std::to_wstring(seconds / 60) + L":" +
-                                     (seconds % 60 < 10 ? L"0" : L"") +
-                                     std::to_wstring(seconds % 60);
-      const std::wstring label = Tr(L"Pairing PIN: ", L"配对码：") +
-                                 digits.substr(0, 3) + L" " + digits.substr(3) +
-                                 Tr(L"  ·  Time left ", L"  ·  剩余 ") + countdown;
-      main_window_->SetPairing(label);
+      const std::string pin = host_ ? host_->pairing_pin() : std::string{};
+      if (pin.size() < 6) {
+        pin_expires_.reset();
+      } else {
+        const auto seconds = std::chrono::ceil<std::chrono::seconds>(
+            *pin_expires_ - Clock::now()).count();
+        const std::wstring digits(pin.begin(), pin.end());
+        const std::wstring countdown = std::to_wstring(seconds / 60) + L":" +
+                                       (seconds % 60 < 10 ? L"0" : L"") +
+                                       std::to_wstring(seconds % 60);
+        const std::wstring label = Tr(L"Pairing PIN: ", L"配对码：") +
+                                   digits.substr(0, 3) + L" " + digits.substr(3) +
+                                   Tr(L"  ·  Time left ", L"  ·  剩余 ") + countdown;
+        main_window_->SetPairing(label);
+      }
     }
     if (!pin_expires_) {
       const std::wstring pairing_hint =

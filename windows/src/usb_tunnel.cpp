@@ -143,9 +143,12 @@ struct Socket {
 };
 sockaddr_in Address(std::uint16_t port) { sockaddr_in result{}; result.sin_family=AF_INET; result.sin_addr.s_addr=htonl(INADDR_LOOPBACK); result.sin_port=htons(port); return result; }
 void Nonblocking(SOCKET socket) { u_long value=1; if(ioctlsocket(socket,FIONBIO,&value)) throw std::runtime_error("socket nonblocking failed"); }
-bool Ready(SOCKET socket,bool write,int milliseconds=100) {
-  fd_set set; FD_ZERO(&set); FD_SET(socket,&set); timeval wait{milliseconds/1000,(milliseconds%1000)*1000};
-  return select(0,write?nullptr:&set,write?&set:nullptr,nullptr,&wait)>0;
+bool Ready(SOCKET socket,bool write,int milliseconds=100,bool check_except=false) {
+  fd_set set; FD_ZERO(&set); FD_SET(socket,&set);
+  fd_set except;
+  if(check_except) { FD_ZERO(&except); FD_SET(socket,&except); }
+  timeval wait{milliseconds/1000,(milliseconds%1000)*1000};
+  return select(0,write?nullptr:&set,write?&set:nullptr,check_except?&except:nullptr,&wait)>0;
 }
 }
 std::vector<std::uint32_t> ParseUsbDevices(std::string_view xml) { try { return Devices(Parse(xml)); } catch(...) { return {}; } }
@@ -171,7 +174,7 @@ struct UsbTunnel::Impl {
     Nonblocking(socket.fd); auto address=Address(27015);
     if(connect(socket.fd,reinterpret_cast<sockaddr*>(&address),sizeof(address))==SOCKET_ERROR && WSAGetLastError()!=WSAEWOULDBLOCK) throw std::runtime_error("Apple device service unavailable");
     auto end=std::chrono::steady_clock::now()+std::chrono::seconds(2);
-    while(!Ready(socket.fd,true)) { Check(); if(std::chrono::steady_clock::now()>=end) throw std::runtime_error("Apple device service unavailable"); }
+    while(!Ready(socket.fd,true,100,true)) { Check(); if(std::chrono::steady_clock::now()>=end) throw std::runtime_error("Apple device service unavailable"); }
     int error=0,len=sizeof(error); getsockopt(socket.fd,SOL_SOCKET,SO_ERROR,reinterpret_cast<char*>(&error),&len);
     if(error) throw std::runtime_error("Apple device service unavailable");
     int enabled=1; setsockopt(socket.fd,IPPROTO_TCP,TCP_NODELAY,reinterpret_cast<char*>(&enabled),sizeof(enabled));
@@ -229,11 +232,24 @@ struct UsbTunnel::Impl {
         if(!decoder.Push(std::span(data).first(n),packets)) throw std::runtime_error("USB invalid packet");
         if(decoder.Complete()) partial_since.reset();
         else if(!partial_since || !packets.empty()) partial_since=now;
-        for(const auto& packet:packets) if(send(udp.fd,reinterpret_cast<const char*>(packet.data()),static_cast<int>(packet.size()),0)!=packet.size()) throw std::runtime_error("USB UDP forwarding failed");
+        for(const auto& packet:packets) {
+          const int sent=send(udp.fd,reinterpret_cast<const char*>(packet.data()),static_cast<int>(packet.size()),0);
+          if(sent<0) {
+            const int error=WSAGetLastError();
+            if(error==WSAEWOULDBLOCK || error==WSAECONNRESET) continue;
+            throw std::runtime_error("USB UDP forwarding failed");
+          }
+          if(static_cast<std::size_t>(sent)!=packet.size()) throw std::runtime_error("USB UDP forwarding failed");
+        }
       }
       if(FD_ISSET(udp.fd,&read)) {
         int n=recv(udp.fd,reinterpret_cast<char*>(data.data()),static_cast<int>(data.size()),0);
-        if(n<=0 || !outgoing.Push(std::span(data).first(n),now)) throw std::runtime_error("USB queue overflow");
+        if(n<0) {
+          const int error=WSAGetLastError();
+          if(error==WSAEWOULDBLOCK || error==WSAECONNRESET) continue;
+          throw std::runtime_error("USB UDP receive failed");
+        }
+        if(n>0 && !outgoing.Push(std::span(data).first(static_cast<std::size_t>(n)),now)) throw std::runtime_error("USB queue overflow");
       }
       if(FD_ISSET(tcp.fd,&write)) {
         auto bytes=outgoing.Front(); int n=send(tcp.fd,reinterpret_cast<const char*>(bytes.data()),static_cast<int>(bytes.size()),0);

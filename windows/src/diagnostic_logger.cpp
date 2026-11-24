@@ -219,15 +219,24 @@ bool SenderDiagnosticLogger::WriteFileLine(std::string_view line) noexcept {
 void SenderDiagnosticLogger::Writer() noexcept {
   for (;;) {
     QueueSlot slot;
+    bool apply_retention = false;
     {
       std::unique_lock lock(mutex_);
       condition_.wait(lock, [this] { return stopping_ || count_ != 0 || retention_changed_; });
-      if (retention_changed_) { ApplyRetention(); retention_changed_ = false; }
-      if (count_ == 0 && !stopping_) continue;
-      if (count_ == 0 && stopping_) break;
-      slot = queue_[head_];
-      head_ = (head_ + 1) % capacity_;
-      --count_;
+      if (retention_changed_) {
+        retention_changed_ = false;
+        apply_retention = true;
+      } else {
+        if (count_ == 0 && !stopping_) continue;
+        if (count_ == 0 && stopping_) break;
+        slot = queue_[head_];
+        head_ = (head_ + 1) % capacity_;
+        --count_;
+      }
+    }
+    if (apply_retention) {
+      ApplyRetention();
+      continue;
     }
     if (file_.is_open()) {
       WriteFileLine(std::string_view(slot.bytes.data(), slot.length));

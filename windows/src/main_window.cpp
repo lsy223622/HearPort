@@ -682,6 +682,9 @@ MainWindow::MainWindow(std::function<void(MainAction)> action,
     : impl_(new Impl{std::move(action), std::move(volume)}) {}
 MainWindow::~MainWindow() {
   *impl_->alive = false;
+  if (impl_->hwnd && IsWindow(impl_->hwnd)) {
+    RemoveWindowSubclass(impl_->hwnd, MainWindowFrameProc, 1);
+  }
   if (impl_->window && IsWindow(impl_->hwnd)) impl_->window.Close();
 }
 HRESULT MainWindow::Create(std::uint16_t port, bool endpoint, bool auto_start) {
