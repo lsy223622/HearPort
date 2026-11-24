@@ -3,11 +3,11 @@ import XCTest
 @testable import HearPortReceiver
 
 final class PlaybackLatencyPreferencesTests: XCTestCase {
-    private func withDefaults(_ test: (UserDefaults) -> Void) {
+    private func withDefaults(_ test: (UserDefaults) throws -> Void) rethrows {
         let name = "PlaybackLatencyTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: name)!
         defer { defaults.removePersistentDomain(forName: name) }
-        test(defaults)
+        try test(defaults)
     }
 
     func testFreshRoutesUseOriginalBudget() {
@@ -52,7 +52,7 @@ final class PlaybackLatencyPreferencesTests: XCTestCase {
     }
 
     func testOutOfRangePreferencesAreClampedToPlayoutBudgetBounds() throws {
-        withDefaults { defaults in
+        try withDefaults { defaults in
             let cases: [(Int, Int, Int, Int)] = [
                 (-5, 5, 10, 20),
                 (500, 200, 500, 500),
