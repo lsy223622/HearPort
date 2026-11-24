@@ -50,6 +50,12 @@ class ControlMessageTests(unittest.TestCase):
         with self.assertRaises(ControlMessageError):
             decode_control_envelope(bytes.fromhex("f201020800"))
 
+    def test_deprecated_group_wire_type_is_rejected(self):
+        with self.assertRaises(ControlMessageError):
+            decode_control_envelope(b"\x0b" * 65536)
+        with self.assertRaises(ControlMessageError):
+            decode_control_envelope(b"\x0a\x04\x0b\x0c\x08\x02")
+
 
 if __name__ == "__main__":
     unittest.main()

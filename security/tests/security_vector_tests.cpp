@@ -118,5 +118,12 @@ int main() {
   trust.Stage(credential);
   assert(trust.Commit(true, true));
   assert(trust.remembered().has_value());
+
+  std::array<std::byte, 16> scratch{};
+  scratch.fill(std::byte{0xa5});
+  SecureZero(scratch);
+  for (const auto value : scratch) {
+    assert(value == std::byte{0});
+  }
   return 0;
 }

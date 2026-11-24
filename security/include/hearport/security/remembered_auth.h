@@ -11,6 +11,13 @@ struct RememberedCredential {
   Bytes16 peer_id{};
   Bytes32 pair_secret{};
   Bytes32 windows_spki_sha256{};
+
+  RememberedCredential() = default;
+  RememberedCredential(const RememberedCredential&) = default;
+  RememberedCredential& operator=(const RememberedCredential&) = default;
+  RememberedCredential(RememberedCredential&& other) noexcept;
+  RememberedCredential& operator=(RememberedCredential&& other) noexcept;
+  ~RememberedCredential() noexcept;
 };
 
 std::optional<Bytes32> ComputeRememberedAuthMac(
@@ -21,6 +28,11 @@ class RememberedAuthVerifier {
  public:
   explicit RememberedAuthVerifier(const RememberedCredential& credential) noexcept
       : credential_(credential) {}
+  RememberedAuthVerifier(const RememberedAuthVerifier&) = default;
+  RememberedAuthVerifier& operator=(const RememberedAuthVerifier&) = default;
+  RememberedAuthVerifier(RememberedAuthVerifier&& other) noexcept;
+  RememberedAuthVerifier& operator=(RememberedAuthVerifier&& other) noexcept;
+  ~RememberedAuthVerifier() noexcept;
 
   std::optional<Bytes32> IssueChallenge() noexcept;
   bool Verify(std::span<const std::byte> peer_id,

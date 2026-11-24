@@ -3,6 +3,16 @@
 #include <algorithm>
 #include <string_view>
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 #include "hearport_spake2_provider.h"
 
 namespace hearport::security {
@@ -138,11 +148,26 @@ bool ConstantTimeEqual(std::span<const std::byte> left,
   }
   volatile std::uint8_t difference = 0;
   for (std::size_t index = 0; index < left.size(); ++index) {
-    difference |= static_cast<std::uint8_t>(
-        std::to_integer<unsigned int>(left[index]) ^
-        std::to_integer<unsigned int>(right[index]));
+    difference = static_cast<std::uint8_t>(
+        difference | (std::to_integer<unsigned int>(left[index]) ^
+                      std::to_integer<unsigned int>(right[index])));
   }
   return difference == 0;
+}
+
+void SecureZero(std::span<std::byte> bytes) noexcept {
+  if (bytes.empty()) {
+    return;
+  }
+#ifdef _WIN32
+  ::SecureZeroMemory(bytes.data(), bytes.size());
+#else
+  volatile unsigned char* cursor =
+      reinterpret_cast<volatile unsigned char*>(bytes.data());
+  for (std::size_t index = 0; index < bytes.size(); ++index) {
+    cursor[index] = 0;
+  }
+#endif
 }
 
 struct Spake2Session::Opaque {};
@@ -227,16 +252,22 @@ std::optional<Spake2Result> Spake2Session::Finish(
       session, AsU8(peer_point), peer_point.size(), &output,
       AsU8(confirmation));
   if (result != HEARPORT_SPAKE2_OK || output == nullptr) {
+    SecureZero(confirmation);
     return std::nullopt;
   }
   std::array<std::byte, kSpake2SessionKeyBytes> session_key{};
   if (hearport_spake2_copy_session_key(output, AsU8(session_key)) !=
       HEARPORT_SPAKE2_OK) {
+    SecureZero(confirmation);
+    SecureZero(session_key);
     hearport_spake2_output_free(output);
     return std::nullopt;
   }
-  return Spake2Result(reinterpret_cast<Spake2Result::Opaque*>(output),
-                      confirmation, session_key);
+  Spake2Result final_result(reinterpret_cast<Spake2Result::Opaque*>(output),
+                            confirmation, session_key);
+  SecureZero(confirmation);
+  SecureZero(session_key);
+  return final_result;
 #else
   (void)peer_point;
   return std::nullopt;
@@ -250,6 +281,8 @@ Spake2Result::~Spake2Result() {
         reinterpret_cast<hearport_spake2_output*>(output_));
   }
 #endif
+  SecureZero(confirmation_);
+  SecureZero(session_key_);
 }
 
 Spake2Result::Spake2Result(Spake2Result&& other) noexcept
@@ -257,6 +290,8 @@ Spake2Result::Spake2Result(Spake2Result&& other) noexcept
       confirmation_(other.confirmation_),
       session_key_(other.session_key_) {
   other.output_ = nullptr;
+  SecureZero(other.confirmation_);
+  SecureZero(other.session_key_);
 }
 
 Spake2Result& Spake2Result::operator=(Spake2Result&& other) noexcept {
@@ -269,10 +304,14 @@ Spake2Result& Spake2Result::operator=(Spake2Result&& other) noexcept {
         reinterpret_cast<hearport_spake2_output*>(output_));
   }
 #endif
+  SecureZero(confirmation_);
+  SecureZero(session_key_);
   output_ = other.output_;
   confirmation_ = other.confirmation_;
   session_key_ = other.session_key_;
   other.output_ = nullptr;
+  SecureZero(other.confirmation_);
+  SecureZero(other.session_key_);
   return *this;
 }
 

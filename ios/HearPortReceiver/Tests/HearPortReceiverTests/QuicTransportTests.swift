@@ -529,5 +529,27 @@ final class QuicTransportTests: XCTestCase {
                           tlsPolicy: .pairing(onPeerSPKIHash: { _ in }))
         wait(for: [audio], timeout: 15)
     }
+
+    func testLeafSPKIExtractsFirstCertificateAndIgnoresTrailingChainCertificates() {
+        func der(_ tag: UInt8, _ content: [UInt8]) -> [UInt8] {
+            precondition(content.count < 128)
+            return [tag, UInt8(content.count)] + content
+        }
+        func makeCert(spkiPayload: [UInt8]) -> Data {
+            let tbs = der(0x02, [0x01]) + der(0x30, []) + der(0x30, []) +
+                      der(0x30, []) + der(0x30, []) + der(0x30, spkiPayload)
+            return Data(der(0x30, der(0x30, tbs)))
+        }
+        let leafSPKIPayload: [UInt8] = [0x03, 0x02, 0x00, 0xaa]
+        let trailingSPKIPayload: [UInt8] = [0x03, 0x02, 0x00, 0xbb]
+        let leafCert = makeCert(spkiPayload: leafSPKIPayload)
+        let trailingCert = makeCert(spkiPayload: trailingSPKIPayload)
+
+        XCTAssertNil(HearPortQuicTransport.leafSPKI(fromCertificateChain: []))
+        XCTAssertEqual(
+            HearPortQuicTransport.leafSPKI(fromCertificateChain: [leafCert, trailingCert]),
+            Data(der(0x30, leafSPKIPayload))
+        )
+    }
 }
 #endif

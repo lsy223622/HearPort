@@ -38,6 +38,7 @@ std::optional<Bytes32> HmacSha256(std::span<const std::byte> key,
 bool RandomBytes(std::span<std::byte> output) noexcept;
 bool ConstantTimeEqual(std::span<const std::byte> left,
                        std::span<const std::byte> right) noexcept;
+void SecureZero(std::span<std::byte> bytes) noexcept;
 
 class Spake2Result;
 

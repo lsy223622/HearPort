@@ -171,38 +171,6 @@ def _read_varint(data: bytes, offset: int) -> tuple[int, int]:
     raise ControlMessageError("unterminated varint")
 
 
-def _skip_field(data: bytes, offset: int, wire: int) -> int:
-    if wire == 0:
-        _, offset = _read_varint(data, offset)
-        return offset
-    if wire == 1:
-        end = offset + 8
-        if end > len(data):
-            raise ControlMessageError("truncated fixed64 field")
-        return end
-    if wire == 2:
-        length, offset = _read_varint(data, offset)
-        end = offset + length
-        if end > len(data) or length > MAX_MESSAGE:
-            raise ControlMessageError("truncated bytes field")
-        return end
-    if wire == 3:
-        while True:
-            nested_tag, offset = _read_varint(data, offset)
-            if nested_tag == 0 or (nested_tag >> 3) == 0:
-                raise ControlMessageError("zero protobuf tag")
-            nested_wire = nested_tag & 7
-            if nested_wire == 4:
-                return offset
-            offset = _skip_field(data, offset, nested_wire)
-    if wire == 5:
-        end = offset + 4
-        if end > len(data):
-            raise ControlMessageError("truncated fixed32 field")
-        return end
-    raise ControlMessageError("unsupported protobuf wire type")
-
-
 def _read_field(data: bytes, offset: int) -> tuple[int, int, bytes, int]:
     tag, offset = _read_varint(data, offset)
     if tag == 0 or (tag >> 3) == 0:
@@ -227,8 +195,6 @@ def _read_field(data: bytes, offset: int) -> tuple[int, int, bytes, int]:
         if end > len(data):
             raise ControlMessageError("truncated fixed32 field")
         return field, wire, data[offset:end], end
-    if wire == 3:
-        return field, wire, b"", _skip_field(data, offset, wire)
     raise ControlMessageError("unsupported protobuf wire type")
 
 

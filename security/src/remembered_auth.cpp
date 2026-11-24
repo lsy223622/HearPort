@@ -1,5 +1,7 @@
 #include "hearport/security/remembered_auth.h"
 
+#include <algorithm>
+#include <array>
 #include <string_view>
 
 namespace hearport::security {
@@ -14,51 +16,111 @@ std::span<const std::byte> AsSpan(const std::array<std::byte, N>& bytes) {
 
 }  // namespace
 
+RememberedCredential::RememberedCredential(
+    RememberedCredential&& other) noexcept
+    : peer_id(other.peer_id),
+      pair_secret(other.pair_secret),
+      windows_spki_sha256(other.windows_spki_sha256) {
+  SecureZero(other.pair_secret);
+}
+
+RememberedCredential& RememberedCredential::operator=(
+    RememberedCredential&& other) noexcept {
+  if (this != &other) {
+    SecureZero(pair_secret);
+    peer_id = other.peer_id;
+    pair_secret = other.pair_secret;
+    windows_spki_sha256 = other.windows_spki_sha256;
+    SecureZero(other.pair_secret);
+  }
+  return *this;
+}
+
+RememberedCredential::~RememberedCredential() noexcept {
+  SecureZero(pair_secret);
+}
+
+RememberedAuthVerifier::RememberedAuthVerifier(
+    RememberedAuthVerifier&& other) noexcept
+    : credential_(std::move(other.credential_)),
+      pending_nonce_(other.pending_nonce_) {
+  other.ClearChallenge();
+}
+
+RememberedAuthVerifier& RememberedAuthVerifier::operator=(
+    RememberedAuthVerifier&& other) noexcept {
+  if (this != &other) {
+    ClearChallenge();
+    credential_ = std::move(other.credential_);
+    pending_nonce_ = other.pending_nonce_;
+    other.ClearChallenge();
+  }
+  return *this;
+}
+
+RememberedAuthVerifier::~RememberedAuthVerifier() noexcept {
+  ClearChallenge();
+}
+
 std::optional<Bytes32> ComputeRememberedAuthMac(
     const RememberedCredential& credential,
     std::span<const std::byte> nonce) noexcept {
   if (nonce.size() != kAuthNonceBytes) {
     return std::nullopt;
   }
-  std::vector<std::byte> message;
-  message.reserve(kAuthDomain.size() + nonce.size() +
-                  credential.windows_spki_sha256.size());
+  std::array<std::byte, kAuthDomain.size() + kAuthNonceBytes + kSha256Bytes>
+      message{};
+  auto out = message.begin();
   for (const char value : kAuthDomain) {
-    message.push_back(static_cast<std::byte>(value));
+    *out++ = static_cast<std::byte>(value);
   }
-  message.insert(message.end(), nonce.begin(), nonce.end());
-  message.insert(message.end(), credential.windows_spki_sha256.begin(),
-                 credential.windows_spki_sha256.end());
-  return HmacSha256(AsSpan(credential.pair_secret),
-                    std::span<const std::byte>(message.data(), message.size()));
+  out = std::copy(nonce.begin(), nonce.end(), out);
+  std::copy(credential.windows_spki_sha256.begin(),
+            credential.windows_spki_sha256.end(), out);
+  const auto mac = HmacSha256(AsSpan(credential.pair_secret), message);
+  SecureZero(message);
+  return mac;
 }
 
 std::optional<Bytes32> RememberedAuthVerifier::IssueChallenge() noexcept {
   Bytes32 nonce{};
   if (!RandomBytes(std::span<std::byte>(nonce.data(), nonce.size()))) {
-    pending_nonce_.reset();
+    ClearChallenge();
     return std::nullopt;
   }
+  ClearChallenge();
   pending_nonce_ = nonce;
-  return nonce;
+  SecureZero(nonce);
+  return pending_nonce_;
 }
 
 bool RememberedAuthVerifier::Verify(std::span<const std::byte> peer_id,
                                     std::span<const std::byte> mac) noexcept {
-  const auto nonce = pending_nonce_;
-  pending_nonce_.reset();
+  auto nonce = pending_nonce_;
+  ClearChallenge();
   if (!nonce.has_value() || peer_id.size() != kPeerIdBytes ||
       mac.size() != kSha256Bytes ||
       !ConstantTimeEqual(peer_id, AsSpan(credential_.peer_id))) {
+    if (nonce.has_value()) {
+      SecureZero(*nonce);
+    }
     return false;
   }
-  const auto expected = ComputeRememberedAuthMac(credential_, AsSpan(*nonce));
-  return expected.has_value() &&
-         ConstantTimeEqual(mac, AsSpan(*expected));
+  auto expected = ComputeRememberedAuthMac(credential_, AsSpan(*nonce));
+  SecureZero(*nonce);
+  const bool matched =
+      expected.has_value() && ConstantTimeEqual(mac, AsSpan(*expected));
+  if (expected.has_value()) {
+    SecureZero(*expected);
+  }
+  return matched;
 }
 
 void RememberedAuthVerifier::ClearChallenge() noexcept {
-  pending_nonce_.reset();
+  if (pending_nonce_.has_value()) {
+    SecureZero(*pending_nonce_);
+    pending_nonce_.reset();
+  }
 }
 
 void PairingTrustStore::Stage(const RememberedCredential& credential) noexcept {

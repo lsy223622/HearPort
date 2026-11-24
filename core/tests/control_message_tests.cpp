@@ -273,5 +273,13 @@ int main() {
           "out-of-range system volume is rejected");
   Require(!hearport::wire::DecodeControlEnvelope(Envelope(48, VarintField(2, 50))),
           "volume report requires a request ID");
+
+  const std::vector<std::byte> group_bomb(65536, std::byte{0x0b});
+  Require(!hearport::wire::DecodeControlEnvelope(group_bomb).has_value(),
+          "deprecated group wire type flood is rejected");
+  const auto nested_group = Envelope(1, std::vector<std::byte>{
+      std::byte{0x0b}, std::byte{0x0c}, std::byte{0x08}, std::byte{0x02}});
+  Require(!hearport::wire::DecodeControlEnvelope(nested_group).has_value(),
+          "deprecated group wire types inside envelopes are rejected");
   return 0;
 }

@@ -773,9 +773,6 @@ private struct ProtoReader {
             let value = Data(bytes[offset..<(offset + length)])
             offset += length
             return (field, .bytes(value))
-        case 3:
-            try skipField(wire)
-            return (field, .ignored)
         case 5:
             guard offset + 4 <= bytes.count else { throw ControlMessageError.malformedField }
             offset += 4
@@ -796,35 +793,5 @@ private struct ProtoReader {
             if byte & 0x80 == 0 { return value }
         }
         throw ControlMessageError.malformedVarint
-    }
-
-    private mutating func skipField(_ wire: UInt8) throws {
-        switch wire {
-        case 0:
-            _ = try readWideVarint()
-        case 1:
-            guard offset + 8 <= bytes.count else { throw ControlMessageError.malformedField }
-            offset += 8
-        case 2:
-            let length = Int(try readVarint())
-            guard length <= ControlFraming.maxPayloadBytes,
-                  offset + length <= bytes.count else {
-                throw ControlMessageError.malformedField
-            }
-            offset += length
-        case 3:
-            while true {
-                let tag = try readVarint()
-                guard tag != 0 else { throw ControlMessageError.malformedField }
-                let nestedWire = UInt8(tag & 0x07)
-                if nestedWire == 4 { return }
-                try skipField(nestedWire)
-            }
-        case 5:
-            guard offset + 4 <= bytes.count else { throw ControlMessageError.malformedField }
-            offset += 4
-        default:
-            throw ControlMessageError.malformedField
-        }
     }
 }

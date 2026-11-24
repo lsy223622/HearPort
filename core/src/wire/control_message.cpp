@@ -83,7 +83,8 @@ class Reader {
     }
     field = tag >> 3;
     wire_type = static_cast<std::uint8_t>(tag & 0x07u);
-    return wire_type <= 5;
+    return wire_type == 0 || wire_type == 1 || wire_type == 2 ||
+           wire_type == 5;
   }
 
   bool Skip(std::uint8_t wire_type) noexcept {
@@ -97,18 +98,14 @@ class Reader {
         offset_ += 8;
         return true;
       case 2: {
-        std::vector<std::byte> ignored;
-        return ReadBytes(ignored);
-      }
-      case 3:
-        for (;;) {
-          if (AtEnd()) return false;
-          std::uint32_t field = 0;
-          std::uint8_t nested_wire_type = 0;
-          if (!ReadTag(field, nested_wire_type)) return false;
-          if (nested_wire_type == 4) return true;
-          if (!Skip(nested_wire_type)) return false;
+        std::uint32_t length = 0;
+        if (!ReadVarint(length) || length > kMaxPayload ||
+            length > bytes_.size() - offset_) {
+          return false;
         }
+        offset_ += length;
+        return true;
+      }
       case 5:
         if (bytes_.size() - offset_ < 4) return false;
         offset_ += 4;

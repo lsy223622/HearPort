@@ -1841,16 +1841,24 @@ public final class HearPortQuicTransport {
         onStateChange?(newState)
     }
 
+    internal static func leafSPKI(fromCertificateChain chain: [Data]) -> Data? {
+        guard let leafCertificateData = chain.first else { return nil }
+        return extractSPKI(from: leafCertificateData)
+    }
+
     private static func peerSPKI(from metadata: sec_protocol_metadata_t) -> Data? {
-        var certificateData: Data?
+        var visitedLeaf = false
+        var leafCertificateData: Data?
         guard sec_protocol_metadata_access_peer_certificate_chain(metadata, { certificate in
+            guard !visitedLeaf else { return }
+            visitedLeaf = true
             let reference = sec_certificate_copy_ref(certificate).takeRetainedValue()
-            certificateData = SecCertificateCopyData(reference) as Data?
+            leafCertificateData = SecCertificateCopyData(reference) as Data?
         }) else {
             return nil
         }
-        guard let certificateData else { return nil }
-        return extractSPKI(from: certificateData)
+        guard let leafCertificateData else { return nil }
+        return leafSPKI(fromCertificateChain: [leafCertificateData])
     }
 
     private struct DERValue {

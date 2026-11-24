@@ -428,4 +428,11 @@ final class ReceiverCoreTests: XCTestCase {
         XCTAssertEqual(receiver.receiveDatagram(next.encoded), .accepted)
         XCTAssertEqual(receiver.reliableProgressSequence(), 100)
     }
+
+    func testGroupWireTypeFloodIsRejectedWithoutRecursion() {
+        let flood = Data(repeating: 0x0b, count: 65_536)
+        XCTAssertThrowsError(try ControlEnvelope.decode(flood))
+        let nested = envelope(1, body: Data([0x0b, 0x0c, 0x08, 0x02]))
+        XCTAssertThrowsError(try ControlEnvelope.decode(nested))
+    }
 }

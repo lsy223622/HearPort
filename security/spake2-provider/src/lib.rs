@@ -6,6 +6,7 @@ use pakery_crypto::{P256Group, Spake2P256};
 use pakery_spake2::{PartyA, PartyAState, PartyB, PartyBState, Spake2Error, Spake2Output};
 use rand::Rng;
 use sha2::{Digest, Sha256};
+use zeroize::Zeroize;
 
 const P256_ORDER_MINUS_ONE: [u8; 32] = [
     0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
@@ -32,11 +33,11 @@ fn valid_slice<'a>(ptr: *const u8, len: usize) -> Option<&'a [u8]> {
     if len == 0 {
         return Some(&[]);
     }
-    if ptr.is_null() {
+    if ptr.is_null() || len > isize::MAX as usize {
         return None;
     }
-    // SAFETY: The caller owns the FFI contract. The null check above rejects
-    // the only invalid pointer representation for a non-empty slice.
+    // SAFETY: The caller owns the FFI contract. The null and length checks above
+    // reject invalid pointer representations for a non-empty slice.
     Some(unsafe { std::slice::from_raw_parts(ptr, len) })
 }
 
@@ -44,7 +45,7 @@ fn valid_mut_slice<'a>(ptr: *mut u8, len: usize) -> Option<&'a mut [u8]> {
     if len == 0 {
         return Some(&mut []);
     }
-    if ptr.is_null() {
+    if ptr.is_null() || len > isize::MAX as usize {
         return None;
     }
     // SAFETY: The caller owns the FFI contract and supplied writable storage.
@@ -71,7 +72,9 @@ fn scalar_from_bytes(bytes: &[u8]) -> Option<<P256Group as CpaceGroup>::Scalar> 
     }
     let mut wide = [0u8; 64];
     wide[32..].copy_from_slice(bytes);
-    P256Group::scalar_from_wide_bytes(&wide).ok()
+    let scalar = P256Group::scalar_from_wide_bytes(&wide).ok();
+    wide.zeroize();
+    scalar
 }
 
 fn reduce_pin_digest(mut digest: [u8; 32]) -> [u8; 32] {
@@ -162,8 +165,11 @@ pub extern "C" fn hearport_spake2_pin_to_scalar(
     hasher.update(PIN_DOMAIN);
     hasher.update([0]);
     hasher.update(pin);
-    let scalar = reduce_pin_digest(hasher.finalize().into());
+    let mut digest: [u8; 32] = hasher.finalize().into();
+    let mut scalar = reduce_pin_digest(digest);
+    digest.zeroize();
     output.copy_from_slice(&scalar);
+    scalar.zeroize();
     HEARPORT_SPAKE2_OK
 }
 
@@ -239,7 +245,13 @@ pub extern "C" fn hearport_spake2_finish(
     output_out: *mut *mut hearport_spake2_output,
     confirmation: *mut u8,
 ) -> i32 {
-    if session.is_null() || output_out.is_null() {
+    if session.is_null() {
+        return HEARPORT_SPAKE2_INVALID_ARGUMENT;
+    }
+    // SAFETY: session must be a pointer returned by hearport_spake2_begin and
+    // this consuming function is the single owner of that allocation.
+    let mut session = unsafe { Box::from_raw(session) };
+    if output_out.is_null() {
         return HEARPORT_SPAKE2_INVALID_ARGUMENT;
     }
     let Some(peer_point) = valid_slice(peer_point, peer_point_len) else {
@@ -248,9 +260,6 @@ pub extern "C" fn hearport_spake2_finish(
     let Some(confirmation) = valid_mut_slice(confirmation, 32) else {
         return HEARPORT_SPAKE2_INVALID_ARGUMENT;
     };
-    // SAFETY: session must be a pointer returned by hearport_spake2_begin and
-    // this consuming function is the single owner of that allocation.
-    let mut session = unsafe { Box::from_raw(session) };
     let Some(state) = session.state.take() else {
         return HEARPORT_SPAKE2_INVALID_ARGUMENT;
     };
@@ -453,5 +462,61 @@ mod tests {
             HEARPORT_SPAKE2_INVALID_POINT
         );
         hearport_spake2_session_free(session_b);
+    }
+
+    #[test]
+    fn finish_consumes_session_even_when_arguments_are_invalid() {
+        let scalar = hex("2ee57912099d31560b3a44b1184b9b4866e904c49d12ac5042c97dca461b1a5f");
+        let mut point = [0u8; 65];
+        let mut session = std::ptr::null_mut();
+        assert_eq!(
+            hearport_spake2_begin(
+                1,
+                scalar.as_ptr(),
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                point.as_mut_ptr(),
+                &mut session
+            ),
+            HEARPORT_SPAKE2_OK
+        );
+        let mut out = std::ptr::null_mut();
+        assert_eq!(
+            hearport_spake2_finish(
+                session,
+                point.as_ptr(),
+                65,
+                std::ptr::null_mut(),
+                std::ptr::null_mut()
+            ),
+            HEARPORT_SPAKE2_INVALID_ARGUMENT
+        );
+
+        let mut session_two = std::ptr::null_mut();
+        assert_eq!(
+            hearport_spake2_begin(
+                2,
+                scalar.as_ptr(),
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                point.as_mut_ptr(),
+                &mut session_two
+            ),
+            HEARPORT_SPAKE2_OK
+        );
+        assert_eq!(
+            hearport_spake2_finish(
+                session_two,
+                point.as_ptr(),
+                65,
+                &mut out,
+                std::ptr::null_mut()
+            ),
+            HEARPORT_SPAKE2_INVALID_ARGUMENT
+        );
     }
 }
