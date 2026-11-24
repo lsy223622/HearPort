@@ -482,7 +482,13 @@ public final class HearPortDiagnostics: @unchecked Sendable {
     }
 
     private func rotateLocked() {
-        for index in stride(from: maxRotatedFiles, through: 1, by: -1) {
+        guard maxRotatedFiles > 0 else {
+            if fileManager.fileExists(atPath: activeURL.path) {
+                try? fileManager.removeItem(at: activeURL)
+            }
+            return
+        }
+        for index in stride(from: maxRotatedFiles - 1, through: 1, by: -1) {
             let source = rotatedURL(index: index - 1)
             let destination = rotatedURL(index: index)
             if fileManager.fileExists(atPath: destination.path) {
@@ -493,12 +499,11 @@ public final class HearPortDiagnostics: @unchecked Sendable {
             }
         }
         if fileManager.fileExists(atPath: activeURL.path) {
-            if maxRotatedFiles > 0 {
-                try? fileManager.moveItem(at: activeURL,
-                                          to: rotatedURL(index: 0))
-            } else {
-                try? fileManager.removeItem(at: activeURL)
+            let firstRotated = rotatedURL(index: 0)
+            if fileManager.fileExists(atPath: firstRotated.path) {
+                try? fileManager.removeItem(at: firstRotated)
             }
+            try? fileManager.moveItem(at: activeURL, to: firstRotated)
         }
     }
 

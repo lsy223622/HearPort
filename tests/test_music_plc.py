@@ -1,3 +1,4 @@
+import importlib.util
 import unittest
 import json
 import os
@@ -6,6 +7,8 @@ from pathlib import Path
 import numpy as np
 
 from diagnostics.music_plc import replay, arrival_trace, coverage_curve, CurrentConcealment, ar_predict, quality
+
+HAS_SCIPY = importlib.util.find_spec('scipy') is not None
 
 
 class Predictor:
@@ -35,12 +38,14 @@ class MusicPLCTests(unittest.TestCase):
                 actual = model.conceal(record['frames'])
             np.testing.assert_allclose(actual.ravel(), record['output'], rtol=0, atol=2e-6)
 
+    @unittest.skipUnless(HAS_SCIPY, 'scipy is not installed')
     def test_ar_extrapolates_a_stereo_tone_without_reversing_channels(self):
         source = np.sin(np.arange(2400) * 2 * np.pi * 440 / 48000).astype(np.float32)
         output = ar_predict(np.stack((source[:2000], -source[:2000]), axis=1), 120, order=64)
         self.assertLess(float(np.max(np.abs(output[:, 0] - source[2000:2120]))), 0.1)
         np.testing.assert_allclose(output[:, 0], -output[:, 1], atol=1e-6)
 
+    @unittest.skipUnless(HAS_SCIPY, 'scipy is not installed')
     @unittest.skipUnless(os.environ.get('HEARPORT_AR_REFERENCE'), 'native Swift AR reference generated on macOS')
     def test_native_ar_matches_research_predictor(self):
         records = json.loads(Path(os.environ['HEARPORT_AR_REFERENCE']).read_text())
@@ -49,6 +54,7 @@ class MusicPLCTests(unittest.TestCase):
             expected = ar_predict(history, record['frames'])
             np.testing.assert_allclose(expected.ravel(), record['output'], rtol=0, atol=5e-5)
 
+    @unittest.skipUnless(HAS_SCIPY, 'scipy is not installed')
     @unittest.skipUnless(os.environ.get('HEARPORT_AR_REFERENCE'), 'native Swift AR reference generated on macOS')
     def test_native_available_future_repair_matches_research_predictor(self):
         from diagnostics.music_plc import BidirectionalAR
@@ -61,6 +67,7 @@ class MusicPLCTests(unittest.TestCase):
             expected = predictor.predict(history, record['frames'])
             np.testing.assert_allclose(expected.ravel(), record['output'], rtol=0, atol=5e-5)
 
+    @unittest.skipUnless(HAS_SCIPY, 'scipy is not installed')
     def test_ar_handles_loss_before_any_committed_history(self):
         from diagnostics.music_plc import Autoregressive
         arrivals = np.arange(32) * 2.5 + 1

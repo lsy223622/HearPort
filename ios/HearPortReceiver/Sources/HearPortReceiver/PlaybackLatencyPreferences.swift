@@ -22,7 +22,10 @@ struct PlaybackLatencyPreferences: Equatable {
 
     static func load(usb: Bool, defaults: UserDefaults = .standard) -> Self {
         migrate(in: defaults)
-        return Self(target: defaults.object(forKey: usb ? usbTargetKey : networkTargetKey) as? Int ?? 50,
-                    maximum: defaults.object(forKey: usb ? usbMaximumKey : networkMaximumKey) as? Int ?? 100)
+        let rawTarget = defaults.object(forKey: usb ? usbTargetKey : networkTargetKey) as? Int ?? 50
+        let rawMaximum = defaults.object(forKey: usb ? usbMaximumKey : networkMaximumKey) as? Int ?? 100
+        let target = min(max(rawTarget, 10), 2_000)
+        let maximum = min(max(rawMaximum, max(20, target)), 2_000)
+        return Self(target: target, maximum: maximum)
     }
 }

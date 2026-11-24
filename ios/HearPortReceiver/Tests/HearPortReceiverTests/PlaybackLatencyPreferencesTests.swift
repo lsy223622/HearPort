@@ -50,4 +50,23 @@ final class PlaybackLatencyPreferencesTests: XCTestCase {
             }
         }
     }
+
+    func testOutOfRangePreferencesAreClampedToPlayoutBudgetBounds() throws {
+        withDefaults { defaults in
+            let cases: [(Int, Int, Int, Int)] = [
+                (-5, 5, 10, 20),
+                (500, 200, 500, 500),
+                (3000, 5000, 2000, 2000),
+            ]
+            for (rawTarget, rawMaximum, expectedTarget, expectedMaximum) in cases {
+                defaults.set(rawTarget, forKey: PlaybackLatencyPreferences.networkTargetKey)
+                defaults.set(rawMaximum, forKey: PlaybackLatencyPreferences.networkMaximumKey)
+                let loaded = PlaybackLatencyPreferences.load(usb: false, defaults: defaults)
+                XCTAssertEqual(loaded, PlaybackLatencyPreferences(target: expectedTarget, maximum: expectedMaximum))
+                XCTAssertNoThrow(try PlayoutBudget(targetMilliseconds: Double(loaded.target),
+                                                   maximumMilliseconds: Double(loaded.maximum),
+                                                   outputReserveMilliseconds: 1))
+            }
+        }
+    }
 }

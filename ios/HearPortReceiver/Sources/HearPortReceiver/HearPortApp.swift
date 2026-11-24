@@ -128,10 +128,12 @@ import AppIntents
         usbTransportModeRaw = UserDefaults.standard.object(forKey: "hearport.usbAudio.transport") as? String ?? AudioTransportMode.reliable.rawValue
         audioTransportModeRaw = UserDefaults.standard.object(forKey: "hearport.audioTransportMode") as? String ?? AudioTransportMode.datagram.rawValue
         jitterBufferTargetPackets = UserDefaults.standard.object(forKey: "hearport.jitterStartupPackets") as? Int ?? 8
-        networkTargetLatencyMs = UserDefaults.standard.object(forKey: PlaybackLatencyPreferences.networkTargetKey) as? Int ?? 50
-        networkMaximumLatencyMs = UserDefaults.standard.object(forKey: PlaybackLatencyPreferences.networkMaximumKey) as? Int ?? 100
-        usbTargetLatencyMs = UserDefaults.standard.object(forKey: PlaybackLatencyPreferences.usbTargetKey) as? Int ?? 50
-        usbMaximumLatencyMs = UserDefaults.standard.object(forKey: PlaybackLatencyPreferences.usbMaximumKey) as? Int ?? 100
+        let networkBudget = PlaybackLatencyPreferences.load(usb: false)
+        let usbBudget = PlaybackLatencyPreferences.load(usb: true)
+        networkTargetLatencyMs = networkBudget.target
+        networkMaximumLatencyMs = networkBudget.maximum
+        usbTargetLatencyMs = usbBudget.target
+        usbMaximumLatencyMs = usbBudget.maximum
         networkCodec = UserDefaults.standard.object(forKey: "hearport.networkAudio.codec") as? String ?? "opus"
         networkBitrate = UserDefaults.standard.object(forKey: "hearport.networkAudio.bitrate") as? Int ?? 256_000
         networkFrames = UserDefaults.standard.object(forKey: "hearport.networkAudio.frames") as? Int ?? 240

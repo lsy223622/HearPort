@@ -98,6 +98,25 @@ final class DiagnosticsTests: XCTestCase {
         XCTAssertEqual(diagnostics.recentLines(limit: 1).count, 1)
     }
 
+    func testRotationDoesNotLeaveOrphanedOverflowFile() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HearPortDiagnosticsOverflow-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let diagnosticsTwo = HearPortDiagnostics(directory: directory, maxFileBytes: 180, maxRotatedFiles: 2)
+        for index in 0..<40 {
+            diagnosticsTwo.log(.info, category: .realtime, message: "packet", fields: ["sequence": "\(index)"])
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("hearport.log.2").path))
+
+        let singleDirectory = directory.appendingPathComponent("single", isDirectory: true)
+        let diagnosticsOne = HearPortDiagnostics(directory: singleDirectory, maxFileBytes: 180, maxRotatedFiles: 1)
+        for index in 0..<40 {
+            diagnosticsOne.log(.info, category: .realtime, message: "packet", fields: ["sequence": "\(index)"])
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: singleDirectory.appendingPathComponent("hearport.log.0").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: singleDirectory.appendingPathComponent("hearport.log.1").path))
+    }
+
     func testClearRemovesRetainedDiagnostics() throws {
         let diagnostics = try makeDiagnostics()
         diagnostics.log(.error, category: .app, message: "failure")

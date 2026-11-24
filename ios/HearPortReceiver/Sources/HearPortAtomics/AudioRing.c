@@ -83,10 +83,14 @@ size_t hearport_audio_ring_push(HearPortAudioRing *ring, const float *stereo,
 
 size_t hearport_audio_ring_push_timed(HearPortAudioRing *ring, const float *stereo,
     size_t frames, uint64_t source_begin, uint64_t source_end, uint64_t captured_at, uint64_t deadline, bool received) {
-    if (frames == 0 || !hearport_audio_ring_reset_acknowledged(ring)) return 0;
+    const uint64_t generation = atomic_load_explicit(&ring->requested_generation, memory_order_acquire);
+    if (frames == 0 || generation != atomic_load_explicit(&ring->acknowledged_generation, memory_order_acquire)) return 0;
     const uint64_t write = atomic_load_explicit(&ring->write_cursor, memory_order_relaxed);
     const uint64_t read = atomic_load_explicit(&ring->read_cursor, memory_order_acquire);
-    const size_t available = ring->capacity - (size_t)(write - read);
+    if (write < read) return 0;
+    const uint64_t used = write - read;
+    if (used >= ring->capacity) return 0;
+    const size_t available = ring->capacity - (size_t)used;
     const size_t count = frames < available ? frames : available;
     for (size_t frame = 0; frame < count; ++frame) {
         const size_t offset = ((size_t)(write + frame) % ring->capacity) * 2;
@@ -98,13 +102,18 @@ size_t hearport_audio_ring_push_timed(HearPortAudioRing *ring, const float *ster
         const uint64_t span = timed ? source_end - source_begin : 0;
         const uint64_t begin = timed ? source_begin + span * frame / frames : UINT64_MAX;
         const uint64_t end = timed ? source_begin + span * (frame + 1) / frames : UINT64_MAX;
-        atomic_store_explicit(&ring->deadline[slot], deadline == UINT64_MAX ? UINT64_MAX :
-            deadline + (begin - source_begin) * 1000000000ull / 48000, memory_order_relaxed);
+        const uint64_t offset_ns = timed ? (begin - source_begin) * 1000000000ull / 48000 : 0;
+        const uint64_t frame_deadline = deadline == UINT64_MAX ? UINT64_MAX :
+            (UINT64_MAX - deadline < offset_ns ? UINT64_MAX : deadline + offset_ns);
+        const uint64_t frame_captured = !timed ? UINT64_MAX :
+            (UINT64_MAX - captured_at < offset_ns ? UINT64_MAX : captured_at + offset_ns);
+        atomic_store_explicit(&ring->deadline[slot], frame_deadline, memory_order_relaxed);
         atomic_store_explicit(&ring->source_begin[slot], begin, memory_order_relaxed);
         atomic_store_explicit(&ring->source_end[slot], end, memory_order_relaxed);
-        atomic_store_explicit(&ring->captured_at[slot], timed ?
-            captured_at + (begin - source_begin) * 1000000000ull / 48000 : UINT64_MAX,
-            memory_order_relaxed);
+        atomic_store_explicit(&ring->captured_at[slot], frame_captured, memory_order_relaxed);
+    }
+    if (atomic_load_explicit(&ring->requested_generation, memory_order_acquire) != generation) {
+        return 0;
     }
     atomic_store_explicit(&ring->write_cursor, write + count, memory_order_release);
     return count;

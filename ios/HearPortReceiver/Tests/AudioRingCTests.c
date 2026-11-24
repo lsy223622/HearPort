@@ -150,7 +150,18 @@ static void test_received_frames_exclude_concealment_and_underflow(void) {
     hearport_audio_ring_destroy(ring);
 }
 
+static void test_untimed_finite_deadline_does_not_underflow(void) {
+    HearPortAudioRing *ring = hearport_audio_ring_create(8);
+    const float samples[4] = {1, -1, 2, -2};
+    float output[4] = {0};
+    assert(hearport_audio_ring_push_timed(ring, samples, 2, 0, 2, UINT64_MAX, 1060000000, true) == 2);
+    assert(hearport_audio_ring_pop_at(ring, output, 2, 1070000000, 0, NULL) == 0);
+    assert(hearport_audio_ring_expired_frames(ring) == 2);
+    hearport_audio_ring_destroy(ring);
+}
+
 int main(void) {
+    test_untimed_finite_deadline_does_not_underflow();
     test_received_frames_exclude_concealment_and_underflow();
     test_timed_source_progress_and_expiry();
     test_uncertainty_deadline_survives_staging();

@@ -998,12 +998,12 @@ public final class ReceiverControlSession {
             activeDebugStreamID = nil
             debugEndReason = reason
             receiver.endMusicRound(reason: "diagnostics_end")
-            _ = diagnostics.flushAsync(timeout: 2.0)
             if reason != 1 { calibration?.cancel() }
             onDiagnosticReportSending?()
             let endReason = reason == 1 ? "duration_expired" : "sender_reason_\(reason)"
             debugQueue.async { [weak self] in
                 guard let self else { return }
+                _ = self.diagnostics.flushAsync(timeout: 2.0)
                 do {
                     _ = try self.debugSessionDiagnostics.finish(
                         reason: endReason,
