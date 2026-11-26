@@ -11,7 +11,7 @@ class DriftController {
 
   double Update(std::size_t fill_frames, bool valid_audio,
                 double nominal_ratio);
-  void Freeze() noexcept {}
+  void Freeze() noexcept;
   void Reset() noexcept;
 
  private:

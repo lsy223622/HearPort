@@ -98,6 +98,7 @@ class DriftControllerTests(unittest.TestCase):
         active = controller.update(600, valid_audio=True, nominal_ratio=1.0)
         frozen = controller.update(100, valid_audio=False, nominal_ratio=1.0)
         self.assertEqual(frozen, active)
+        self.assertEqual(controller.update(480, valid_audio=True, nominal_ratio=1.0), 1.0)
         controller.reset()
         self.assertEqual(controller.update(480, valid_audio=True, nominal_ratio=1.0), 1.0)
 

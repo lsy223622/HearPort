@@ -15,6 +15,7 @@ DriftController::DriftController(std::size_t target_frames)
 double DriftController::Update(std::size_t fill_frames, bool valid_audio,
                                 double nominal_ratio) {
   if (!valid_audio) {
+    Freeze();
     return last_ratio_.value_or(nominal_ratio);
   }
 
@@ -25,6 +26,10 @@ double DriftController::Update(std::size_t fill_frames, bool valid_audio,
   const auto correction = std::clamp(normalized * 0.001, -0.001, 0.001);
   last_ratio_ = nominal_ratio * (1.0 + correction);
   return last_ratio_.value();
+}
+
+void DriftController::Freeze() noexcept {
+  filtered_error_ = 0.0;
 }
 
 void DriftController::Reset() noexcept {

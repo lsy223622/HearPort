@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from scripts import collect_notices, fetch_opus
 from scripts.package_release import collect_runtime, validate_notices, binary_delay_imports
 
 
@@ -78,3 +79,11 @@ class ReleasePackageTests(unittest.TestCase):
             with patch("scripts.package_release.binary_imports", return_value=["vcruntime140.dll"]):
                 with self.assertRaisesRegex(ValueError, "Missing"):
                     collect_runtime(executable, "dumpbin", [], root)
+
+    def test_opus_metadata_matches_single_source_of_truth(self):
+        self.assertEqual(collect_notices.OPUS_VERSION, fetch_opus.VERSION)
+        self.assertEqual(collect_notices.OPUS_URL, fetch_opus.URL)
+        self.assertEqual(collect_notices.OPUS_SHA256, fetch_opus.SHA256)
+        self.assertEqual(collect_notices.OPUS_COPYING, fetch_opus.SOURCE_DIR / "COPYING")
+        notices = (Path(__file__).resolve().parents[1] / "THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8")
+        self.assertIn(f"Opus {fetch_opus.VERSION}", notices)

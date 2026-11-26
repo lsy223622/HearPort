@@ -124,6 +124,7 @@ class DriftController:
 
     def update(self, fill_frames: int, valid_audio: bool, nominal_ratio: float) -> float:
         if not valid_audio:
+            self.freeze()
             return nominal_ratio if self._last_ratio is None else self._last_ratio
         error = fill_frames - self.target_frames
         self._filtered_error = self._filtered_error * 0.95 + error * 0.05
@@ -133,7 +134,7 @@ class DriftController:
         return self._last_ratio
 
     def freeze(self) -> None:
-        pass
+        self._filtered_error = 0.0
 
     def reset(self) -> None:
         self._filtered_error = 0.0

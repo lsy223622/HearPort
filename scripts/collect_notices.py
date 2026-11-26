@@ -12,13 +12,18 @@ import sys
 from pathlib import Path
 from typing import Any
 
+try:
+    from scripts import fetch_opus
+except ImportError:
+    import fetch_opus
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PROVIDER_MANIFEST = PROJECT_ROOT / "security" / "spake2-provider" / "Cargo.toml"
-OPUS_COPYING = PROJECT_ROOT / "ios" / "HearPortReceiver" / "Vendor" / "opus" / "COPYING"
-OPUS_VERSION = "1.6.1"
-OPUS_URL = "https://downloads.xiph.org/releases/opus/opus-1.6.1.tar.gz"
-OPUS_SHA256 = "6ffcb593207be92584df15b32466ed64bbec99109f007c82205f0194572411a1"
+OPUS_COPYING = fetch_opus.SOURCE_DIR / "COPYING"
+OPUS_VERSION = fetch_opus.VERSION
+OPUS_URL = fetch_opus.URL
+OPUS_SHA256 = fetch_opus.SHA256
 RELEASE_TARGET = "x86_64-pc-windows-msvc"
 LICENSE_PREFIXES = ("license", "copying", "notice")
 

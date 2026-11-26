@@ -17,6 +17,8 @@ int main() {
   assert(first >= 1.0);
   assert(last > first);
   assert(last < 1.002);
+  assert(controller.Update(100, false, 1.0) == last);
+  assert(controller.Update(480, true, 1.0) == 1.0);
 
   hearport::JitterBuffer jitter(5, 8, 2);
   hearport::wire::AudioDatagram first_packet{};

@@ -31,6 +31,7 @@ import AppIntents
 @MainActor public final class ReceiverRuntime: ObservableObject {
     public static let shared = ReceiverRuntime()
     private let diagnostics = HearPortDiagnostics.shared
+    private let uiRefreshTimer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
     @Published private var lastHost = "" { didSet { UserDefaults.standard.set(lastHost, forKey: ConnectionPreferences.lastHostKey) } }
     @Published private var rememberedHost = "" { didSet { UserDefaults.standard.set(rememberedHost, forKey: "hearport.rememberedHost") } }
     @Published private var selectedEndpoint: ConnectionEndpoint?
@@ -213,7 +214,7 @@ import AppIntents
                 pendingCalibration = nil; calibrationTarget = nil
             }
         }
-        .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { [self] _ in
+        .onReceive(uiRefreshTimer) { [self] _ in
             guard scenePhase == .active else { return }
             if connectionEstablished && control != nil && !sendingReport && completedTestStatus == nil && !isConnecting {
                 let sample = receiver.linkTimingSample()
@@ -1081,7 +1082,7 @@ import AppIntents
         .frame(maxWidth: .infinity)
         .background(Color(uiColor: .systemGroupedBackground))
         .onAppear { [self] in refreshDiagnostics() }
-        .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { [self] _ in refreshDiagnostics() }
+        .onReceive(uiRefreshTimer) { [self] _ in refreshDiagnostics() }
     }
 
     private func connect(selected: ConnectionEndpoint? = nil, forCalibration: Bool = false, route: AutomationRoute? = nil) {

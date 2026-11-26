@@ -7,10 +7,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(HEARPORT_BUILD_WINDOWS "Build the Windows sender" ON)
-option(HEARPORT_BUILD_REFERENCE_TESTS "Expose reference-test helper targets" ON)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
-include(FindHearPortDependencies)
 include(CTest)
 
 add_library(hearport_protocol_artifacts INTERFACE)
